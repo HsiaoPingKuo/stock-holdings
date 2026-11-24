@@ -13,19 +13,30 @@ import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.validation.FieldError;
 import org.springframework.web.HttpMediaTypeNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.MissingRequestHeaderException;
+import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 
 import io.hsiaopingkuo.stockholdings.dto.ErrorResponse;
+import io.hsiaopingkuo.stockholdings.dto.OversellErrorResponse;
 import io.hsiaopingkuo.stockholdings.exception.DuplicateCodeException;
 import io.hsiaopingkuo.stockholdings.exception.HoldingBusyException;
 import io.hsiaopingkuo.stockholdings.exception.HoldingDataException;
 import io.hsiaopingkuo.stockholdings.exception.HoldingNotFoundException;
+import io.hsiaopingkuo.stockholdings.exception.IdempotencyKeyRequiredException;
+import io.hsiaopingkuo.stockholdings.exception.IdempotencyKeyReusedException;
 import io.hsiaopingkuo.stockholdings.exception.MarketAmbiguousException;
 import io.hsiaopingkuo.stockholdings.exception.MarketUnavailableException;
+import io.hsiaopingkuo.stockholdings.exception.RequestInProgressException;
 import io.hsiaopingkuo.stockholdings.exception.StockCodeNotFoundException;
+import io.hsiaopingkuo.stockholdings.exception.TradeNotFoundException;
+import io.hsiaopingkuo.stockholdings.exception.TradeOversellException;
+import io.hsiaopingkuo.stockholdings.exception.TradeValidationException;
 import io.hsiaopingkuo.stockholdings.exception.UpgradeRequiredException;
+import io.hsiaopingkuo.stockholdings.exception.VersionConflictException;
 import jakarta.servlet.http.HttpServletRequest;
 import tools.jackson.core.JacksonException;
 import tools.jackson.core.exc.InputCoercionException;
@@ -53,8 +64,78 @@ public class ApiExceptionHandler {
 	 * 規格裡 GET、DELETE 單筆的失敗情況只有 404 NOT_FOUND。
 	 */
 	@ExceptionHandler(MethodArgumentTypeMismatchException.class)
-	ResponseEntity<ErrorResponse> typeMismatch(MethodArgumentTypeMismatchException e) {
+	ResponseEntity<ErrorResponse> typeMismatch(MethodArgumentTypeMismatchException e, HttpServletRequest request) {
+		// 第 6 題 /api/v2：網址參數（DELETE 的 ?version=abc）型別不對是請求寫錯，不是「找不到」
+		if (e.getParameter().hasParameterAnnotation(RequestParam.class)) {
+			return ApiJson.error(HttpStatus.BAD_REQUEST, "VALIDATION_ERROR", e.getName() + " 必須是整數");
+		}
+		// /api/v2/trades/abc：找的是交易，不是持股。/api/v1 只有持股，訊息維持原樣
+		if (request.getRequestURI().startsWith(request.getContextPath() + "/api/v2/trades/")) {
+			return ApiJson.error(HttpStatus.NOT_FOUND, "NOT_FOUND", "找不到這筆交易（id=" + e.getValue() + "）");
+		}
 		return ApiJson.error(HttpStatus.NOT_FOUND, "NOT_FOUND", "找不到這筆持股（id=" + e.getValue() + "）");
+	}
+
+	// ===== 第 6 題 /api/v2：交易的寫入（TradeService、IdempotencyService 丟出的錯誤）=====
+
+	@ExceptionHandler(TradeNotFoundException.class)
+	ResponseEntity<ErrorResponse> tradeNotFound(TradeNotFoundException e) {
+		return ApiJson.error(HttpStatus.NOT_FOUND, "NOT_FOUND", e.getMessage());
+	}
+
+	/** 日期、股數、價格不符合規則（TradeRules），和 Bean Validation 的錯誤同一個代碼。 */
+	@ExceptionHandler(TradeValidationException.class)
+	ResponseEntity<ErrorResponse> tradeInvalid(TradeValidationException e) {
+		return ApiJson.error(HttpStatus.BAD_REQUEST, "VALIDATION_ERROR", e.getMessage());
+	}
+
+	/**
+	 * 超賣：409，error 裡多帶兩個交易 id，App 2.0 可以標出是哪一筆（值是 null 也照樣輸出）。
+	 * 輸入本身沒錯，是和目前的持股狀態衝突，所以和其他衝突一樣用 409。
+	 */
+	@ExceptionHandler(TradeOversellException.class)
+	ResponseEntity<OversellErrorResponse> oversell(TradeOversellException e) {
+		return ResponseEntity.status(HttpStatus.CONFLICT).contentType(ApiJson.JSON_UTF8)
+				.body(OversellErrorResponse.of(e.getMessage(), e.getOversoldTradeId(), e.getEstimatedBuyTradeId()));
+	}
+
+	/** 別的裝置已經改過這筆交易（版本號不一致）。 */
+	@ExceptionHandler(VersionConflictException.class)
+	ResponseEntity<ErrorResponse> versionConflict(VersionConflictException e) {
+		return ApiJson.error(HttpStatus.CONFLICT, "VERSION_CONFLICT", e.getMessage());
+	}
+
+	@ExceptionHandler(IdempotencyKeyRequiredException.class)
+	ResponseEntity<ErrorResponse> idempotencyKeyInvalid(IdempotencyKeyRequiredException e) {
+		return ApiJson.error(HttpStatus.BAD_REQUEST, "IDEMPOTENCY_KEY_REQUIRED", e.getMessage());
+	}
+
+	/** 沒帶必要的 header。目前只有 Idempotency-Key 是必要的 header。 */
+	@ExceptionHandler(MissingRequestHeaderException.class)
+	ResponseEntity<ErrorResponse> missingHeader(MissingRequestHeaderException e) {
+		if (TradeApiV2Controller.IDEMPOTENCY_KEY.equalsIgnoreCase(e.getHeaderName())) {
+			return ApiJson.error(HttpStatus.BAD_REQUEST, "IDEMPOTENCY_KEY_REQUIRED",
+					"缺少 Idempotency-Key header：每一個新增、修改、刪除都要帶一個 UUID，重送時沿用同一個");
+		}
+		return ApiJson.error(HttpStatus.BAD_REQUEST, "VALIDATION_ERROR", "缺少 " + e.getHeaderName() + " header");
+	}
+
+	/** 沒帶必要的網址參數（DELETE 沒帶 ?version=N）。沒有這個 handler 會掉到最後防線變成 500。 */
+	@ExceptionHandler(MissingServletRequestParameterException.class)
+	ResponseEntity<ErrorResponse> missingParameter(MissingServletRequestParameterException e) {
+		return ApiJson.error(HttpStatus.BAD_REQUEST, "VALIDATION_ERROR", "缺少網址參數 " + e.getParameterName());
+	}
+
+	/** 同一個 Idempotency-Key 已經用在另一個 API 或不同的內容。422：格式沒錯，但這個鍵不能這樣用。 */
+	@ExceptionHandler(IdempotencyKeyReusedException.class)
+	ResponseEntity<ErrorResponse> idempotencyKeyReused(IdempotencyKeyReusedException e) {
+		return ApiJson.error(HttpStatus.UNPROCESSABLE_CONTENT, "IDEMPOTENCY_KEY_REUSED", e.getMessage());
+	}
+
+	/** 同一個 Idempotency-Key 的第一個請求還沒處理完。 */
+	@ExceptionHandler(RequestInProgressException.class)
+	ResponseEntity<ErrorResponse> requestInProgress(RequestInProgressException e) {
+		return ApiJson.error(HttpStatus.CONFLICT, "REQUEST_IN_PROGRESS", e.getMessage());
 	}
 
 	// ===== 新增時的業務錯誤（和網頁用同一組例外，訊息也相同） =====
@@ -167,12 +248,18 @@ public class ApiExceptionHandler {
 
 	private static final String INVALID_JSON = "請求內容不是正確的 JSON";
 
-	// 欄位錯誤的排序：照 JSON 請求裡的欄位順序（Java 物件的屬性名稱）
-	private static final List<String> FIELD_ORDER = List.of("code", "lots", "buyPrice");
+	// 欄位錯誤的排序：照 JSON 請求裡的欄位順序（Java 物件的屬性名稱）；前三個是 v1，後面是 v2（第 6 題）
+	private static final List<String> FIELD_ORDER = List.of("code", "lots", "buyPrice",
+			"side", "date", "shares", "price", "version");
 
-	// 型別不對時，各欄位（JSON 的欄位名稱）的訊息
+	// 型別不對時，各欄位（JSON 的欄位名稱）的訊息；前三個是 v1，後面是 v2（第 6 題）
 	private static final Map<String, String> FIELD_TYPE_MESSAGES = Map.of(
 			"code", "股票代號必須是文字，例如 \"2330\"",
 			"lots", "張數必須是 1～999 的整數",
-			"buy_price", "買進價必須是數字，最多兩位小數");
+			"buy_price", "買進價必須是數字，最多兩位小數",
+			"side", "side 必須是 \"BUY\" 或 \"SELL\"（大寫）",
+			"date", "日期必須是 \"YYYY-MM-DD\" 格式的文字，例如 \"2026-11-20\"",
+			"shares", "股數必須是整數",
+			"price", "成交價必須是數字，例如 1000 或 980.5",
+			"version", "version 必須是整數");
 }
