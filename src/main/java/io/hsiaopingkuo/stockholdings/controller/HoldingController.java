@@ -22,7 +22,6 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseBody;
 import org.springframework.web.servlet.mvc.support.RedirectAttributes;
 
-import io.hsiaopingkuo.stockholdings.calc.SummaryCalculator;
 import io.hsiaopingkuo.stockholdings.dto.ErrorResponse;
 import io.hsiaopingkuo.stockholdings.dto.HoldingCreateForm;
 import io.hsiaopingkuo.stockholdings.dto.HoldingListItem;
@@ -30,10 +29,13 @@ import io.hsiaopingkuo.stockholdings.dto.StockLookupResponse;
 import io.hsiaopingkuo.stockholdings.dto.HoldingUpdateForm;
 import io.hsiaopingkuo.stockholdings.entity.Holding;
 import io.hsiaopingkuo.stockholdings.exception.DuplicateCodeException;
+import io.hsiaopingkuo.stockholdings.exception.HoldingBusyException;
+import io.hsiaopingkuo.stockholdings.exception.HoldingDataException;
 import io.hsiaopingkuo.stockholdings.exception.HoldingNotFoundException;
 import io.hsiaopingkuo.stockholdings.exception.MarketAmbiguousException;
 import io.hsiaopingkuo.stockholdings.exception.MarketUnavailableException;
 import io.hsiaopingkuo.stockholdings.exception.StockCodeNotFoundException;
+import io.hsiaopingkuo.stockholdings.exception.UpgradeRequiredException;
 import io.hsiaopingkuo.stockholdings.quote.StockLookup;
 import io.hsiaopingkuo.stockholdings.service.HoldingService;
 import jakarta.validation.Valid;
@@ -42,6 +44,9 @@ import jakarta.validation.Valid;
  * 持股清單頁（第 2 題）：新增、修改、刪除、查詢。
  * HTML 表單只能送 GET/POST，所以修改和刪除都用 POST 到不同路徑。
  * 成功後一律 redirect 回清單（PRG 模式），使用者按 F5 才不會重複送出表單。
+ *
+ * 第 6 題第 3 階段：畫面還沒改版，修改、刪除仍是「一檔一筆整張」的方式，規則和 /api/v1 相同；
+ * 不符合的持股（多筆交易、零股、配股）導回清單顯示訊息，不出現錯誤頁。
  */
 @Controller
 @RequestMapping("/holdings")
@@ -49,6 +54,10 @@ public class HoldingController {
 
 	// 和 HoldingCreateForm 的 @Pattern、@Size 相同：英數字、1～10 個字
 	private static final Pattern VALID_CODE = Pattern.compile("^[A-Za-z0-9]{1,10}$");
+
+	// 網頁自己的訊息（使用者決定）：/api/v1 的訊息叫人「使用網頁」修改，在網頁上顯示不合適
+	static final String UPGRADE_REQUIRED_MESSAGE = "這筆持股有多筆交易或配股，無法用這個畫面修改";
+	static final String DATA_ERROR_MESSAGE = "這筆持股的交易資料異常，請聯絡管理者";
 
 	private final HoldingService holdingService;
 
@@ -95,6 +104,14 @@ public class HoldingController {
 			// 兩個市場都查到且日期相同：資料不儲存，請使用者聯絡管理者（重試也不會好）
 			bindingResult.rejectValue("code", "ambiguous", e.getMessage());
 			return showList(model);
+		} catch (HoldingBusyException e) {
+			// 第 6 題：同代號的持股正在被其他裝置修改（加到歸零的持股時要先鎖住它）
+			bindingResult.rejectValue("code", "busy", e.getMessage());
+			return showList(model);
+		} catch (HoldingDataException e) {
+			// 第 6 題：同代號的持股資料異常，算不出目前股數，無法判斷能不能加買進
+			bindingResult.rejectValue("code", "dataError", DATA_ERROR_MESSAGE);
+			return showList(model);
 		}
 	}
 
@@ -129,12 +146,20 @@ public class HoldingController {
 		}
 	}
 
+	/**
+	 * 修改頁：張數、買進價從交易重播的結果帶入（和 /api/v1 的 lots、buy_price 相同）。
+	 * 不符合「單筆整張買進」的持股不打開表單：存檔時一定會被擋，先告訴使用者比較好。
+	 */
 	@GetMapping("/{id}/edit")
-	public String editForm(@PathVariable Long id, Model model) {
-		Holding holding = holdingService.findById(id);
+	public String editForm(@PathVariable Long id, Model model, RedirectAttributes redirectAttributes) {
+		HoldingListItem holding = holdingService.findListItem(id);
+		if (!holding.v1Editable()) {
+			redirectAttributes.addFlashAttribute("errorMessage", UPGRADE_REQUIRED_MESSAGE);
+			return "redirect:/holdings";
+		}
 		HoldingUpdateForm form = new HoldingUpdateForm();
-		form.setLots(holding.getLots());
-		form.setBuyPrice(holding.getBuyPrice());
+		form.setLots(holding.lots());
+		form.setBuyPrice(holding.buyPrice());
 		model.addAttribute("holding", holding);
 		model.addAttribute("updateForm", form);
 		return "holding-edit";
@@ -167,13 +192,33 @@ public class HoldingController {
 		return "redirect:/holdings";
 	}
 
+	// 第 6 題：多筆交易、零股、配過股的持股不能用這個畫面修改、刪除（例如修改頁開著時，App 2.0 加了一筆交易）
+	@ExceptionHandler(UpgradeRequiredException.class)
+	public String handleUpgradeRequired(RedirectAttributes redirectAttributes) {
+		redirectAttributes.addFlashAttribute("errorMessage", UPGRADE_REQUIRED_MESSAGE);
+		return "redirect:/holdings";
+	}
+
+	// 第 6 題：別的裝置正在修改同一檔，等不到鎖；和 /api/v1 的 HOLDING_BUSY 同一句
+	@ExceptionHandler(HoldingBusyException.class)
+	public String handleBusy(HoldingBusyException e, RedirectAttributes redirectAttributes) {
+		redirectAttributes.addFlashAttribute("errorMessage", e.getMessage());
+		return "redirect:/holdings";
+	}
+
+	// 第 6 題：重播交易時超賣（資料被手動改過）
+	@ExceptionHandler(HoldingDataException.class)
+	public String handleDataError(RedirectAttributes redirectAttributes) {
+		redirectAttributes.addFlashAttribute("errorMessage", DATA_ERROR_MESSAGE);
+		return "redirect:/holdings";
+	}
+
 	private String showList(Model model) {
 		// 第 3 題：收盤價來自資料庫的行情快取，這裡不會呼叫官方；官方連不上時清單照常顯示
 		List<HoldingListItem> holdings = holdingService.findAllForList();
 		model.addAttribute("holdings", holdings);
-		// 第 4 題：總計用清單每一列已經算好的盈虧加總，頁首的數字和下面每一列一定對得上
-		model.addAttribute("summary",
-				SummaryCalculator.summarize(holdings.stream().map(HoldingListItem::profit).toList()));
+		// 第 4 題：總計用清單每一列已經算好的盈虧加總，頁首的數字和下面每一列一定對得上（資料異常的不計入）
+		model.addAttribute("summary", HoldingListItem.summarize(holdings));
 		return "holdings";
 	}
 }

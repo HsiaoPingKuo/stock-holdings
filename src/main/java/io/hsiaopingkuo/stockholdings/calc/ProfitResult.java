@@ -15,6 +15,20 @@ import java.math.BigDecimal;
 public record ProfitResult(BigDecimal buyAmount, BigDecimal buyFee, BigDecimal sellAmount, BigDecimal sellFee,
 		BigDecimal transactionTax, BigDecimal cost, BigDecimal marketValue, BigDecimal profit, BigDecimal returnRate) {
 
+	/**
+	 * 第 6 題：從交易重播的結果建立（清單、總計、/api/v1 用）。
+	 * 重播只提供總成本、市值、未實現損益（都已捨入到元），買進金額、手續費這些明細欄位是 null；
+	 * 目前網頁和 SummaryCalculator 都只用到成本、市值、盈虧、收益率。
+	 * 收益率用捨入到元之後的數字計算，規則和 Part A 相同（ProfitCalculator.returnRate）。
+	 *
+	 * @param marketValue 沒有收盤價時 null
+	 * @param profit      未實現損益；沒有收盤價時 null
+	 */
+	public static ProfitResult fromReplay(BigDecimal cost, BigDecimal marketValue, BigDecimal profit) {
+		BigDecimal returnRate = profit == null ? null : ProfitCalculator.returnRate(profit, cost);
+		return new ProfitResult(null, null, null, null, null, cost, marketValue, profit, returnRate);
+	}
+
 	/** 有收盤價，賣出那一邊和盈虧才算得出來。 */
 	public boolean hasClosePrice() {
 		return profit != null;

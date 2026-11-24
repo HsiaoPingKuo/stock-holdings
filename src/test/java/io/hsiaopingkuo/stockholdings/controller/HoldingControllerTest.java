@@ -32,18 +32,26 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.test.web.servlet.MockMvc;
 
+import io.hsiaopingkuo.stockholdings.calc.HoldingReplayCalculator;
 import io.hsiaopingkuo.stockholdings.calc.PortfolioSummary;
 import io.hsiaopingkuo.stockholdings.calc.SummaryCalculator;
+import io.hsiaopingkuo.stockholdings.calc.TradeInput;
+import io.hsiaopingkuo.stockholdings.calc.TradeSide;
 import io.hsiaopingkuo.stockholdings.dto.HoldingListItem;
+import io.hsiaopingkuo.stockholdings.dto.HoldingQuoteRow;
 import io.hsiaopingkuo.stockholdings.entity.Holding;
 import io.hsiaopingkuo.stockholdings.entity.Market;
 import io.hsiaopingkuo.stockholdings.exception.DuplicateCodeException;
+import io.hsiaopingkuo.stockholdings.exception.HoldingBusyException;
+import io.hsiaopingkuo.stockholdings.exception.HoldingDataException;
 import io.hsiaopingkuo.stockholdings.exception.HoldingNotFoundException;
 import io.hsiaopingkuo.stockholdings.exception.MarketAmbiguousException;
 import io.hsiaopingkuo.stockholdings.exception.MarketUnavailableException;
 import io.hsiaopingkuo.stockholdings.exception.StockCodeNotFoundException;
+import io.hsiaopingkuo.stockholdings.exception.UpgradeRequiredException;
 import io.hsiaopingkuo.stockholdings.quote.StockLookup;
 import io.hsiaopingkuo.stockholdings.service.HoldingService;
+import io.hsiaopingkuo.stockholdings.support.TestHoldings;
 
 /**
  * 只測網頁這一層：表單檢查、錯誤訊息顯示在表單上、成功後導回清單。
@@ -58,12 +66,12 @@ class HoldingControllerTest {
 	@MockitoBean
 	private HoldingService holdingService;
 
-	private static Holding holding(long id, String code, int lots, String buyPrice) {
-		return holding(id, code, null, null, lots, buyPrice);
+	private static Holding holding(long id, String code) {
+		return holding(id, code, null, null);
 	}
 
-	private static Holding holding(long id, String code, String name, Market market, int lots, String buyPrice) {
-		Holding h = new Holding(code, name, market, lots, new BigDecimal(buyPrice), LocalDateTime.of(2026, 11, 24, 14, 0));
+	private static Holding holding(long id, String code, String name, Market market) {
+		Holding h = new Holding(code, name, market, LocalDateTime.of(2026, 11, 24, 14, 0));
 		// id 平常由資料庫產生，測試裡直接塞值
 		ReflectionTestUtils.setField(h, "id", id);
 		return h;
@@ -72,10 +80,13 @@ class HoldingControllerTest {
 	private static final LocalDate NOV_23 = LocalDate.of(2026, 11, 23);
 	private static final LocalDate NOV_24 = LocalDate.of(2026, 11, 24);
 
-	/** 清單的一列；收盤價、兩個日期都可以是 null（沒有行情）。 */
+	/**
+	 * 清單的一列；收盤價、兩個日期都可以是 null（沒有行情）。
+	 * 第 6 題：張數、買進價改記在交易，這一列改成「一筆整張買進」重播後的結果（和 service 實際組出來的相同）。
+	 */
 	private static HoldingListItem row(long id, String code, String name, Market market, int lots, String buyPrice,
 			String closePrice, LocalDate closeDate, LocalDate latestTradeDate) {
-		return new HoldingListItem(id, code, name, market, lots, new BigDecimal(buyPrice),
+		return TestHoldings.listItem(id, code, name, market, lots, buyPrice,
 				closePrice == null ? null : new BigDecimal(closePrice), closeDate, latestTradeDate);
 	}
 
@@ -389,7 +400,8 @@ class HoldingControllerTest {
 
 	@Test
 	void 修改頁顯示名稱與市場() throws Exception {
-		given(holdingService.findById(1L)).willReturn(holding(1, "6488", "環球晶", Market.TPEX, 1, "460.50"));
+		// 第 6 題：修改頁改從清單的一列（交易重播結果）帶入張數和買進價
+		given(holdingService.findListItem(1L)).willReturn(rowWithoutQuote(1, "6488", "環球晶", Market.TPEX, 1, "460.50"));
 
 		mockMvc.perform(get("/holdings/1/edit"))
 				.andExpect(status().isOk())
@@ -421,7 +433,7 @@ class HoldingControllerTest {
 
 	@Test
 	void 新增成功後導回清單() throws Exception {
-		given(holdingService.create("2330", 1, new BigDecimal("1000"))).willReturn(holding(1, "2330", 1, "1000.00"));
+		given(holdingService.create("2330", 1, new BigDecimal("1000"))).willReturn(holding(1, "2330"));
 
 		mockMvc.perform(post("/holdings").param("code", " 2330 ").param("lots", "1").param("buyPrice", "1000"))
 				.andExpect(status().is3xxRedirection())
@@ -505,7 +517,8 @@ class HoldingControllerTest {
 
 	@Test
 	void 修改頁的代號只顯示不能輸入() throws Exception {
-		given(holdingService.findById(1L)).willReturn(holding(1, "2330", 1, "1000.00"));
+		// 第 6 題：修改頁改從清單的一列（交易重播結果）帶入張數和買進價
+		given(holdingService.findListItem(1L)).willReturn(rowWithoutQuote(1, "2330", null, null, 1, "1000.00"));
 
 		mockMvc.perform(get("/holdings/1/edit"))
 				.andExpect(status().isOk())
@@ -515,7 +528,7 @@ class HoldingControllerTest {
 
 	@Test
 	void 修改成功後導回清單() throws Exception {
-		given(holdingService.update(1L, 2, new BigDecimal("980.5"))).willReturn(holding(1, "2330", 2, "980.50"));
+		given(holdingService.update(1L, 2, new BigDecimal("980.5"))).willReturn(holding(1, "2330"));
 
 		mockMvc.perform(post("/holdings/1").param("lots", "2").param("buyPrice", "980.5"))
 				.andExpect(status().is3xxRedirection())
@@ -525,7 +538,7 @@ class HoldingControllerTest {
 
 	@Test
 	void 修改時欄位錯誤_留在修改頁顯示錯誤() throws Exception {
-		given(holdingService.findById(1L)).willReturn(holding(1, "2330", 1, "1000.00"));
+		given(holdingService.findById(1L)).willReturn(holding(1, "2330"));
 
 		mockMvc.perform(post("/holdings/1").param("lots", "1000").param("buyPrice", "1000"))
 				.andExpect(status().isOk())
@@ -550,5 +563,101 @@ class HoldingControllerTest {
 				.andExpect(status().is3xxRedirection())
 				.andExpect(redirectedUrl("/holdings"))
 				.andExpect(flash().attribute("errorMessage", "找不到這筆持股（id=99），可能已被刪除"));
+	}
+
+	// ===== 第 6 題：持股改由交易計算（網頁畫面還沒改版，規則和 /api/v1 相同）=====
+
+	private static final String WEB_UPGRADE_MESSAGE = "這筆持股有多筆交易或配股，無法用這個畫面修改";
+
+	/** 兩筆買進（1,000 股 @1,000 + 500 股 @1,010）：有零股、多筆交易，不能用目前的畫面修改。 */
+	private static HoldingListItem multiTradeWithOddLot() {
+		HoldingQuoteRow row = new HoldingQuoteRow(1L, "2330", "台積電", Market.TWSE, new BigDecimal("1100.00"), NOV_23,
+				NOV_23);
+		List<TradeInput> trades = List.of(
+				new TradeInput(1, NOV_23.minusDays(3), TradeSide.BUY, 1000, new BigDecimal("1000.00")),
+				new TradeInput(2, NOV_23.minusDays(2), TradeSide.BUY, 500, new BigDecimal("1010.00")));
+		return HoldingListItem.of(row, trades,
+				HoldingReplayCalculator.replay("2330", trades, List.of(), new BigDecimal("1100.00")));
+	}
+
+	@Test
+	void 清單_有零股時名稱旁小字提示_張數只顯示整張() throws Exception {
+		given(holdingService.findAllForList()).willReturn(List.of(multiTradeWithOddLot()));
+
+		mockMvc.perform(get("/holdings"))
+				.andExpect(status().isOk())
+				.andExpect(content().string(containsString(
+						"台積電<small class=\"note odd-lot\"> 含零股 500 股・App 1.0 只顯示整張，請更新 App 2.0</small>")))
+				// 網頁不用 /api/v1 的【請更新 App 2.0：…】加註
+				.andExpect(content().string(not(containsString("【"))))
+				.andExpect(content().string(containsString("<td class=\"num\">1</td>")));
+	}
+
+	@Test
+	void 清單_資料異常的持股標示出來_不計入總計_頁面正常() throws Exception {
+		HoldingListItem broken = HoldingListItem.dataError(
+				new HoldingQuoteRow(9L, "0050", "元大台灣50", Market.TWSE, null, null, null));
+		given(holdingService.findAllForList()).willReturn(List.of(tsmcGain(), broken));
+
+		mockMvc.perform(get("/holdings"))
+				.andExpect(status().isOk())
+				.andExpect(content().string(containsString("元大台灣50 <strong class=\"error\">資料異常</strong>")))
+				// 總計只有 2330 那一檔
+				.andExpect(content().string(containsString("<td id=\"summary-profit\" class=\"num gain\">93,708</td>")));
+	}
+
+	@Test
+	void 修改頁_不符合條件的持股_導回清單顯示訊息而不是錯誤頁() throws Exception {
+		given(holdingService.findListItem(1L)).willReturn(multiTradeWithOddLot());
+
+		mockMvc.perform(get("/holdings/1/edit"))
+				.andExpect(status().is3xxRedirection())
+				.andExpect(redirectedUrl("/holdings"))
+				.andExpect(flash().attribute("errorMessage", WEB_UPGRADE_MESSAGE));
+	}
+
+	@Test
+	void 修改_送出時已不符合條件_導回清單顯示訊息而不是錯誤頁() throws Exception {
+		// 例如修改頁開著時，App 2.0 加了一筆交易
+		given(holdingService.update(1L, 2, new BigDecimal("980.5"))).willThrow(new UpgradeRequiredException());
+
+		mockMvc.perform(post("/holdings/1").param("lots", "2").param("buyPrice", "980.5"))
+				.andExpect(status().is3xxRedirection())
+				.andExpect(redirectedUrl("/holdings"))
+				.andExpect(flash().attribute("errorMessage", WEB_UPGRADE_MESSAGE));
+	}
+
+	@Test
+	void 刪除_不符合條件_導回清單顯示訊息而不是錯誤頁() throws Exception {
+		willThrow(new UpgradeRequiredException()).given(holdingService).delete(eq(1L));
+
+		mockMvc.perform(post("/holdings/1/delete"))
+				.andExpect(status().is3xxRedirection())
+				.andExpect(redirectedUrl("/holdings"))
+				.andExpect(flash().attribute("errorMessage", WEB_UPGRADE_MESSAGE));
+	}
+
+	@Test
+	void 修改刪除_資料異常或等不到鎖_導回清單顯示訊息而不是錯誤頁() throws Exception {
+		given(holdingService.findListItem(1L)).willThrow(new HoldingDataException());
+		willThrow(new HoldingBusyException(null)).given(holdingService).delete(eq(1L));
+
+		mockMvc.perform(get("/holdings/1/edit"))
+				.andExpect(redirectedUrl("/holdings"))
+				.andExpect(flash().attribute("errorMessage", "這筆持股的交易資料異常，請聯絡管理者"));
+		mockMvc.perform(post("/holdings/1/delete"))
+				.andExpect(redirectedUrl("/holdings"))
+				.andExpect(flash().attribute("errorMessage", "這筆持股正在被其他裝置修改，請稍後再試"));
+	}
+
+	@Test
+	void 新增_同代號的持股正在被修改_錯誤顯示在代號欄位() throws Exception {
+		given(holdingService.findAllForList()).willReturn(List.of());
+		given(holdingService.create(anyString(), anyInt(), any())).willThrow(new HoldingBusyException(null));
+
+		mockMvc.perform(post("/holdings").param("code", "2330").param("lots", "1").param("buyPrice", "1000"))
+				.andExpect(status().isOk())
+				.andExpect(model().attributeHasFieldErrors("createForm", "code"))
+				.andExpect(content().string(containsString("這筆持股正在被其他裝置修改，請稍後再試")));
 	}
 }

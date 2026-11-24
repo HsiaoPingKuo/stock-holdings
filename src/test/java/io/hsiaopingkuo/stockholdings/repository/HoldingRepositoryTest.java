@@ -14,7 +14,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest;
 import org.springframework.dao.DataIntegrityViolationException;
 
-import io.hsiaopingkuo.stockholdings.dto.HoldingListItem;
+import io.hsiaopingkuo.stockholdings.dto.HoldingQuoteRow;
 import io.hsiaopingkuo.stockholdings.entity.Holding;
 import io.hsiaopingkuo.stockholdings.entity.Market;
 import io.hsiaopingkuo.stockholdings.entity.Quote;
@@ -38,14 +38,14 @@ class HoldingRepositoryTest {
 	private EntityManager entityManager;
 
 	/** 測試只在意某些欄位時，名稱和市場用固定值。 */
-	private static Holding holding(String code, int lots, BigDecimal buyPrice) {
-		return new Holding(code, "測試", Market.TWSE, lots, buyPrice, NOW);
+	private static Holding holding(String code) {
+		return new Holding(code, "測試", Market.TWSE, NOW);
 	}
 
 	@Test
 	void 可以存取持股且代號開頭的0不會掉() {
 		Holding saved = holdingRepository.saveAndFlush(
-				new Holding("0050", "元大台灣50", Market.TWSE, 2, new BigDecimal("150.00"), NOW));
+				new Holding("0050", "元大台灣50", Market.TWSE, NOW));
 		// 清掉 JPA 的快取，下面的 findById 才會真的從資料庫讀，確認欄位對應正確
 		entityManager.clear();
 
@@ -53,14 +53,13 @@ class HoldingRepositoryTest {
 		assertThat(found.getCode()).isEqualTo("0050");
 		assertThat(found.getName()).isEqualTo("元大台灣50");
 		assertThat(found.getMarket()).isEqualTo(Market.TWSE);
-		assertThat(found.getLots()).isEqualTo(2);
-		assertThat(found.getBuyPrice()).isEqualByComparingTo("150.00");
+		// 第 6 題：張數、買進價不再對應到 Holding（改記在交易，欄位對應由 TradeRepositoryTest 驗證；使用者同意刪除這兩行）
 		assertThat(holdingRepository.existsByCode("0050")).isTrue();
 	}
 
 	@Test
 	void 名稱和市場允許NULL_第2題的舊資料升級後仍可讀取() {
-		Holding saved = holdingRepository.saveAndFlush(new Holding("2330", null, null, 1, new BigDecimal("1000.00"), NOW));
+		Holding saved = holdingRepository.saveAndFlush(new Holding("2330", null, null, NOW));
 		entityManager.clear();
 
 		Holding found = holdingRepository.findById(saved.getId()).orElseThrow();
@@ -81,10 +80,10 @@ class HoldingRepositoryTest {
 
 	@Test
 	void 資料庫的UNIQUE約束擋下重複代號_錯誤訊息含約束名稱() {
-		holdingRepository.saveAndFlush(holding("2330", 1, new BigDecimal("1000.00")));
+		holdingRepository.saveAndFlush(holding("2330"));
 
 		// HoldingService 靠錯誤訊息裡的約束名稱判斷是不是重複代號，這裡確認 H2 真的會帶出這個名稱
-		assertThatThrownBy(() -> holdingRepository.saveAndFlush(holding("2330", 3, new BigDecimal("900.00"))))
+		assertThatThrownBy(() -> holdingRepository.saveAndFlush(holding("2330")))
 				.isInstanceOf(DataIntegrityViolationException.class)
 				.satisfies(e -> assertThat(((DataIntegrityViolationException) e).getMostSpecificCause().getMessage())
 						.containsIgnoringCase("UK_HOLDING_CODE"));
@@ -92,9 +91,9 @@ class HoldingRepositoryTest {
 
 	@Test
 	void 清單依代號排序() {
-		holdingRepository.saveAndFlush(holding("6488", 1, new BigDecimal("460.50")));
-		holdingRepository.saveAndFlush(holding("0050", 1, new BigDecimal("150.00")));
-		holdingRepository.saveAndFlush(holding("2330", 1, new BigDecimal("1000.00")));
+		holdingRepository.saveAndFlush(holding("6488"));
+		holdingRepository.saveAndFlush(holding("0050"));
+		holdingRepository.saveAndFlush(holding("2330"));
 
 		assertThat(holdingRepository.findAllByOrderByCodeAsc())
 				.extracting(Holding::getCode)
@@ -110,36 +109,31 @@ class HoldingRepositoryTest {
 	void 清單查詢_帶出收盤價與兩個日期_沒有行情的持股也列出來_依代號排序() {
 		LocalDate nov23 = LocalDate.of(2026, 11, 23);
 		LocalDate nov24 = LocalDate.of(2026, 11, 24);
-		holdingRepository.saveAndFlush(holding("6488", 1, new BigDecimal("450.00")));
-		holdingRepository.saveAndFlush(holding("2330", 1, new BigDecimal("1000.00")));
+		holdingRepository.saveAndFlush(holding("6488"));
+		holdingRepository.saveAndFlush(holding("2330"));
 		// 6488：11/24 無成交，最近一次成交是 11/23；2330 沒有行情
 		Quote quote = new Quote(DailyQuote.ofDay("6488", "環球晶", Market.TPEX, nov23, new BigDecimal("460.50")), NOW);
 		quote.apply(DailyQuote.ofDay("6488", "環球晶", Market.TPEX, nov24, null), NOW);
 		quoteRepository.saveAndFlush(quote);
 		entityManager.clear();
 
-		List<HoldingListItem> rows = holdingRepository.findAllForList();
+		List<HoldingQuoteRow> rows = holdingRepository.findAllForList();
 
-		assertThat(rows).extracting(HoldingListItem::code).containsExactly("2330", "6488");
-		HoldingListItem noQuote = rows.get(0);
+		assertThat(rows).extracting(HoldingQuoteRow::code).containsExactly("2330", "6488");
+		HoldingQuoteRow noQuote = rows.get(0);
 		assertThat(noQuote.closePrice()).isNull();
 		assertThat(noQuote.hasClosePrice()).isFalse();
-		HoldingListItem gw = rows.get(1);
+		HoldingQuoteRow gw = rows.get(1);
 		assertThat(gw.closePrice()).isEqualByComparingTo("460.50");
 		assertThat(gw.closeDate()).isEqualTo(nov23);
 		assertThat(gw.latestTradeDate()).isEqualTo(nov24);
 		assertThat(gw.showsEarlierClose()).isTrue();
-
-		// 第 4 題：查詢走 9 個參數的建構子，盈虧在讀出來時就算好（不存資料庫）
-		assertThat(noQuote.profit().hasClosePrice()).isFalse();
-		assertThat(noQuote.profit().cost()).isNotNull();
-		assertThat(gw.profit().hasClosePrice()).isTrue();
-		assertThat(gw.profit().marketValue()).isEqualByComparingTo(gw.closePrice().multiply(BigDecimal.valueOf(gw.lots() * 1000L)));
+		// 第 6 題：盈虧改由 service 重播交易後計算，原本這裡的盈虧斷言（預期值不變）搬到 HoldingServiceTest
 	}
 
 	@Test
 	void 清單查詢_持股沒有名稱時用行情快取的名稱() {
-		holdingRepository.saveAndFlush(new Holding("2330", null, null, 1, new BigDecimal("1000.00"), NOW));
+		holdingRepository.saveAndFlush(new Holding("2330", null, null, NOW));
 		quoteRepository.saveAndFlush(new Quote(
 				DailyQuote.ofDay("2330", "台積電", Market.TWSE, LocalDate.of(2026, 11, 23), new BigDecimal("2030.00")), NOW));
 		entityManager.clear();
@@ -150,33 +144,33 @@ class HoldingRepositoryTest {
 	@Test
 	void 清單查詢_持股沒有市場時用行情快取的市場_持股自己有的不會被蓋掉() {
 		// 第 2 題的舊持股：沒有市場
-		holdingRepository.saveAndFlush(new Holding("6488", null, null, 1, new BigDecimal("450.00"), NOW));
+		holdingRepository.saveAndFlush(new Holding("6488", null, null, NOW));
 		quoteRepository.saveAndFlush(new Quote(
 				DailyQuote.ofDay("6488", "環球晶", Market.TPEX, LocalDate.of(2026, 11, 23), new BigDecimal("460.50")), NOW));
 		// 持股自己有市場：以持股為準（故意和行情快取不同，確認不會被蓋掉）
-		holdingRepository.saveAndFlush(holding("2330", 1, new BigDecimal("1000.00")));
+		holdingRepository.saveAndFlush(holding("2330"));
 		quoteRepository.saveAndFlush(new Quote(
 				DailyQuote.ofDay("2330", "台積電", Market.TPEX, LocalDate.of(2026, 11, 23), new BigDecimal("2030.00")), NOW));
 		entityManager.clear();
 
-		List<HoldingListItem> rows = holdingRepository.findAllForList();
+		List<HoldingQuoteRow> rows = holdingRepository.findAllForList();
 
-		assertThat(rows).extracting(HoldingListItem::code, HoldingListItem::market)
+		assertThat(rows).extracting(HoldingQuoteRow::code, HoldingQuoteRow::market)
 				.containsExactly(tuple("2330", Market.TWSE), tuple("6488", Market.TPEX));
 	}
 
 	@Test
 	void 單筆查詢_和清單同一列的內容相同_找不到時是empty() {
-		Holding saved = holdingRepository.saveAndFlush(holding("2330", 1, new BigDecimal("1000.00")));
-		holdingRepository.saveAndFlush(holding("6488", 1, new BigDecimal("450.00")));
+		Holding saved = holdingRepository.saveAndFlush(holding("2330"));
+		holdingRepository.saveAndFlush(holding("6488"));
 		quoteRepository.saveAndFlush(new Quote(
 				DailyQuote.ofDay("2330", "台積電", Market.TWSE, LocalDate.of(2026, 11, 23), new BigDecimal("1100.00")), NOW));
 		entityManager.clear();
 
-		HoldingListItem one = holdingRepository.findListItemById(saved.getId()).orElseThrow();
+		HoldingQuoteRow one = holdingRepository.findListItemById(saved.getId()).orElseThrow();
 
 		assertThat(one).isEqualTo(holdingRepository.findAllForList().get(0));
-		assertThat(one.profit().profit()).isEqualByComparingTo("93708");
+		// 第 6 題：盈虧 93708 的斷言搬到 HoldingServiceTest（盈虧改由 service 重播交易計算）
 		assertThat(holdingRepository.findListItemById(-1L)).isEmpty();
 	}
 }

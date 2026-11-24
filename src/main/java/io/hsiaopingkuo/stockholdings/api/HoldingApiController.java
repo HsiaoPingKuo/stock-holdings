@@ -13,7 +13,6 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-import io.hsiaopingkuo.stockholdings.calc.SummaryCalculator;
 import io.hsiaopingkuo.stockholdings.dto.ApiHoldingCreateRequest;
 import io.hsiaopingkuo.stockholdings.dto.ApiHoldingResponse;
 import io.hsiaopingkuo.stockholdings.dto.ApiHoldingUpdateRequest;
@@ -42,10 +41,16 @@ public class HoldingApiController {
 		this.holdingService = holdingService;
 	}
 
-	/** 沒有持股時回 []。只讀資料庫的行情快取，不呼叫官方。 */
+	/**
+	 * 沒有持股時回 []。只讀資料庫的行情快取，不呼叫官方。
+	 * 第 6 題：資料異常（重播超賣）的持股不列出，App 1.0 的欄位不能是 null，表達不了「異常」；股數 0 的 service 已經濾掉。
+	 */
 	@GetMapping("/holdings")
 	public List<ApiHoldingResponse> list() {
-		return holdingService.findAllForList().stream().map(ApiHoldingResponse::from).toList();
+		return holdingService.findAllForList().stream()
+				.filter(item -> !item.dataError())
+				.map(ApiHoldingResponse::from)
+				.toList();
 	}
 
 	@GetMapping("/holdings/{id}")
@@ -79,11 +84,12 @@ public class HoldingApiController {
 		return ResponseEntity.noContent().build();
 	}
 
-	/** 總計：和網頁頁首同一個計算（第 4 題 SummaryCalculator），用清單每一列已算好的盈虧加總。 */
+	/**
+	 * 總計：和網頁頁首同一個計算（HoldingListItem.summarize），用清單每一列已捨入到元的數字加總，
+	 * App 1.0 自己把清單加起來才會跟總計一樣。資料異常的持股不計入。
+	 */
 	@GetMapping("/summary")
 	public ApiSummaryResponse summary() {
-		List<HoldingListItem> holdings = holdingService.findAllForList();
-		return ApiSummaryResponse.from(
-				SummaryCalculator.summarize(holdings.stream().map(HoldingListItem::profit).toList()));
+		return ApiSummaryResponse.from(HoldingListItem.summarize(holdingService.findAllForList()));
 	}
 }

@@ -53,6 +53,8 @@ import io.hsiaopingkuo.stockholdings.quote.TwseMiIndexClient;
 import io.hsiaopingkuo.stockholdings.quote.TwseStockDayClient;
 import io.hsiaopingkuo.stockholdings.repository.HoldingRepository;
 import io.hsiaopingkuo.stockholdings.repository.QuoteRepository;
+import io.hsiaopingkuo.stockholdings.repository.TradeRepository;
+import io.hsiaopingkuo.stockholdings.support.TestHoldings;
 
 /**
  * App 1.0 API 的新增、修改、刪除（第 5 題）。
@@ -78,6 +80,9 @@ class HoldingApiWriteTest {
 	@Autowired
 	private QuoteRepository quoteRepository;
 
+	@Autowired
+	private TradeRepository tradeRepository;
+
 	@MockitoBean
 	private TwseStockDayClient twseStockDayClient;
 
@@ -100,7 +105,8 @@ class HoldingApiWriteTest {
 	}
 
 	private Holding saveHolding(String code, String name, Market market, int lots, String buyPrice) {
-		return holdingRepository.save(new Holding(code, name, market, lots, new BigDecimal(buyPrice), NOW));
+		// 第 6 題：張數、買進價改記在交易，存成「持股＋一筆整張買進」（和 V4 轉換 1.0 資料的方式相同）
+		return TestHoldings.saveWithBuy(holdingRepository, tradeRepository, code, name, market, lots, buyPrice, NOW);
 	}
 
 	private void saveQuote(String code, String name, Market market, String closePrice) {
@@ -309,9 +315,12 @@ class HoldingApiWriteTest {
 				.andReturn();
 
 		assertThat(body(result)).contains("\"buy_price\":980.50,", "\"pnl\":226471,");
-		Holding saved = holdingRepository.findById(h.getId()).orElseThrow();
-		assertThat(saved.getLots()).isEqualTo(2);
-		assertThat(saved.getBuyPrice()).isEqualByComparingTo("980.50");
+		// 第 6 題：張數、買進價記在那一筆買進（使用者同意改檢查交易）：2 張 = 2,000 股
+		assertThat(tradeRepository.findByHoldingIdOrderByTradeDateAscIdAsc(h.getId())).singleElement()
+				.satisfies(saved -> {
+					assertThat(saved.getShares()).isEqualTo(2000);
+					assertThat(saved.getPrice()).isEqualByComparingTo("980.50");
+				});
 	}
 
 	@Test
@@ -345,9 +354,12 @@ class HoldingApiWriteTest {
 				.andExpect(status().isBadRequest()), "VALIDATION_ERROR")
 				.andExpect(jsonPath("$.error.message").value("請求內容不是正確的 JSON"));
 
-		Holding unchanged = holdingRepository.findById(h.getId()).orElseThrow();
-		assertThat(unchanged.getLots()).isEqualTo(1);
-		assertThat(unchanged.getBuyPrice()).isEqualByComparingTo("1000.00");
+		// 第 6 題：張數、買進價記在那一筆買進（使用者同意改檢查交易）：1 張 = 1,000 股
+		assertThat(tradeRepository.findByHoldingIdOrderByTradeDateAscIdAsc(h.getId())).singleElement()
+				.satisfies(unchanged -> {
+					assertThat(unchanged.getShares()).isEqualTo(1000);
+					assertThat(unchanged.getPrice()).isEqualByComparingTo("1000.00");
+				});
 	}
 
 	@Test

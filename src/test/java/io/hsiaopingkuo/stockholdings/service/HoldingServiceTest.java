@@ -19,6 +19,7 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.junit.jupiter.api.AfterEach;
@@ -38,6 +39,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import io.hsiaopingkuo.stockholdings.config.QuoteProperties;
+import io.hsiaopingkuo.stockholdings.dto.HoldingListItem;
 import io.hsiaopingkuo.stockholdings.entity.Holding;
 import io.hsiaopingkuo.stockholdings.entity.Market;
 import io.hsiaopingkuo.stockholdings.entity.Quote;
@@ -51,10 +53,14 @@ import io.hsiaopingkuo.stockholdings.quote.MarketResolver;
 import io.hsiaopingkuo.stockholdings.quote.StockLookup;
 import io.hsiaopingkuo.stockholdings.repository.HoldingRepository;
 import io.hsiaopingkuo.stockholdings.repository.QuoteRepository;
+import io.hsiaopingkuo.stockholdings.repository.TradeRepository;
+import io.hsiaopingkuo.stockholdings.support.TestHoldings;
 
 /** Service 搭配真的資料庫（測試用 H2 記憶體模式 + Flyway）測試業務規則。 */
 @DataJpaTest
-@Import({ HoldingService.class, QuoteService.class, HoldingServiceTest.FixedClockConfig.class })
+// 第 6 題：HoldingService 重播交易時要用除權息提供者；這一階段的實作一律回傳空的
+@Import({ HoldingService.class, QuoteService.class, NoDividendEventProvider.class,
+		HoldingServiceTest.FixedClockConfig.class })
 // 測試本身不包交易（F-01）：create() 要在「沒有交易」的情況下呼叫官方，
 // 如果測試先開了交易，就測不出 create() 有沒有自己開交易；資料改由「清空資料」負責清掉
 @Transactional(propagation = Propagation.NOT_SUPPORTED)
@@ -78,6 +84,9 @@ class HoldingServiceTest {
 
 	@Autowired
 	private HoldingRepository holdingRepository;
+
+	@Autowired
+	private TradeRepository tradeRepository;
 
 	// 官方 API 的判斷另外在 MarketResolverTest 測；這裡用假的，專心測 service 的流程，也不會連網
 	@MockitoBean
@@ -336,7 +345,9 @@ class HoldingServiceTest {
 				.hasMessage("2330 已在持股中");
 		assertThat(holdingRepository.count()).isEqualTo(1);
 		// 原本那筆沒有被第二次新增改掉
-		assertThat(holdingRepository.findAll().get(0).getLots()).isEqualTo(1);
+		// 第 6 題：張數記在交易（使用者同意改檢查交易）：仍是第一次新增的 1 張 = 1,000 股，沒有多一筆
+		assertThat(tradeRepository.findAll()).singleElement()
+				.satisfies(trade -> assertThat(trade.getShares()).isEqualTo(1000));
 	}
 
 	@Test
@@ -356,8 +367,12 @@ class HoldingServiceTest {
 
 		Holding updated = holdingService.findById(created.getId());
 		assertThat(updated.getCode()).isEqualTo("2330");
-		assertThat(updated.getLots()).isEqualTo(2);
-		assertThat(updated.getBuyPrice()).isEqualByComparingTo("980.50");
+		// 第 6 題：張數、買進價記在那一筆買進（使用者同意改檢查交易）：2 張 = 2,000 股
+		assertThat(tradeRepository.findByHoldingIdOrderByTradeDateAscIdAsc(created.getId())).singleElement()
+				.satisfies(trade -> {
+					assertThat(trade.getShares()).isEqualTo(2000);
+					assertThat(trade.getPrice()).isEqualByComparingTo("980.50");
+				});
 	}
 
 	@Test
@@ -375,5 +390,49 @@ class HoldingServiceTest {
 				.isInstanceOf(HoldingNotFoundException.class);
 		assertThatThrownBy(() -> holdingService.delete(999L))
 				.isInstanceOf(HoldingNotFoundException.class);
+	}
+
+	// ===== 第 6 題：從 HoldingRepositoryTest 搬過來的盈虧斷言（使用者同意；預期值原封不動）=====
+	// 盈虧改由 service 重播交易計算，repository 只查持股和收盤價，所以這兩組斷言改在 service 層驗證
+
+	private Holding saveHolding(String code, int lots, String buyPrice) {
+		return TestHoldings.saveWithBuy(holdingRepository, tradeRepository, code, "測試", Market.TWSE, lots, buyPrice,
+				LocalDateTime.of(2026, 11, 24, 14, 0));
+	}
+
+	@Test
+	void 清單查詢_盈虧在讀出來時就算好_沒有收盤價只有成本_有收盤價時市值是收盤價乘股數() {
+		LocalDate nov23 = LocalDate.of(2026, 11, 23);
+		LocalDate nov24 = LocalDate.of(2026, 11, 24);
+		saveHolding("6488", 1, "450.00");
+		saveHolding("2330", 1, "1000.00");
+		// 6488：11/24 無成交，最近一次成交是 11/23；2330 沒有行情
+		Quote quote = new Quote(DailyQuote.ofDay("6488", "環球晶", Market.TPEX, nov23, new BigDecimal("460.50")),
+				LocalDateTime.of(2026, 11, 24, 14, 0));
+		quote.apply(DailyQuote.ofDay("6488", "環球晶", Market.TPEX, nov24, null), LocalDateTime.of(2026, 11, 24, 14, 0));
+		quoteRepository.saveAndFlush(quote);
+
+		List<HoldingListItem> rows = holdingService.findAllForList();
+
+		HoldingListItem noQuote = rows.get(0);
+		HoldingListItem gw = rows.get(1);
+		assertThat(noQuote.profit().hasClosePrice()).isFalse();
+		assertThat(noQuote.profit().cost()).isNotNull();
+		assertThat(gw.profit().hasClosePrice()).isTrue();
+		assertThat(gw.profit().marketValue()).isEqualByComparingTo(gw.closePrice().multiply(BigDecimal.valueOf(gw.lots() * 1000L)));
+	}
+
+	@Test
+	void 單筆查詢_和清單同一列的內容相同_盈虧93708() {
+		Holding saved = saveHolding("2330", 1, "1000.00");
+		saveHolding("6488", 1, "450.00");
+		quoteRepository.saveAndFlush(new Quote(
+				DailyQuote.ofDay("2330", "台積電", Market.TWSE, LocalDate.of(2026, 11, 23), new BigDecimal("1100.00")),
+				LocalDateTime.of(2026, 11, 24, 14, 0)));
+
+		HoldingListItem one = holdingService.findListItem(saved.getId());
+
+		assertThat(one).isEqualTo(holdingService.findAllForList().get(0));
+		assertThat(one.profit().profit()).isEqualByComparingTo("93708");
 	}
 }

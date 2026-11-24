@@ -4,6 +4,7 @@ import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 
+import io.hsiaopingkuo.stockholdings.calc.TradeInput;
 import io.hsiaopingkuo.stockholdings.calc.TradeSide;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
@@ -73,6 +74,21 @@ public class Trade {
 		this.dateEstimated = dateEstimated;
 		this.createdAt = now;
 		this.updatedAt = now;
+	}
+
+	/**
+	 * App 1.0 修改持股（第 6 題決定 3）：只改股數和價格，日期和「推估」標記不變。
+	 * 版本號由 Hibernate 在寫回時自動加 1（@Version）。
+	 */
+	public void changeSharesAndPrice(long shares, BigDecimal price, LocalDateTime now) {
+		this.shares = shares;
+		this.price = price;
+		this.updatedAt = now;
+	}
+
+	/** 轉成計算核心用的 record（計算核心不依賴 Entity）。 */
+	public TradeInput toInput() {
+		return new TradeInput(id, tradeDate, side, shares, price);
 	}
 
 	public Long getId() {
