@@ -22,9 +22,10 @@ public final class HoldingReplayCalculator {
 
 	private static final BigDecimal THOUSAND = new BigDecimal("1000");
 
-	/** 同一天：先買進、再賣出；同方向依 id。日期相同時才看後面的條件。 */
+	/**
+	 * 同一天依輸入順序（id），不分買賣：「先賣光、再買回」時，新買的成本才不會混進前一輪（設計決定 8 A）。
+	 */
 	private static final Comparator<TradeInput> TRADE_ORDER = Comparator.comparing(TradeInput::date)
-			.thenComparing(TradeInput::side)
 			.thenComparingLong(TradeInput::id);
 
 	private HoldingReplayCalculator() {
@@ -47,7 +48,7 @@ public final class HoldingReplayCalculator {
 			throw new IllegalArgumentException("收盤價必須大於 0：" + closePrice);
 		}
 
-		// TreeMap 依日期排序；同一天的事件保留傳入順序，交易另外依 TRADE_ORDER 排
+		// TreeMap 依日期排序；同一天的事件保留傳入順序，交易另外依 TRADE_ORDER（id）排
 		Map<LocalDate, List<DividendEventInput>> eventsByDate = new TreeMap<>();
 		for (DividendEventInput e : events) {
 			eventsByDate.computeIfAbsent(e.exDate(), d -> new ArrayList<>()).add(e);
@@ -63,11 +64,16 @@ public final class HoldingReplayCalculator {
 		for (LocalDate date : dates) {
 			// 同一天先處理除權息：這時的股數只含「早於除權息日」的交易，當天買的領不到、當天賣的領得到
 			ledger.applyDividendDay(eventsByDate.getOrDefault(date, List.of()));
-			for (TradeInput t : tradesByDate.getOrDefault(date, List.of())) {
+			List<TradeInput> dayTrades = tradesByDate.getOrDefault(date, List.of());
+			for (int i = 0; i < dayTrades.size(); i++) {
+				TradeInput t = dayTrades.get(i);
 				if (t.side() == TradeSide.BUY) {
 					ledger.applyBuy(t);
 				} else {
-					ledger.applySell(t);
+					// 同一天排在後面還有買進：超賣時要提醒使用者是順序的問題，不是股數真的不夠
+					boolean sameDayBuyAfter = dayTrades.subList(i + 1, dayTrades.size()).stream()
+							.anyMatch(later -> later.side() == TradeSide.BUY);
+					ledger.applySell(t, sameDayBuyAfter);
 				}
 			}
 		}
@@ -151,11 +157,16 @@ public final class HoldingReplayCalculator {
 			shares += t.shares();
 		}
 
-		/** 賣出：按比例扣成本，差額記為已實現損益。 */
-		void applySell(TradeInput t) {
+		/**
+		 * 賣出：按比例扣成本，差額記為已實現損益。
+		 *
+		 * @param sameDayBuyAfter 同一天、排在這筆後面還有買進；只用在超賣時的錯誤訊息
+		 */
+		void applySell(TradeInput t, boolean sameDayBuyAfter) {
 			// 每一筆賣出都檢查，所以「中間某個時間點超賣」也會被擋，即使最後總數是正的
 			if (t.shares() > shares) {
-				throw new OversellException(t.id(), t.date(), shares, t.shares(), unavailableStockEventSeen);
+				throw new OversellException(t.id(), t.date(), shares, t.shares(), unavailableStockEventSeen,
+						sameDayBuyAfter);
 			}
 			BigDecimal amount = tradeAmount(t.price(), t.shares());
 			BigDecimal fee = ProfitCalculator.fee(amount);
