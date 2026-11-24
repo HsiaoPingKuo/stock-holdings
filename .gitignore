@@ -1,0 +1,39 @@
+# ===== Maven 建置產出 =====
+target/
+!.mvn/wrapper/maven-wrapper.jar
+
+# ===== IDE =====
+.idea/
+*.iml
+.vscode/
+.classpath
+.project
+.settings/
+.factorypath
+.springBeans
+.sts4-cache/
+bin/
+
+# ===== 作業系統 =====
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ===== 本機資料庫（H2 檔案模式） =====
+data/
+*.mv.db
+*.trace.db
+*.lock.db
+
+# ===== 機密與本機設定（密碼、token 不進 repo） =====
+.env
+*.env
+application-local.properties
+application-local.yml
+
+# ===== 紀錄檔 =====
+logs/
+*.log
+
+# ===== 個人筆記（AI 協作紀錄，寫完 REVIEW.md 再整理進去） =====
+NOTES.local.md
