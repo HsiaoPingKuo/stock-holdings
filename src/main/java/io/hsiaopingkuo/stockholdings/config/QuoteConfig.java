@@ -1,6 +1,7 @@
 package io.hsiaopingkuo.stockholdings.config;
 
 import java.time.Clock;
+import java.time.Duration;
 import java.util.Map;
 import java.util.Random;
 import java.util.random.RandomGenerator;
@@ -17,6 +18,9 @@ import io.hsiaopingkuo.stockholdings.quote.HolidayCalendar;
 import io.hsiaopingkuo.stockholdings.quote.MarketCloseBatchClient;
 import io.hsiaopingkuo.stockholdings.quote.MarketResolver;
 import io.hsiaopingkuo.stockholdings.quote.StockLookupClient;
+import io.hsiaopingkuo.stockholdings.quote.TpexDividendListClient;
+import io.hsiaopingkuo.stockholdings.quote.TwseDividendDetailClient;
+import io.hsiaopingkuo.stockholdings.quote.TwseDividendListClient;
 import io.hsiaopingkuo.stockholdings.quote.TwseHolidayClient;
 import io.hsiaopingkuo.stockholdings.quote.TpexOtcClient;
 import io.hsiaopingkuo.stockholdings.quote.TpexTradingStockClient;
@@ -126,11 +130,37 @@ public class QuoteConfig {
 				new RefreshSchedule(properties.refresh(), random), taskScheduler, clock, properties.refresh().enabled());
 	}
 
+	// ===== 除權息（第 6 題）=====
+	// 主機和行情共用 TWSE_BASE_URL／TPEX_BASE_URL；等待回應的上限另外設（一次查一整年比查一天久）
+
+	@Bean
+	TwseDividendListClient twseDividendListClient(QuoteProperties properties, JsonMapper jsonMapper) {
+		return new TwseDividendListClient(dividendRestClient(properties.twse().baseUrl(), properties), jsonMapper);
+	}
+
+	@Bean
+	TwseDividendDetailClient twseDividendDetailClient(QuoteProperties properties, JsonMapper jsonMapper) {
+		return new TwseDividendDetailClient(dividendRestClient(properties.twse().baseUrl(), properties), jsonMapper);
+	}
+
+	@Bean
+	TpexDividendListClient tpexDividendListClient(QuoteProperties properties, JsonMapper jsonMapper) {
+		return new TpexDividendListClient(dividendRestClient(properties.tpex().baseUrl(), properties), jsonMapper);
+	}
+
 	private static RestClient restClient(String baseUrl, QuoteProperties properties) {
+		return restClient(baseUrl, properties.connectTimeout(), properties.readTimeout());
+	}
+
+	private static RestClient dividendRestClient(String baseUrl, QuoteProperties properties) {
+		return restClient(baseUrl, properties.connectTimeout(), properties.dividendReadTimeout());
+	}
+
+	private static RestClient restClient(String baseUrl, Duration connectTimeout, Duration readTimeout) {
 		// JDK 內建的 HTTP 連線就夠用，不用另外加套件；一定要設逾時，否則官方卡住時會無限等待
 		SimpleClientHttpRequestFactory requestFactory = new SimpleClientHttpRequestFactory();
-		requestFactory.setConnectTimeout(properties.connectTimeout());
-		requestFactory.setReadTimeout(properties.readTimeout());
+		requestFactory.setConnectTimeout(connectTimeout);
+		requestFactory.setReadTimeout(readTimeout);
 		return RestClient.builder()
 				.baseUrl(baseUrl)
 				.requestFactory(requestFactory)
