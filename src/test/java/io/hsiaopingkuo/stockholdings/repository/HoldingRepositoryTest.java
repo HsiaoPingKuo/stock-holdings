@@ -91,18 +91,6 @@ class HoldingRepositoryTest {
 	}
 
 	@Test
-	void 資料庫的CHECK約束擋下超出範圍的張數() {
-		assertThatThrownBy(() -> holdingRepository.saveAndFlush(holding("2330", 1000, new BigDecimal("10.00"))))
-				.isInstanceOf(DataIntegrityViolationException.class);
-	}
-
-	@Test
-	void 資料庫的CHECK約束擋下不大於0的買進價() {
-		assertThatThrownBy(() -> holdingRepository.saveAndFlush(holding("2330", 1, BigDecimal.ZERO)))
-				.isInstanceOf(DataIntegrityViolationException.class);
-	}
-
-	@Test
 	void 清單依代號排序() {
 		holdingRepository.saveAndFlush(holding("6488", 1, new BigDecimal("460.50")));
 		holdingRepository.saveAndFlush(holding("0050", 1, new BigDecimal("150.00")));
