@@ -133,6 +133,59 @@ public class MarketResolver implements AutoCloseable {
 		return await(code, shared, deadline);
 	}
 
+	/**
+	 * 只查一個市場的最新資料：新增持股時，行情快取已經知道市場、但還沒有收盤價（批次那天剛好沒成交），
+	 * 用逐檔 lookupLatest 往前找最近一個有成交日的收盤價（Qiao 檢查時發現）。
+	 *
+	 * 和 resolve 共用號碼牌、執行緒池和時間預算的算法（F-01）；
+	 * 不做 10 分鐘快取和同代號合併（F-02）：同一個代號只能新增一次，不會有大量重複的查詢。
+	 *
+	 * @param code     已正規化（trim、大寫）的代號
+	 * @param market   要查的市場（來自行情快取）
+	 * @param deadline 這個請求的截止時間
+	 * @return 不丟例外：名額已滿、時間不夠、逾時、官方失敗都回 UNAVAILABLE，被擋回 BLOCKED，由呼叫端決定怎麼處理
+	 */
+	public StockLookup lookupLatestInMarket(String code, Market market, Deadline deadline) {
+		StockLookupClient client = market == Market.TWSE ? twse : tpex;
+		if (!acquirePermit(code, deadline)) {
+			return StockLookup.unavailable(market);
+		}
+		// 和 lookupWithPermit 相同：拿到號碼牌後，用剩下的時間決定最多等多久
+		Duration limit = min(lookupTimeout, deadline.remaining().minus(AWAIT_GRACE));
+		if (limit.isNegative() || limit.isZero()) {
+			permits.release();
+			log.warn("{} 拿到查詢名額時已經沒有時間查 {}，不補查收盤價", code, market);
+			return StockLookup.unavailable(market);
+		}
+		CompletableFuture<StockLookup> future;
+		try {
+			// 一定要用台北時區的 clock：主機在海外時，無參數的 now() 在月初可能還是上個月
+			LocalDate today = LocalDate.now(clock);
+			future = CompletableFuture.supplyAsync(() -> lookupRecentMonths(client, code, today), executor);
+		} catch (RuntimeException e) {
+			// 查詢沒送出去（例如伺服器關閉中），號碼牌要還回去
+			permits.release();
+			log.warn("{} 查詢 {} 沒有送出", market, code, e);
+			return StockLookup.unavailable(market);
+		}
+		// 號碼牌等請求真的結束才還，不是時間到就還（理由同 lookupBothMarkets）
+		future.whenComplete((result, error) -> permits.release());
+		try {
+			return future.get(limit.toNanos(), TimeUnit.NANOSECONDS);
+		} catch (TimeoutException e) {
+			log.warn("{} 查詢 {} 超過 {}，視為暫時查不了", market, code, limit);
+			return StockLookup.unavailable(market);
+		} catch (InterruptedException e) {
+			// 保留中斷狀態，讓上層知道這個執行緒被要求停止
+			Thread.currentThread().interrupt();
+			return StockLookup.unavailable(market);
+		} catch (ExecutionException e) {
+			// lookupRecentMonths 已經接住 client 的例外，照理不會到這裡；萬一到了也不讓新增失敗
+			log.warn("{} 查詢 {} 時發生例外", market, code, e.getCause());
+			return StockLookup.unavailable(market);
+		}
+	}
+
 	/** 由第一個請求呼叫：拿號碼牌、真的去查官方，查完把結果交給所有在等的人。 */
 	private void startLookup(String code, CompletableFuture<StockLookup> shared, Deadline deadline) {
 		CompletableFuture<StockLookup> lookup;

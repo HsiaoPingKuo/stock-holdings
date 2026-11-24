@@ -1,0 +1,2220 @@
+ ▐▛███▛█   Claude Code v2.1.331
+▝▜██████▀  Opus 5.5 · Claude Pro
+ ▝▝   ▝▝   C:\TKA102_JavaApp\Workspace_for_practice\stock-holdings
+
+
+> 【規則】                                                                      
+  請先讀 CLAUDE.md。這次只做「提案」，不要修改任何檔案。                        
+  列出做法、要修改的檔案、commit 拆法，等我回覆「同意」才動手。                 
+                                                                                
+  【任務資料開始】                                                              
+  修正第 3 題的 bug：當天沒成交的股票，走批次路徑會顯示「未取得」。             
+  （巧馨檢查 master e058e2f 時，用假的官方伺服器實際操作發現）                  
+                                                                                
+  ■ 重現步驟                                                                    
+  1. 假伺服器上的 2363：11/20 收盤價 10.00，11/23 沒有成交（收盤價是            
+  "--"），11/24 還沒公布。                                                      
+  2. 全新的資料庫啟動，批次 API 正常；啟動查詢拿到 11/23 的批次資料。           
+  3. 新增 2363、1 張、10。                                                      
+  4. 打開清單。                                                                 
+     預期：顯示 10.00，提示「2026-11-23 無成交，顯示 2026-11-20 收盤價」        
+     實際：顯示「未取得」                                                       
+     （批次 API 改成 404、只走逐檔時，顯示是正確的）                            
+                                                                                
+  ■ 原因                                                                        
+  1. 批次只回傳某一天的資料。那天是 "--"，quote 的 close_price、close_date 都是 
+  NULL，只有 latest_trade_date 是 11/23。                                       
+  2. 只有逐檔的 lookupLatest 會往前找有成交的日子，但批次成功時 handleBatch     
+  不走逐檔。                                                                    
+  3. 新增時 HoldingService.create 先查快取，快取已經有                          
+  2363（收盤價是空的），所以不再查官方。                                        
+                                                                                
+  ■ 修法                                                                        
+  1. 批次寫入後補查（排程和啟動查詢都要）：                                     
+     - 找出該市場「有人持有，但 quote.close_price 是 NULL」的代號，用逐檔       
+  lookupLatest 補查。                                                           
+     - 遵守原本的逐檔規則：一次一個請求、隨機間隔 3.2～5.8                      
+  秒、被擋就冷卻並停止。                                                        
+     - 同一個代號「一天只補查一次」（記在記憶體即可，跨日清空），               
+       避免真的長期沒成交的股票（剛上市、停牌）每輪都被重查。                   
+  2. 新增持股時，快取有這一列但 close_price 是 NULL：                           
+     - 市場、名稱照樣用快取的，不用兩個市場都查。                               
+     - 只對該市場用逐檔 lookupLatest 補查收盤價，套用 F-01                      
+  的時間預算和同時查詢上限。                                                    
+     - 補查成功 → 寫入 quote；補查失敗、逾時或被擋 →                            
+  持股照樣新增成功，收盤價留給排程補。                                          
+  3. 補查到的資料寫入 quote 時，照原本的規則（舊資料不覆蓋新資料）。            
+                                                                                
+  ■ 測試（不可以連網）                                                          
+  1. 批次某代號是 "--"、快取原本沒有收盤價、有人持有 → 逐檔補查 →               
+  清單顯示前一個有成交日的收盤價和提示                                          
+  2. 同一個代號補查後仍然沒有收盤價 →                                           
+  同一天的後續各輪不再補查；隔天會再補查一次                                    
+  3. 沒有人持有的代號是 "--" → 不補查                                           
+  4. 新增持股：快取有這一列但沒有收盤價 → 只查該市場的逐檔 →                    
+  新增成功並顯示收盤價                                                          
+  5. 新增持股：同上但補查失敗 → 持股仍然新增成功，收盤價顯示「未取得」          
+  6. 補查遇到被擋 → 冷卻並停止這一輪的補查                                      
+                                                                                
+  ■ 文件（只提出草稿，我確認後才寫入）                                          
+  - TESTLOG.md：新增一筆，註明「巧馨檢查時發現」、重現步驟、修好的 commit       
+  - REVIEW.md：補上巧馨的分工——用自己寫的假官方伺服器檢查第 3 題（master        
+  e058e2f），提出報告；修復由我與 AI 完成                                       
+  - README：確認「當天沒有成交」的說明和修正後的行為一致                        
+    【任務資料結束】                                                            
+                                                                                
+  【規則】再提醒一次：                                                          
+  - 先提案：做法、修改的檔案、commit 拆法（格式：fix: 第3題                     
+  …），等我回覆「同意」才動手。                                                 
+  - 只修這個 bug，其他發現列在「建議（未實作）」。                              
+  - 不要自己 commit；TESTLOG、REVIEW、README 只提出草稿。                       
+  - 完成後回報：改了哪些檔案、我怎麼驗證、./mvnw test 結果、還沒做的部分。      
+
+  Read 2 files, ran 4 shell commands (ctrl+o to expand)
+
+● 正在讀相關程式碼（排程更新、新增持股、測試輔助類別），讀完就提出提案。
+
+  Searched for 1 pattern, ran 5 shell commands (ctrl+o to expand)
+
+● 讀完了，以下是提案（這次沒有改任何檔案）。
+
+  結論
+
+  照程式看，巧馨描述的原因成立，而且到目前 HEAD ff0bf38（第 4 題合併後）都還在：
+  - QuoteRefreshService.handleBatch 批次成功時只執行 upsert，不會再逐檔查。
+  - HoldingService.create 只要快取有這一列就直接用，沒有檢查 close_price
+    是不是空的。
+
+  這是我之前寫錯的地方，要記進 REVIEW 的「AI 犯過的錯」。
+  處理「當天沒成交」時，我只靠 Quote.apply
+  保留舊的收盤價，沒想到全新的資料庫根本沒有舊收盤價可以保留。逐檔路徑有往前找（
+  lookupLatest），批次路徑卻沒有，兩邊不一致。
+
+  修法分兩個 commit。每個 commit 都先寫會失敗的測試，重現 bug 之後才改程式。
+
+  ---
+
+  修法 1：批次寫入後補查（排程和啟動都適用）
+
+  位置：QuoteRefreshService.handleBatch 的 OK 分支，在 upsert 之後呼叫新的
+  backfillMissingClose(market, state, today)。啟動和排程都會經過
+  handleBatch，所以兩條路徑都會補到。
+
+  流程
+  1. 先找出補查對象：這個市場有人持有（findByMarketOrderByCodeAsc），而且 quote
+     的 close_price 是 NULL，再排除今天已經補查過的代號。
+  2. 對每個代號呼叫該市場逐檔 client 的 lookupLatest(code, today)。
+     - 這個方法會在當月往前找最後一個有成交的日子；當月整個月都沒成交時，再查上
+       個月。
+     - 例如 11/24 查 2363，會拿到最近交易日 11/23、收盤價 10.00（11/20）。
+  3. 每個請求之前都隨機等 3.2～5.8
+     秒，第一個也要等，因為前一刻剛送過批次請求給同一台主機。
+  4. 依查詢結果處理：
+
+  ┌─────────────────────────┬─────────────────────────┬──────────────────────┐
+  │          結果           │        處理方式         │ 記成「今天已補查」？ │
+  ├─────────────────────────┼─────────────────────────┼──────────────────────┤
+  │ FOUND（有沒有收盤價都算 │ 用 quoteService.upsert  │                      │
+  │ ）                      │ 寫入（沿用 Quote.apply  │ 是                   │
+  │                         │ ，舊資料不覆蓋新資料）  │                      │
+  ├─────────────────────────┼─────────────────────────┼──────────────────────┤
+  │ NOT_FOUND               │ 寫 log                  │ 是                   │
+  ├─────────────────────────┼─────────────────────────┼──────────────────────┤
+  │ UNAVAILABLE（逾時、500  │ 寫 log，繼續查下一檔    │ 否，下一輪再試       │
+  │ ）                      │                         │                      │
+  ├─────────────────────────┼─────────────────────────┼──────────────────────┤
+  │ BLOCKED                 │ startCooldown，剩下的代 │ 否                   │
+  │                         │ 號這一輪不查            │                      │
+  └─────────────────────────┴─────────────────────────┴──────────────────────┘
+
+  「一天只補查一次」的紀錄：放在 MarketRefreshState，上市、上櫃各一份。內容是「
+  哪一天」加上「當天已補查的代號集合」。日期跟今天不同時清空。集合用
+  ConcurrentHashMap.newKeySet()，因為同一個市場的不同輪可能在不同執行緒上跑。
+
+  為什麼這個紀錄有實際作用：如果假伺服器不管問哪一天，都固定回 11/23
+  的資料，排程每一輪都會走到批次
+  OK，但永遠不會「今天完成」。沒有這個紀錄，同一檔股票每一輪都會被重查。
+
+  限制：紀錄只存在記憶體，重新啟動後同一天會再補查一次。你說記在記憶體即可，所以
+  接受這個限制。
+
+  修法 2：新增持股時補查收盤價
+
+  MarketResolver 新增方法 lookupLatestInMarket(code, market, deadline)
+  - 只呼叫那一個市場的逐檔 lookupLatest。
+  - 共用原本的號碼牌（同時查詢上限）、執行緒池、時間預算：等待上限是「剩下的預算
+    − 緩衝」和 lookupTimeout 比較短的那個。
+  - 這個方法不丟例外，失敗、逾時、被擋、名額已滿，一律回 UNAVAILABLE 或
+    BLOCKED。
+  - 號碼牌照 F-01 的做法，等請求真的結束才歸還。
+
+  HoldingService.create：快取命中、但 closePrice == null 時：
+  - 市場、名稱照樣用快取的。
+  - 呼叫 lookupLatestInMarket(code, 快取的市場, deadline)。查到 FOUND 就用原本的
+    saveQuoteQuietly 寫入；其他結果只寫 log。
+  - 不論補查結果如何，持股都照常新增。
+  - 這一步在 insertHolding
+    之前、沒有交易的狀態下執行，和原本查官方的位置一致（F-01 的規則）。
+
+  ---
+
+  要修改的檔案
+
+  ┌────────────────────────────────────┬────────────────────────────────────┐
+  │                檔案                │              修改內容              │
+  ├────────────────────────────────────┼────────────────────────────────────┤
+  │                                    │ 新增 backfillMissingClose，在      │
+  │ service/QuoteRefreshService.java   │ handleBatch 的 OK                  │
+  │                                    │ 分支呼叫；類別說明補上流程 ①-b     │
+  ├────────────────────────────────────┼────────────────────────────────────┤
+  │ service/MarketRefreshState.java    │ 新增「今天已補查的代號」紀錄（含跨 │
+  │                                    │ 日清空）                           │
+  ├────────────────────────────────────┼────────────────────────────────────┤
+  │ quote/MarketResolver.java          │ 新增 lookupLatestInMarket          │
+  ├────────────────────────────────────┼────────────────────────────────────┤
+  │ service/HoldingService.java        │ create                             │
+  │                                    │ 快取命中但沒有收盤價時，補查該市場 │
+  ├────────────────────────────────────┼────────────────────────────────────┤
+  │ test/.../QuoteRefreshServiceTest.j │ 測試 1、2、3、6                    │
+  │ ava                                │                                    │
+  ├────────────────────────────────────┼────────────────────────────────────┤
+  │ test/.../HoldingServiceTest.java   │ 測試 4、5                          │
+  ├────────────────────────────────────┼────────────────────────────────────┤
+  │                                    │ 新方法：只查指定的市場、名額已滿或 │
+  │ test/.../MarketResolverTest.java   │ 時間不夠時回 UNAVAILABLE           │
+  │                                    │ 而且不打官方、逾時回 UNAVAILABLE   │
+  └────────────────────────────────────┴────────────────────────────────────┘
+
+  不新增 migration，不改 /api，也不改畫面（showsEarlierClose()
+  本來就能顯示提示）。
+
+  測試對照
+
+  #: 1
+  情境: 批次 2363 是 --、快取沒有收盤價、有人持有
+  怎麼驗證: 逐檔查了 2363；findAllForList 的結果是收盤價 10.00、收盤日
+    11/20、最近交易日 11/23，showsEarlierClose() 為 true
+  ────────────────────────────────────────
+  #: 2
+  情境: 補查後仍然沒有收盤價
+  怎麼驗證: 假批次每輪都回 11/23 的資料，同一天跑第二輪時逐檔 client
+    沒有被呼叫；時鐘撥到隔天後會再查一次
+  ────────────────────────────────────────
+  #: 3
+  情境: 沒有人持有的代號是 --
+  怎麼驗證: 逐檔 client 完全沒被呼叫
+  ────────────────────────────────────────
+  #: 4
+  情境: 新增：快取有這一列、沒有收盤價
+  怎麼驗證: 只用快取的市場呼叫 lookupLatestInMarket，resolve
+    沒有被呼叫；新增成功，quote 有收盤價
+  ────────────────────────────────────────
+  #: 5
+  情境: 新增：同上，但補查失敗
+  怎麼驗證: 持股照樣新增；清單上 hasClosePrice() 為 false（顯示「未取得」）
+  ────────────────────────────────────────
+  #: 6
+  情境: 補查時被擋
+  怎麼驗證: 持有兩檔、第一檔 BLOCKED：進入冷卻，第二檔沒有被查
+
+  原本的 NoOfficialCallTest（快取有收盤價時，新增不打官方）會保留，確保這次修改
+  沒有讓「有收盤價」的情況也去打官方。
+
+  Commit 拆法（你執行）
+
+  1. fix: 第3題 
+     批次那天沒有成交的持股，改用逐檔補查前一個有成交日的收盤價（一天一次）
+  2. fix: 第3題 新增持股時快取沒有收盤價，只對該市場逐檔補查，失敗仍照常新增
+  3. 文件：等你確認草稿後，再提出 docs 的 commit 訊息。
+
+  文件（完成後才提出草稿）
+
+  - TESTLOG：新增 T-06，標題註明「巧馨檢查時發現」，填上重現步驟和修好的
+    commit。要等 commit 編號出來才能寫完整。
+  - REVIEW：在分工表新增巧馨一列（用自己寫的假官方伺服器檢查
+    e058e2f，提出報告；修復由你和 Claude Code
+    完成）。另外新增一節，記錄這次的決定和上面那個 AI 犯的錯。
+  - README：依你的規則，驗證通過後才給草稿。目前累積的待補項目：
+    - 第 66 行「這檔股票一直沒有成交紀錄」改成「這個月和上個月都沒有成交（例如剛
+      上市、長期停牌）」，比較精確。
+    - 「收盤價怎麼更新」補一句：批次查到的那天沒有成交時，會逐檔補查前一個有成交
+      日的收盤價，同一檔一天最多一次。
+
+  需要你決定的一點
+
+  補查遇到 UNAVAILABLE（逾時、500）時，要不要也記成「今天已補查」？
+  - 我建議不要記，下一輪再試。只有 FOUND 和 NOT_FOUND
+    才記。理由是連不上通常只是暫時的，而且每一輪還是一次一個請求、有間隔。
+  - 如果你希望對官方更保守，也可以改成連 UNAVAILABLE
+    都記，代價是當天就不會再補。
+
+  這不算題意不清，是設計上的取捨，不需要問主考官。
+
+  建議（未實作）
+
+  1. 快取完全沒有這一列的持股（市場已知，但 quote
+     沒有資料，例如新增時寫快取失敗），這次不會被補查，因為你的規格寫的是
+     close_price 為 NULL。如果要一起補，只要把條件擴大到「沒有這一列」。
+  2. 新增時，如果該市場正在冷卻（剛被擋），可以不呼叫官方。 原本 resolve
+     的路徑也沒有看冷卻狀態，要改的話兩條路徑應該一起處理。
+  3. 第 2 題留下的舊持股：同一輪裡，補市場（backfillOldHoldings）在補收盤價之後
+     才執行。剛補上市場的舊持股，要等下一次批次成功才會補到收盤價。
+
+  同意（或對上面那一點有其他決定）後，我就從 commit 1 開始。
+
+✻ Worked for 2m 32s · done 下午8:36
+
+※ recap: 我們在修第 3 題的 bug：當天沒成交的股票走批次路徑時，清單顯示「未取得」。提案已經提出，還沒改任何檔案。下一步請你回覆「同意」，並決定補查遇到逾時（UNAVAILABLE）時要不要算成今天已補查。 (turn off recaps in /config)
+
+> 需要決定的一點：同意你的建議。只有 FOUND、NOT_FOUND 記成「今天已補查」，      
+  UNAVAILABLE 不記，下一輪再試；BLOCKED 照原本規則冷卻。                        
+                                                                                
+  建議（未實作）的處理：                                                        
+  1. 這次一起做：補查條件擴大成「有人持有，而且 quote 沒有這一列、或            
+  close_price 是 NULL」。                                                       
+     理由：F-01                                                                 
+  決定「快取寫入失敗時持股照樣新增，缺的行情由背景排程補上」，不擴大就做不到。  
+     請補一個測試：持股存在但 quote 沒有這一列 → 排程會逐檔補查並寫入 quote。   
+  2. 這次不做。請在 REVIEW 草稿的「刻意不做或簡化的部分」記下：                 
+     新增持股時沒有檢查市場是否在冷卻；原因是新增由使用者逐次操作、請求量低，   
+     而兩條路徑都要讀排程狀態，改動範圍較大。                                   
+  3. 這次一起做：同一輪裡先補舊持股的市場，再補收盤價，讓剛補上市場的持股同一輪 
+  就能補到收盤價。                                                              
+     請補一個測試確認順序。                                                     
+                                                                                
+  commit 拆法同意；如果第 1、3 點的改動不大，可以併進第 1 個                    
+  commit，或另外拆一個，由你建議。                                              
+  README 兩處修改同意，驗證通過後再一起提出草稿。                               
+                                                                                
+  以上同意，請開始實作。                                                        
+
+  Searched for 1 pattern, read 1 file, ran 1 shell command (ctrl+o to expand)
+
+● 開始實作。先寫 commit 1 的測試，確認在現行程式上會失敗（重現 bug），再改程式。
+
+● Update(src\test\java\io\hsiaopingkuo\stockholdings\service\QuoteRefreshService
+        Test.java)
+  ⎿  Added 3 lines, removed 1 line
+      102          holdingRepository, backfill, pause, new Random(1), SET
+           TINGS, serviceClock);
+      103    }
+      104 
+      105 +  /** 收盤價寫 "--" 代表那天沒有成交（和官方一樣），收盤價、收
+          +盤日都是 null。 */                                            
+      106    private static BatchQuoteResult batchOf(LocalDate date, Mark
+           et market, String... codeAndClose) {
+      107      List<DailyQuote> quotes = new ArrayList<>();
+      108      for (int i = 0; i < codeAndClose.length; i += 2) {
+      109 +      String close = codeAndClose[i + 1];                     
+      110        quotes.add(DailyQuote.ofDay(codeAndClose[i], "名稱" + co
+           deAndClose[i], market, date,
+      109 -          new BigDecimal(codeAndClose[i + 1])));              
+      111 +          "--".equals(close) ? null : new BigDecimal(close)));
+      112      }
+      113      return BatchQuoteResult.ok(date, quotes);
+      114    }
+
+● Update(src\test\java\io\hsiaopingkuo\stockholdings\service\QuoteRefreshService
+        Test.java)
+  ⎿  Added 126 lines
+      396      assertThat(holding.getName()).isEqualTo("名稱2330");
+      397      verifyNoInteractions(marketResolver);
+      398    }
+      399 +                                                              
+      400 +  // ===== 批次那天沒有成交：逐檔補查收盤價（巧馨檢查時發現） 
+          +=====                                                         
+      401 +                                                              
+      402 +  /** 2363 在 11/20 收盤 10.00，11/23 沒有成交：逐檔 lookupLat
+          +est 會回最近交易日 11/23、收盤價用 11/20 的。 */              
+      403 +  private static StockLookup noTradeOn1123(Market market) {   
+      404 +    return StockLookup.found(market, "矽統", YESTERDAY, new Bi
+          +gDecimal("10.00"), LocalDate.of(2026, 11, 20));               
+      405 +  }                                                           
+      406 +                                                              
+      407 +  @Test                                                       
+      408 +  void 批次那天沒有成交_快取沒有收盤價_有人持有_逐檔補查前一個
+          +有成交日的收盤價_清單顯示提示() {                             
+      409 +    // 照巧馨的重現步驟：全新資料庫、11/24 啟動，今天還沒公布 
+          +，往前找到 11/23 的批次，2363 那天是 "--"                     
+      410 +    hold("2363", Market.TWSE);                                
+      411 +    twseBatch.answer = date -> date.equals(YESTERDAY) ? batchO
+          +f(date, Market.TWSE, "2330", "2030.00", "2363", "--")         
+      412 +        : BatchQuoteResult.noData();                          
+      413 +    twseStock.answer = code -> noTradeOn1123(Market.TWSE);    
+      414 +                                                              
+      415 +    var result = service.runRound(Market.TWSE, Trigger.STARTUP
+          +);                                                            
+      416 +                                                              
+      417 +    assertThat(result.mode()).isEqualTo(Mode.BATCH);          
+      418 +    // 只補查 2363；2330 批次已經有收盤價，不查               
+      419 +    assertThat(twseStock.asked).containsExactly("2363");      
+      420 +    assertThat(holdingRepository.findAllForList()).singleEleme
+          +nt().satisfies(item -> {                                      
+      421 +      assertThat(item.closePrice()).isEqualByComparingTo("10.0
+          +0");                                                          
+      422 +      assertThat(item.closeDate()).isEqualTo(LocalDate.of(2026
+          +, 11, 20));                                                   
+      423 +      assertThat(item.latestTradeDate()).isEqualTo(YESTERDAY);
+      424 +      // 畫面會顯示「2026-11-23 無成交，顯示 2026-11-20 收盤價
+          +」                                                            
+      425 +      assertThat(item.showsEarlierClose()).isTrue();          
+      426 +    });                                                       
+      427 +    // 往前找 1 次 + 補查前 1 次：補查的第一個請求也要等，前一
+          +刻剛送過批次請求                                              
+      428 +    assertThat(pause.waits).hasSize(2).allSatisfy(wait -> {   
+      429 +      assertThat(wait).isGreaterThanOrEqualTo(Duration.ofMilli
+          +s(3200));                                                     
+      430 +      assertThat(wait).isLessThan(Duration.ofMillis(5800));   
+      431 +    });                                                       
+      432 +  }                                                           
+      433 +                                                              
+      434 +  @Test                                                       
+      435 +  void 補查後仍然沒有收盤價_同一天後續各輪不再補查_隔天會再補 
+          +查一次() {                                                    
+      436 +    hold("2363", Market.TWSE);                                
+      437 +    // 假伺服器不管問哪天都回 11/23：每一輪都是批次成功、但永 
+          +遠不會「今天完成」                                            
+      438 +    twseBatch.answer = date -> batchOf(YESTERDAY, Market.TWSE,
+          + "2363", "--");                                               
+      439 +    // 這個月、上個月都沒有成交（例如長期停牌）：lookupLatest 
+          +會查兩個月，asked 一次記兩筆                                  
+      440 +    twseStock.answer = code -> StockLookup.found(Market.TWSE, 
+          +"矽統", YESTERDAY, null, null);                               
+      441 +                                                              
+      442 +    service.runRound(Market.TWSE, Trigger.SCHEDULED);         
+      443 +    assertThat(twseStock.asked).hasSize(2);                   
+      444 +                                                              
+      445 +    clock.advance(Duration.ofMinutes(10));                    
+      446 +    service.runRound(Market.TWSE, Trigger.SCHEDULED);         
+      447 +    assertThat(twseStock.asked).as("同一天第二輪不再補查").has
+          +Size(2);                                                      
+      448 +                                                              
+      449 +    clock.advance(Duration.ofDays(1));                        
+      450 +    service.runRound(Market.TWSE, Trigger.SCHEDULED);         
+      451 +    assertThat(twseStock.asked).as("隔天再補查一次").hasSize(4
+          +);                                                            
+      452 +  }                                                           
+      453 +                                                              
+      454 +  @Test                                                       
+      455 +  void 補查時官方暫時查不了_不記成已補查_下一輪再試() {       
+      456 +    hold("2363", Market.TWSE);                                
+      457 +    twseBatch.answer = date -> batchOf(YESTERDAY, Market.TWSE,
+          + "2363", "--");                                               
+      458 +    twseStock.answer = code -> StockLookup.unavailable(Market.
+          +TWSE);                                                        
+      459 +                                                              
+      460 +    service.runRound(Market.TWSE, Trigger.SCHEDULED);         
+      461 +    twseStock.answer = code -> noTradeOn1123(Market.TWSE);    
+      462 +    clock.advance(Duration.ofMinutes(10));                    
+      463 +    service.runRound(Market.TWSE, Trigger.SCHEDULED);         
+      464 +                                                              
+      465 +    assertThat(twseStock.asked).containsExactly("2363", "2363"
+          +);                                                            
+      466 +    assertThat(quoteRepository.findById("2363").orElseThrow().
+          +getClosePrice()).isEqualByComparingTo("10.00");               
+      467 +  }                                                           
+      468 +                                                              
+      469 +  @Test                                                       
+      470 +  void 沒有人持有的代號那天沒有成交_不補查() {                
+      471 +    hold("2330", Market.TWSE);                                
+      472 +    twseBatch.answer = date -> batchOf(date, Market.TWSE, "233
+          +0", "2050.00", "9999", "--");                                 
+      473 +                                                              
+      474 +    service.runRound(Market.TWSE, Trigger.SCHEDULED);         
+      475 +                                                              
+      476 +    assertThat(twseStock.asked).isEmpty();                    
+      477 +    assertThat(pause.waits).isEmpty();                        
+      478 +  }                                                           
+      479 +                                                              
+      480 +  @Test                                                       
+      481 +  void 持股存在但快取沒有這一列_批次成功後也逐檔補查並寫入快取
+          +() {                                                          
+      482 +    // 例如新增時寫行情快取失敗（F-01 決定持股照常新增，缺的行
+          +情由背景排程補上），批次裡又剛好沒有這一檔                    
+      483 +    hold("2363", Market.TWSE);                                
+      484 +    twseBatch.answer = date -> batchOf(date, Market.TWSE, "233
+          +0", "2050.00");                                               
+      485 +    twseStock.answer = code -> noTradeOn1123(Market.TWSE);    
+      486 +                                                              
+      487 +    service.runRound(Market.TWSE, Trigger.SCHEDULED);         
+      488 +                                                              
+      489 +    assertThat(twseStock.asked).containsExactly("2363");      
+      490 +    Quote quote = quoteRepository.findById("2363").orElseThrow
+          +();                                                           
+      491 +    assertThat(quote.getMarket()).isEqualTo(Market.TWSE);     
+      492 +    assertThat(quote.getClosePrice()).isEqualByComparingTo("10
+          +.00");                                                        
+      493 +  }                                                           
+      494 +                                                              
+      495 +  @Test                                                       
+      496 +  void 補查遇到被擋_進入冷卻_這一輪剩下的代號不查() {         
+      497 +    hold("2363", Market.TWSE);                                
+      498 +    hold("2364", Market.TWSE);                                
+      499 +    twseBatch.answer = date -> batchOf(date, Market.TWSE, "236
+          +3", "--", "2364", "--");                                      
+      500 +    twseStock.answer = code -> StockLookup.blocked(Market.TWSE
+          +);                                                            
+      501 +                                                              
+      502 +    service.runRound(Market.TWSE, Trigger.SCHEDULED);         
+      503 +                                                              
+      504 +    assertThat(twseStock.asked).containsExactly("2363");      
+      505 +    assertThat(service.state(Market.TWSE).isCoolingDown(clock.
+          +instant())).isTrue();                                         
+      506 +  }                                                           
+      507 +                                                              
+      508 +  @Test                                                       
+      509 +  void 同一輪先補舊持股的市場_再補收盤價_剛補上市場的持股同一 
+          +輪就補到收盤價() {                                            
+      510 +    // 第 2 題留下的舊持股：沒有市場                          
+      511 +    holdingRepository.saveAndFlush(new Holding("2363", null, n
+          +ull, 1, new BigDecimal("10.00"),                              
+      512 +        LocalDateTime.of(2026, 11, 20, 10, 0)));              
+      513 +    twseBatch.answer = date -> batchOf(date, Market.TWSE, "236
+          +3", "--");                                                    
+      514 +    twseStock.answer = code -> noTradeOn1123(Market.TWSE);    
+      515 +                                                              
+      516 +    service.runRound(Market.TWSE, Trigger.SCHEDULED);         
+      517 +                                                              
+      518 +    // 市場從快取補上（不用問官方），同一輪接著補查收盤價     
+      519 +    assertThat(holdingRepository.findAll()).singleElement()   
+      520 +        .satisfies(h -> assertThat(h.getMarket()).isEqualTo(Ma
+          +rket.TWSE));                                                  
+      521 +    verifyNoInteractions(marketResolver);                     
+      522 +    assertThat(twseStock.asked).containsExactly("2363");      
+      523 +    assertThat(quoteRepository.findById("2363").orElseThrow().
+          +getClosePrice()).isEqualByComparingTo("10.00");               
+      524 +  }                                                           
+      525  }
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● 6 個新測試在現行程式上失敗，bug 重現成功。「沒有人持有不補查」這個測試在現行程
+  式本來就會通過，屬於正常情況。接下來改程式。
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\service\MarketRefreshState.
+        java)
+  ⎿  Added 19 lines
+      58    public void startCooldown(Instant until) {
+      59      this.cooldownUntil = until;
+      60    }
+      61 +                                                               
+      62 +  /** 這個代號今天是不是已經補查過收盤價。 */                  
+      63 +  public synchronized boolean isCloseBackfilled(String code, Lo
+         +calDate today) {                                               
+      64 +    resetIfNewDay(today);                                      
+      65 +    return closeBackfilledCodes.contains(code);                
+      66 +  }                                                            
+      67 +                                                               
+      68 +  public synchronized void markCloseBackfilled(String code, Loc
+         +alDate today) {                                                
+      69 +    resetIfNewDay(today);                                      
+      70 +    closeBackfilledCodes.add(code);                            
+      71 +  }                                                            
+      72 +                                                               
+      73 +  /** 只記今天：日期換了就清空，隔天每一檔都會再補查一次。 */  
+      74 +  private void resetIfNewDay(LocalDate today) {                
+      75 +    if (!today.equals(closeBackfillDate)) {                    
+      76 +      closeBackfilledCodes.clear();                            
+      77 +      closeBackfillDate = today;                               
+      78 +    }                                                          
+      79 +  }                                                            
+      80  }
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\service\MarketRefreshState.
+        java)
+  ⎿  Added 7 lines
+      21    private volatile boolean usedPerStock;
+      22    /** 被擋時，冷卻到什麼時候；null 代表沒有冷卻。 */
+      23    private volatile Instant cooldownUntil;
+      24 +  /**                                                          
+      25 +   * 補查收盤價的紀錄：哪一天、那天已經補查過（查到 FOUND 或 NO
+         +T_FOUND）的代號。                                              
+      26 +   * 真的長期沒成交的股票（剛上市、停牌）補查完仍然沒有收盤價，
+         +記下來才不會每一輪都重查。                                     
+      27 +   * 日期和代號要一起改，用 synchronized 的方法存取（不用 volat
+         +ile）；只存在記憶體，重新啟動後會再補查一次。                  
+      28 +   */                                                          
+      29 +  private LocalDate closeBackfillDate;                         
+      30 +  private final Set<String> closeBackfilledCodes = new HashSet<
+         +>();                                                           
+      31 
+      32    public MarketRefreshState(Market market) {
+      33      this.market = market;
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\service\MarketRefreshState.
+        java)
+  ⎿  Added 2 lines
+      2 
+      3  import java.time.Instant;
+      4  import java.time.LocalDate;
+      5 +import java.util.HashSet;                                       
+      6 +import java.util.Set;                                           
+      7 
+      8  import io.hsiaopingkuo.stockholdings.entity.Market;
+      9 
+
+● Now QuoteRefreshService.
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\service\QuoteRefreshService
+        .java)
+  ⎿  Added 3 lines
+      29   * 一輪的流程：
+      30   * ① 查批次（全市場收盤行情）
+      31   *    - 拿到 → 整批寫入 quote 表；資料日期是今天 → 這個市場今天
+          完成
+      32 + *      → 補舊持股的市場（③）→ 補查收盤價（①-b）               
+      33   *    - 沒有資料（還沒公布、休市）→ 不算錯，等下一輪
+      34   *    - 被擋 → 這個市場冷卻（冷卻期間不發任何請求）
+      35   *    - 失敗（404、500、逾時、格式不符）→ ②
+      36 + * ①-b 補查收盤價：批次只有那一天的資料，那天沒成交的股票沒有收
+         +盤價；                                                         
+      37 + *    對有人持有、但快取沒有這一列或沒有收盤價的代號，逐檔往前 
+         +找最近一個有成交日的收盤價                                     
+      38   * ② 逐檔：只查這個市場「有人持有、而且快取還沒有今天資料」的代
+          號，一次一個，請求之間隨機等一下
+      39   * ③ 補舊持股的市場（market 是 NULL 的）
+      40   * 任何例外都在這裡接住、寫 log，不會往外丟，排程不會因此停止。
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\service\QuoteRefreshService
+        .java)
+  ⎿  Added 4 lines, removed 1 line
+      146      }
+      147      log.info("行情更新 來源={} 市場={} 方式={} 更新={}筆 資料
+           日期={}", trigger.label, market, result.mode().label,
+      148          result.updated(), result.dataDate() == null ? "-" : re
+           sult.dataDate());
+      149 -    backfillOldHoldings();                                    
+      149 +    if (result.mode() != Mode.BATCH) {                        
+      150 +      // 批次成功的那一輪已經在 handleBatch 裡補過（要排在補查
+          +收盤價之前），不用再補一次                                    
+      151 +      backfillOldHoldings();                                  
+      152 +    }                                                         
+      153      return result;
+      154    }
+      155 
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\service\QuoteRefreshService
+        .java)
+  ⎿  Added 3 lines
+      188            // 批次涵蓋整個市場：拿到今天的資料，這個市場今天就
+           完成了，不必等另一個市場
+      189            state.markDone(today);
+      190          }
+      191 +        // 先補舊持股的市場（剛寫入的批次大多查得到）：補上市 
+          +場的持股，下一步同一輪就能補查收盤價                          
+      192 +        backfillOldHoldings();                                
+      193 +        updated += backfillMissingClose(market, state, today);
+      194          return new RoundResult(market, trigger, Mode.BATCH, up
+           dated, batch.tradeDate());
+      195        }
+      196        case NO_DATA -> {
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\service\QuoteRefreshService
+        .java)
+  ⎿  Added 60 lines
+      250      return new RoundResult(market, trigger, blocked ? Mode.BLO
+           CKED : Mode.PER_STOCK, updated, latestDate);
+      251    }
+      252 
+      253 +  /**                                                         
+      254 +   * 批次只有某一天的資料：那天沒成交（"--"）的股票，收盤價是 
+          +null，                                                        
+      255 +   * 全新的資料庫又沒有之前的收盤價可以保留，清單會顯示「未取 
+          +得」（巧馨檢查時發現）。                                      
+      256 +   * 對這個市場「有人持有，但快取沒有這一列或沒有收盤價」的代 
+          +號，用逐檔 lookupLatest 往前找最近一個有成交日。              
+      257 +   * 快取沒有這一列也要補：F-01 決定新增時寫快取失敗仍照常新增
+          +，缺的行情要靠這裡補上。                                      
+      258 +   *                                                          
+      259 +   * 遵守逐檔的規則：一次一個請求、每個請求前隨機等一下、被擋 
+          +就冷卻並停止。                                                
+      260 +   * 查到 FOUND 或 NOT_FOUND 才記成「今天已補查」（長期沒成交 
+          +的股票才不會每輪重查）；                                      
+      261 +   * UNAVAILABLE 可能只是暫時的，不記，下一輪再試。           
+      262 +   *                                                          
+      263 +   * @return 新增或真的有變動的 quote 筆數                    
+      264 +   */                                                         
+      265 +  private int backfillMissingClose(Market market, MarketRefres
+          +hState state, LocalDate today)                                
+      266 +      throws InterruptedException {                           
+      267 +    List<String> heldCodes = holdingRepository.findByMarketOrd
+          +erByCodeAsc(market).stream()                                  
+      268 +        .map(Holding::getCode).toList();                      
+      269 +    List<String> targets = codesWithoutClose(heldCodes).stream
+          +()                                                            
+      270 +        .filter(code -> !state.isCloseBackfilled(code, today))
+      271 +        .toList();                                            
+      272 +                                                              
+      273 +    int updated = 0;                                          
+      274 +    for (String code : targets) {                             
+      275 +      // 第一個請求前也要等：前一刻剛向同一台主機送過批次請求 
+      276 +      pauseBetweenRequests();                                 
+      277 +      StockLookup lookup = stockClients.get(market).lookupLate
+          +st(code, today);                                              
+      278 +      switch (lookup.status()) {                              
+      279 +        case FOUND -> {                                       
+      280 +          // 寫入照 Quote.apply 的規則：舊資料不會蓋掉新資料  
+      281 +          updated += quoteService.upsert(List.of(lookup.toDail
+          +yQuote(code)));                                               
+      282 +          state.markCloseBackfilled(code, today);             
+      283 +        }                                                     
+      284 +        case NOT_FOUND -> {                                   
+      285 +          log.warn("補查收盤價 {} {}：這個月和上個月都查不到",
+          + market, code);                                               
+      286 +          state.markCloseBackfilled(code, today);             
+      287 +        }                                                     
+      288 +        case BLOCKED -> {                                     
+      289 +          // 被擋：剩下的代號這一輪都不查了                   
+      290 +          startCooldown(state);                               
+      291 +          return updated;                                     
+      292 +        }                                                     
+      293 +        default -> log.warn("補查收盤價 {} {}：官方暫時查不了 
+          +，下一輪再試", market, code);                                 
+      294 +      }                                                       
+      295 +    }                                                         
+      296 +    if (!targets.isEmpty()) {                                 
+      297 +      log.info("補查收盤價 市場={} 補查={}檔 更新={}筆", marke
+          +t, targets.size(), updated);                                  
+      298 +    }                                                         
+      299 +    return updated;                                           
+      300 +  }                                                           
+      301 +                                                              
+      302 +  /** 快取沒有這一列，或有這一列但收盤價是 null 的代號。 */   
+      303 +  private List<String> codesWithoutClose(List<String> codes) {
+      304 +    Set<String> withClose = new HashSet<>();                  
+      305 +    quoteRepository.findAllById(codes).forEach(q -> {         
+      306 +      if (q.getClosePrice() != null) {                        
+      307 +        withClose.add(q.getCode());                           
+      308 +      }                                                       
+      309 +    });                                                       
+      310 +    return codes.stream().filter(code -> !withClose.contains(c
+          +ode)).toList();                                               
+      311 +  }                                                           
+      312 +                                                              
+      313    /** 快取裡沒有、或最近交易日比 today 舊的代號（「今天完成」
+           看 latest_trade_date，當天沒成交的股票才不會一直重查）。 */
+      314    private List<String> codesWithoutDataFor(List<String> codes,
+            LocalDate today) {
+      315      Map<String, LocalDate> latest = new HashMap<>();
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\service\QuoteRefreshService
+        .java)
+  ⎿  Added 2 lines
+       5  import java.util.ArrayList;
+       6  import java.util.EnumMap;
+       7  import java.util.HashMap;
+       8 +import java.util.HashSet;                                      
+       9  import java.util.List;
+      10  import java.util.Map;
+      11 +import java.util.Set;                                          
+      12  import java.util.random.RandomGenerator;
+      13 
+      14  import org.slf4j.Logger;
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● 相關測試全部通過。接著跑完整的 ./mvnw test，確認 commit 1 可以單獨成立。
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● commit 1 完成：242 個測試全部通過。commit 2 改的檔案和 commit 1
+  完全不重疊，你可以分別 git add，所以我直接接著做。先寫新增持股的測試。
+
+  Read 1 file (ctrl+o to expand)
+● Insert the new HoldingService tests after the cache-miss/unavailable test.
+
+● Update(src\test\java\io\hsiaopingkuo\stockholdings\service\HoldingServiceTest.
+        java)
+  ⎿  Added 55 lines
+      144      assertThat(quoteRepository.count()).isZero();
+      145    }
+      146 
+      147 +  // ===== 快取有這一列、但沒有收盤價（巧馨檢查時發現） ===== 
+      148 +                                                              
+      149 +  /** 批次那天（11/23）2363 沒有成交，全新資料庫裡只有最近交易
+          +日，沒有收盤價。 */                                           
+      150 +  private void cacheWithoutClose(String code, String name, Mar
+          +ket market) {                                                 
+      151 +    quoteRepository.saveAndFlush(new Quote(DailyQuote.ofDay(co
+          +de, name, market, LocalDate.of(2026, 11, 23), null),          
+      152 +        LocalDateTime.of(2026, 11, 23, 14, 0)));              
+      153 +  }                                                           
+      154 +                                                              
+      155    @Test
+      156 +  void 快取有這一列但沒有收盤價_只查該市場補收盤價_新增成功並 
+          +顯示收盤價() {                                                
+      157 +    cacheWithoutClose("2363", "矽統", Market.TWSE);           
+      158 +    given(marketResolver.lookupLatestInMarket(eq("2363"), eq(M
+          +arket.TWSE), any(Deadline.class)))                            
+      159 +        .willReturn(StockLookup.found(Market.TWSE, "矽統", Loc
+          +alDate.of(2026, 11, 23),                                      
+      160 +            new BigDecimal("10.00"), LocalDate.of(2026, 11, 20
+          +)));                                                          
+      161 +                                                              
+      162 +    Holding created = holdingService.create("2363", 1, new Big
+          +Decimal("10.00"));                                            
+      163 +                                                              
+      164 +    // 市場、名稱照樣用快取的，不用兩個市場都查               
+      165 +    assertThat(created.getMarket()).isEqualTo(Market.TWSE);   
+      166 +    assertThat(created.getName()).isEqualTo("矽統");          
+      167 +    verify(marketResolver, never()).resolve(anyString(), any(D
+          +eadline.class));                                              
+      168 +    verify(marketResolver, never()).lookupLatestInMarket(anySt
+          +ring(), eq(Market.TPEX), any(Deadline.class));                
+      169 +    assertThat(holdingRepository.findAllForList()).singleEleme
+          +nt().satisfies(item -> {                                      
+      170 +      assertThat(item.closePrice()).isEqualByComparingTo("10.0
+          +0");                                                          
+      171 +      assertThat(item.closeDate()).isEqualTo(LocalDate.of(2026
+          +, 11, 20));                                                   
+      172 +      assertThat(item.showsEarlierClose()).isTrue();          
+      173 +    });                                                       
+      174 +  }                                                           
+      175 +                                                              
+      176 +  @Test                                                       
+      177 +  void 快取有這一列但沒有收盤價_補查失敗_持股仍然新增成功_收盤
+          +價顯示未取得() {                                              
+      178 +    cacheWithoutClose("2363", "矽統", Market.TWSE);           
+      179 +    given(marketResolver.lookupLatestInMarket(eq("2363"), eq(M
+          +arket.TWSE), any(Deadline.class)))                            
+      180 +        .willReturn(StockLookup.unavailable(Market.TWSE));    
+      181 +                                                              
+      182 +    holdingService.create("2363", 1, new BigDecimal("10.00"));
+      183 +                                                              
+      184 +    assertThat(holdingRepository.findAllForList()).singleEleme
+          +nt().satisfies(item -> {                                      
+      185 +      assertThat(item.market()).isEqualTo(Market.TWSE);       
+      186 +      assertThat(item.hasClosePrice()).isFalse();             
+      187 +    });                                                       
+      188 +  }                                                           
+      189 +                                                              
+      190 +  @Test                                                       
+      191 +  void 快取有這一列但沒有收盤價_補查被擋_持股仍然新增成功() { 
+      192 +    cacheWithoutClose("2363", "矽統", Market.TWSE);           
+      193 +    given(marketResolver.lookupLatestInMarket(eq("2363"), eq(M
+          +arket.TWSE), any(Deadline.class)))                            
+      194 +        .willReturn(StockLookup.blocked(Market.TWSE));        
+      195 +                                                              
+      196 +    holdingService.create("2363", 1, new BigDecimal("10.00"));
+      197 +                                                              
+      198 +    assertThat(holdingRepository.count()).isEqualTo(1);       
+      199 +    assertThat(quoteRepository.findById("2363").orElseThrow().
+          +getClosePrice()).isNull();                                    
+      200 +  }                                                           
+      201 +                                                              
+      202 +  @Test                                                       
+      203    // lookupStock 是 NOT_SUPPORTED：會暫停交易、用另一條連線讀
+           快取，看不到測試交易裡還沒 commit 的資料。
+      204    // 所以這個測試不包交易，讓快取資料真的寫進去，測完自己刪掉
+      205    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+
+● Update(src\test\java\io\hsiaopingkuo\stockholdings\service\HoldingServiceTest.
+        java)
+  ⎿  Added 1 line
+       8  import static org.mockito.ArgumentMatchers.eq;
+       9  import static org.mockito.BDDMockito.given;
+      10  import static org.mockito.BDDMockito.willThrow;
+      11 +import static org.mockito.Mockito.never;                       
+      12  import static org.mockito.Mockito.times;
+      13  import static org.mockito.Mockito.verify;
+      14  import static org.mockito.Mockito.verifyNoInteractions;
+
+● Now the MarketResolverTest cases for the new method.
+
+● Update(src\test\java\io\hsiaopingkuo\stockholdings\quote\MarketResolverTest.ja
+        va)
+  ⎿  Added 91 lines
+      725        callers.shutdownNow();
+      726      }
+      727    }
+      728 +                                                              
+      729 +  // ===== 只查一個市場：新增持股時快取有這一列、但沒有收盤價 
+          +（巧馨檢查時發現） =====                                      
+      730 +                                                              
+      731 +  @Test                                                       
+      732 +  void 只查一個市場_只呼叫那個市場的client_回傳往前找到的收盤 
+          +價() {                                                        
+      733 +    AtomicInteger tpexCalls = new AtomicInteger();            
+      734 +    resolver = new MarketResolver(                            
+      735 +        // 這個月最後一個交易日 11/23 沒成交，收盤價是 11/20  
+          +的                                                            
+      736 +        fakeClient(Market.TWSE, (code, day) -> StockLookup.fou
+          +nd(Market.TWSE, "矽統", LocalDate.of(2026, 11, 23),           
+      737 +            new BigDecimal("10.00"), LocalDate.of(2026, 11, 20
+          +))),                                                          
+      738 +        countingClient(Market.TPEX, tpexCalls, StockLookup.not
+          +Found(Market.TPEX)),                                          
+      739 +        clockAt(LocalDate.of(2026, 11, 24)), LOOKUP_TIMEOUT, C
+          +ACHE_TTL);                                                    
+      740 +                                                              
+      741 +    StockLookup result = resolver.lookupLatestInMarket("2363",
+          + Market.TWSE, Deadline.after(Duration.ofSeconds(5)));         
+      742 +                                                              
+      743 +    assertThat(result.status()).isEqualTo(Status.FOUND);      
+      744 +    assertThat(result.closePrice()).isEqualByComparingTo("10.0
+          +0");                                                          
+      745 +    assertThat(result.closeDate()).isEqualTo(LocalDate.of(2026
+          +, 11, 20));                                                   
+      746 +    assertThat(tpexCalls.get()).isZero();                     
+      747 +  }                                                           
+      748 +                                                              
+      749 +  @Test                                                       
+      750 +  void 只查一個市場_被擋時回BLOCKED_不丟例外() {              
+      751 +    resolver = new MarketResolver(                            
+      752 +        fakeClient(Market.TWSE, (code, day) -> StockLookup.not
+          +Found(Market.TWSE)),                                          
+      753 +        fakeClient(Market.TPEX, (code, day) -> StockLookup.blo
+          +cked(Market.TPEX)),                                           
+      754 +        clockAt(LocalDate.of(2026, 11, 24)), LOOKUP_TIMEOUT, C
+          +ACHE_TTL);                                                    
+      755 +                                                              
+      756 +    StockLookup result = resolver.lookupLatestInMarket("6488",
+          + Market.TPEX, Deadline.after(Duration.ofSeconds(5)));         
+      757 +                                                              
+      758 +    assertThat(result.status()).isEqualTo(Status.BLOCKED);    
+      759 +  }                                                           
+      760 +                                                              
+      761 +  @Test                                                       
+      762 +  void 只查一個市場_官方一直不回應_在時間內回UNAVAILABLE_不丟 
+          +例外() {                                                      
+      763 +    CountDownLatch never = new CountDownLatch(1);             
+      764 +    resolver = new MarketResolver(                            
+      765 +        fakeClient(Market.TWSE, (code, day) -> {              
+      766 +          awaitQuietly(never); // 模擬官方很久都不回應（awaitQ
+          +uietly 最多等 5 秒）                                          
+      767 +          return found(Market.TWSE);                          
+      768 +        }),                                                   
+      769 +        fakeClient(Market.TPEX, (code, day) -> StockLookup.not
+          +Found(Market.TPEX)),                                          
+      770 +        clockAt(LocalDate.of(2026, 11, 24)), Duration.ofMillis
+          +(200), CACHE_TTL);                                            
+      771 +                                                              
+      772 +    long start = System.nanoTime();                           
+      773 +    StockLookup result = resolver.lookupLatestInMarket("2363",
+          + Market.TWSE, Deadline.after(Duration.ofSeconds(5)));         
+      774 +                                                              
+      775 +    assertThat(result.status()).isEqualTo(Status.UNAVAILABLE);
+      776 +    assertThat(Duration.ofNanos(System.nanoTime() - start)).is
+          +LessThan(Duration.ofSeconds(2));                              
+      777 +    never.countDown();                                        
+      778 +  }                                                           
+      779 +                                                              
+      780 +  @Test                                                       
+      781 +  void 只查一個市場_和新增共用名額_名額已滿時快速回UNAVAILABLE
+          +而且不打官方() throws Exception {                             
+      782 +    CountDownLatch started = new CountDownLatch(1);           
+      783 +    CountDownLatch gate = new CountDownLatch(1);              
+      784 +    AtomicInteger otherCalls = new AtomicInteger();           
+      785 +    // 同時查官方最多 1 個；至少要保留 0.5 秒                 
+      786 +    resolver = new MarketResolver(                            
+      787 +        fakeClient(Market.TWSE, (code, day) -> {              
+      788 +          if (code.equals("2330")) {                          
+      789 +            started.countDown();                              
+      790 +            awaitQuietly(gate);                               
+      791 +          } else {                                            
+      792 +            otherCalls.incrementAndGet();                     
+      793 +          }                                                   
+      794 +          return found(Market.TWSE);                          
+      795 +        }),                                                   
+      796 +        fakeClient(Market.TPEX, (code, day) -> StockLookup.not
+          +Found(Market.TPEX)),                                          
+      797 +        clockAt(LocalDate.of(2026, 11, 24)), LOOKUP_TIMEOUT, C
+          +ACHE_TTL,                                                     
+      798 +        Duration.ofSeconds(1), 1, Duration.ofMillis(500));    
+      799 +    ExecutorService callers = Executors.newSingleThreadExecuto
+          +r();                                                          
+      800 +    try {                                                     
+      801 +      // 另一個新增先占走唯一的名額                           
+      802 +      Future<StockLookup> first = callers.submit(() -> resolve
+          +r.resolve("2330", Deadline.after(Duration.ofSeconds(5))));    
+      803 +      assertThat(started.await(2, TimeUnit.SECONDS)).isTrue();
+      804 +                                                              
+      805 +      long start = System.nanoTime();                         
+      806 +      StockLookup result = resolver.lookupLatestInMarket("2363
+          +", Market.TWSE, Deadline.after(Duration.ofSeconds(1)));       
+      807 +      Duration elapsed = Duration.ofNanos(System.nanoTime() - 
+          +start);                                                       
+      808 +                                                              
+      809 +      assertThat(result.status()).isEqualTo(Status.UNAVAILABLE
+          +);                                                            
+      810 +      // 最多等 1 − 0.5 = 0.5 秒就放棄，沒有超過預算          
+      811 +      assertThat(elapsed).isLessThan(Duration.ofSeconds(1));  
+      812 +      assertThat(otherCalls.get()).isZero();                  
+      813 +      gate.countDown();                                       
+      814 +      assertThat(first.get(5, TimeUnit.SECONDS).market()).isEq
+          +ualTo(Market.TWSE);                                           
+      815 +    } finally {                                               
+      816 +      callers.shutdownNow();                                  
+      817 +    }                                                         
+      818 +  }                                                           
+      819  }
+
+● Now implement MarketResolver.lookupLatestInMarket.
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\quote\MarketResolver.java)
+  ⎿  Added 53 lines
+      133      return await(code, shared, deadline);
+      134    }
+      135 
+      136 +  /**                                                         
+      137 +   * 只查一個市場的最新資料：新增持股時，行情快取已經知道市場 
+          +、但還沒有收盤價（批次那天剛好沒成交），                      
+      138 +   * 用逐檔 lookupLatest 往前找最近一個有成交日的收盤價（巧馨 
+          +檢查時發現）。                                                
+      139 +   *                                                          
+      140 +   * 和 resolve 共用號碼牌、執行緒池和時間預算的算法（F-01）；
+      141 +   * 不做 10 分鐘快取和同代號合併（F-02）：同一個代號只能新增 
+          +一次，不會有大量重複的查詢。                                  
+      142 +   *                                                          
+      143 +   * @param code     已正規化（trim、大寫）的代號             
+      144 +   * @param market   要查的市場（來自行情快取）               
+      145 +   * @param deadline 這個請求的截止時間                       
+      146 +   * @return 不丟例外：名額已滿、時間不夠、逾時、官方失敗都回 
+          +UNAVAILABLE，被擋回 BLOCKED，由呼叫端決定怎麼處理             
+      147 +   */                                                         
+      148 +  public StockLookup lookupLatestInMarket(String code, Market 
+          +market, Deadline deadline) {                                  
+      149 +    StockLookupClient client = market == Market.TWSE ? twse : 
+          +tpex;                                                         
+      150 +    if (!acquirePermit(code, deadline)) {                     
+      151 +      return StockLookup.unavailable(market);                 
+      152 +    }                                                         
+      153 +    // 和 lookupWithPermit 相同：拿到號碼牌後，用剩下的時間決 
+          +定最多等多久                                                  
+      154 +    Duration limit = min(lookupTimeout, deadline.remaining().m
+          +inus(AWAIT_GRACE));                                           
+      155 +    if (limit.isNegative() || limit.isZero()) {               
+      156 +      permits.release();                                      
+      157 +      log.warn("{} 拿到查詢名額時已經沒有時間查 {}，不補查收盤
+          +價", code, market);                                           
+      158 +      return StockLookup.unavailable(market);                 
+      159 +    }                                                         
+      160 +    CompletableFuture<StockLookup> future;                    
+      161 +    try {                                                     
+      162 +      // 一定要用台北時區的 clock：主機在海外時，無參數的 now(
+          +) 在月初可能還是上個月                                        
+      163 +      LocalDate today = LocalDate.now(clock);                 
+      164 +      future = CompletableFuture.supplyAsync(() -> lookupRecen
+          +tMonths(client, code, today), executor);                      
+      165 +    } catch (RuntimeException e) {                            
+      166 +      // 查詢沒送出去（例如伺服器關閉中），號碼牌要還回去     
+      167 +      permits.release();                                      
+      168 +      log.warn("{} 查詢 {} 沒有送出", market, code, e);       
+      169 +      return StockLookup.unavailable(market);                 
+      170 +    }                                                         
+      171 +    // 號碼牌等請求真的結束才還，不是時間到就還（理由同 lookup
+          +BothMarkets）                                                 
+      172 +    future.whenComplete((result, error) -> permits.release());
+      173 +    try {                                                     
+      174 +      return future.get(limit.toNanos(), TimeUnit.NANOSECONDS)
+          +;                                                             
+      175 +    } catch (TimeoutException e) {                            
+      176 +      log.warn("{} 查詢 {} 超過 {}，視為暫時查不了", market, c
+          +ode, limit);                                                  
+      177 +      return StockLookup.unavailable(market);                 
+      178 +    } catch (InterruptedException e) {                        
+      179 +      // 保留中斷狀態，讓上層知道這個執行緒被要求停止         
+      180 +      Thread.currentThread().interrupt();                     
+      181 +      return StockLookup.unavailable(market);                 
+      182 +    } catch (ExecutionException e) {                          
+      183 +      // lookupRecentMonths 已經接住 client 的例外，照理不會到
+          +這裡；萬一到了也不讓新增失敗                                  
+      184 +      log.warn("{} 查詢 {} 時發生例外", market, code, e.getCau
+          +se());                                                        
+      185 +      return StockLookup.unavailable(market);                 
+      186 +    }                                                         
+      187 +  }                                                           
+      188 +                                                              
+      189    /** 由第一個請求呼叫：拿號碼牌、真的去查官方，查完把結果交給
+           所有在等的人。 */
+      190    private void startLookup(String code, CompletableFuture<Stoc
+           kLookup> shared, Deadline deadline) {
+      191      CompletableFuture<StockLookup> lookup;
+
+● 先在還沒改 HoldingService 的狀態下跑一次，確認新增路徑的 bug 也能重現：
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● 測試確認了 bug：「補查成功要顯示收盤價」那項失敗，收盤價為
+  null；另外兩個測試在現行程式中本來就會通過，用來防止修改後退步。接下來我會改
+  HoldingService。 · summary
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\service\HoldingService.java
+        )
+  ⎿  Added 3 lines
+      110      if (cached.isPresent()) {
+      111        market = cached.get().getMarket();
+      112        name = cached.get().getName();
+      113 +      if (cached.get().getClosePrice() == null) {             
+      114 +        backfillCloseQuietly(normalizedCode, market, deadline)
+          +;                                                             
+      115 +      }                                                       
+      116      } else {
+      117        // 快取沒有才問官方（這時沒有任何交易）；查不到或無法確
+           認時直接丟例外，後面的儲存不會執行
+      118        StockLookup lookup = marketResolver.resolve(normalizedCo
+           de, deadline);
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\service\HoldingService.java
+        )
+  ⎿  Added 15 lines
+      125    }
+      126 
+      127    /**
+      128 +   * 快取有這一列、但沒有收盤價（例如批次那天剛好沒成交，資料 
+          +庫又是全新的，巧馨檢查時發現）：                              
+      129 +   * 市場已經知道，只查那個市場的逐檔資料，往前找最近一個有成 
+          +交日的收盤價。                                                
+      130 +   * 時間預算和同時查詢上限照 F-01（由 MarketResolver 負責）。
+      131 +   * 補查失敗、逾時或被擋都不影響新增：持股照常存，收盤價留給 
+          +背景排程補。                                                  
+      132 +   */                                                         
+      133 +  private void backfillCloseQuietly(String code, Market market
+          +, Deadline deadline) {                                        
+      134 +    StockLookup lookup = marketResolver.lookupLatestInMarket(c
+          +ode, market, deadline);                                       
+      135 +    if (lookup.status() == StockLookup.Status.FOUND) {        
+      136 +      saveQuoteQuietly(code, lookup);                         
+      137 +    } else {                                                  
+      138 +      log.warn("新增 {} 時補查收盤價沒有結果（{}），持股照常新
+          +增，收盤價由背景排程補上", code, lookup.status());            
+      139 +    }                                                         
+      140 +  }                                                           
+      141 +                                                              
+      142 +  /**                                                         
+      143     * 官方已經回了最近交易日和收盤價，順手寫進快取：新增後清單
+           馬上看得到價格。
+      144     * 用 QuoteService 自己的短交易，和寫入持股分開：
+      145     * 行情是官方公開資料，不論持股有沒有存成功都是正確的；反過
+           來，快取寫入失敗也不該讓使用者的新增失敗，
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\service\HoldingService.java
+        )
+  ⎿  Added 2 lines, removed 1 line
+      103        throw new DuplicateCodeException(normalizedCode);
+      104      }
+      105 
+      106 -    // 第 3 題：先查行情快取。排程每天會寫入全市場的行情，大部
+          -分代號在這裡就知道市場和名稱，不必打官方                      
+      106 +    // 第 3 題：先查行情快取。排程每天會寫入全市場的行情，大部
+          +分代號在這裡就知道市場和名稱，不必打官方；                    
+      107 +    // 快取沒有收盤價時，才只對那個市場補查收盤價             
+      108      Market market;
+      109      String name;
+      110      Optional<Quote> cached = quoteService.findByCode(normalize
+           dCode);
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● 兩個 fix 都做完了，./mvnw test 全部通過（249 個）。我沒有
+  commit，也沒有動任何文件。
+
+  改了哪些檔案
+
+  建議 1、3 的改動不大，而且都在同一段補查流程裡，所以我併進 commit 1。兩個
+  commit 改到的檔案完全沒有重疊，你可以分別 git add。
+
+  commit 1：排程和啟動時，批次寫入後補查
+
+  檔案: service/QuoteRefreshService.java
+  修改內容: 新增
+    backfillMissingClose：批次成功後，對「有人持有，而且快取沒有這一列或沒有收盤
+  價」的代號逐檔補查。同一輪改成先補舊持股的市場，再補收盤價。
+  ────────────────────────────────────────
+  檔案: service/MarketRefreshState.java
+  修改內容: 新增「今天已補查的代號」紀錄，換日自動清空。
+  ────────────────────────────────────────
+  檔案: test/.../QuoteRefreshServiceTest.java
+  修改內容: 新增 7 個測試，涵蓋：你的測試 1、2、3、6，UNAVAILABLE
+    下一輪再試，快取沒有這一列，補查順序。
+
+  補查結果照你的決定處理：
+  - FOUND、NOT_FOUND：記成今天已補查。
+  - UNAVAILABLE：不記，下一輪再試。
+  - BLOCKED：冷卻，這一輪剩下的代號不查。
+  - 每個請求前都隨機等 3.2～5.8 秒，第一個也等。
+
+  commit 2：新增持股時補查
+
+  ┌──────────────────────────────────┬───────────────────────────────────────┐
+  │               檔案               │               修改內容                │
+  ├──────────────────────────────────┼───────────────────────────────────────┤
+  │                                  │ 新增 lookupLatestInMarket：只查指定的 │
+  │ quote/MarketResolver.java        │ 市場，共用 F-01                       │
+  │                                  │ 的號碼牌和時間預算，不丟例外。        │
+  ├──────────────────────────────────┼───────────────────────────────────────┤
+  │                                  │ create                                │
+  │ service/HoldingService.java      │ 遇到快取有這一列、但沒有收盤價時，只  │
+  │                                  │ 對該市場補查。查不到就照常新增。      │
+  ├──────────────────────────────────┼───────────────────────────────────────┤
+  │ test/.../HoldingServiceTest.java │ 新增 3 個：你的測試                   │
+  │                                  │ 4、5，加上補查被擋時仍然新增成功。    │
+  ├──────────────────────────────────┼───────────────────────────────────────┤
+  │                                  │ 新增 4 個：只呼叫那個市場、被擋回     │
+  │ test/.../MarketResolverTest.java │ BLOCKED、官方不回應時在時間內回       │
+  │                                  │ UNAVAILABLE、名額已滿時快速回覆而且不 │
+  │                                  │ 打官方。                              │
+  └──────────────────────────────────┴───────────────────────────────────────┘
+
+  測試結果
+
+  - 改程式之前先跑新測試，兩條路徑的 bug 都重現了：排程那邊 6
+    個失敗；新增那邊「補查成功要顯示收盤價」失敗，收盤價是 null。
+  - commit 1 改完時跑完整測試：242 個全部通過，所以 commit 1 單獨成立。
+  - commit 2 改完後再跑完整測試：249 個全部通過。
+
+  你要怎麼驗證（用巧馨的假伺服器）
+
+  先把 data 資料夾改名備份（不要刪），讓程式用全新的資料庫啟動。再把
+  TWSE_BASE_URL 指到假伺服器（2363 的資料照重現步驟）。
+
+  1. 新增路徑（commit 2）：啟動後新增 2363、1 張、10，打開清單。
+     - 預期：顯示 10.00，並提示「2026-11-23 無成交，顯示 2026-11-20 收盤價」。
+  2. 新增時補查失敗：讓假伺服器的逐檔 API 回
+     404（批次照常），用全新的資料庫再新增 2363。
+     - 預期：新增成功，收盤價顯示「未取得」。
+     - log 出現「新增 2363 時補查收盤價沒有結果（UNAVAILABLE）」。
+  3. 排程路徑（commit 1）：接著第 2 步，把逐檔 API 恢復正常後重新啟動。
+     - 預期：啟動 log 出現「補查收盤價 市場=TWSE 補查=1檔 更新=1筆」。
+     - 清單變成第 1 步的顯示。
+
+  第 2、3 步要看假伺服器能不能只讓逐檔 API 失敗。做不到的話，可以只驗證第 1
+  步，排程路徑靠單元測試涵蓋。
+
+  建議的 commit 訊息（由你執行）
+
+  git add 
+  src/main/java/io/hsiaopingkuo/stockholdings/service/QuoteRefreshService.java 
+  src/main/java/io/hsiaopingkuo/stockholdings/service/MarketRefreshState.java sr
+  c/test/java/io/hsiaopingkuo/stockholdings/service/QuoteRefreshServiceTest.java
+  git commit -m "fix: 第3題 批次那天沒有成交或缺行情的持股，改用逐檔補查前一個有
+  成交日的收盤價（一天一次）"
+
+  git add src/main/java/io/hsiaopingkuo/stockholdings/quote/MarketResolver.java 
+  src/main/java/io/hsiaopingkuo/stockholdings/service/HoldingService.java 
+  src/test/java/io/hsiaopingkuo/stockholdings/service/HoldingServiceTest.java 
+  src/test/java/io/hsiaopingkuo/stockholdings/quote/MarketResolverTest.java
+  git commit -m "fix: 第3題 
+  新增持股時快取沒有收盤價，只對該市場逐檔補查，失敗仍照常新增"
+
+  還沒做的部分
+
+  - TESTLOG T-06：需要修好的 commit 編號，等你 commit 後我再提出草稿。
+  - REVIEW：草稿裡會包含這幾項：
+    - 巧馨的分工。
+    - 這次的決定（UNAVAILABLE 不記、補查條件擴大、補查順序）。
+    - 「刻意不做或簡化的部分」：新增持股時沒有檢查市場是否在冷卻，原因照你給的寫
+      。
+    - AI 犯過的錯：處理當天沒成交時，只靠 Quote.apply
+      保留舊收盤價，沒想到全新資料庫沒有舊收盤價；而且批次和逐檔兩條路徑不一致。
+  - README 兩處：等你手動驗證通過後，和 TESTLOG、REVIEW 的草稿一起提出。
+
+  提醒
+
+  - TESTLOG：這個問題本身就是要記的那一筆，草稿等 commit 編號出來後提出。
+  - ai-log：這次的對話記得匯出放進 ai-log/，commit 前檢查裡面有沒有密碼或
+    token。
+  - 新增時會呼叫官方：「快取沒有收盤價」時，新增持股會呼叫官方。這是你規格裡指定
+    的做法，和原本「快取沒有這個代號才查官方」屬於同一類例外。原本的
+    NoOfficialCallTest（快取有收盤價時不打官方）仍然通過。
+
+✻ Worked for 6m 23s · done 下午8:47
+
+> 已 commit，請提出 TESTLOG、REVIEW、README 草稿                                
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● 三份草稿如下，你確認之前我不會寫進檔案。兩個 fix commit 是 6c6c833 和
+  31be995。
+
+  README 草稿是假設你已經用假伺服器手動驗證通過；如果還沒驗證，請先驗證再寫入
+  README。
+
+  ---
+
+  TESTLOG.md：接在 T-05 後面
+
+  ## T-06
+  全新資料庫走批次路徑時，當天沒成交的股票顯示「未取得」（巧馨檢查時發現）
+  - 怎麼發現：巧馨檢查 master `e058e2f` 時，用自己寫的假官方伺服器實際操作
+  - 怎麼重現：1. 假伺服器上的 2363：11/20 收盤價 10.00，11/23 沒有成交（收盤價
+  "--"），11/24 還沒公布 2. 用全新的資料庫啟動（批次 API 正常），啟動查詢拿到
+  11/23 的批次資料 3. 新增 2363、1 張、10 4. 打開清單
+  - 預期／實際：預期顯示 10.00，並提示「2026-11-23 無成交，顯示 2026-11-20
+  收盤價」；實際顯示「未取得」（批次 API 改成 404、只走逐檔時顯示正確）
+  - 原因：批次只有某一天的資料，那天是 "--" 時，行情快取只有最近交易日、沒有收盤
+  價；只有逐檔查詢會往前找有成交的日子，批次成功時不走逐檔；新增時快取已經有
+  2363 這一列，就不再查官方
+  - 修好的 commit：`6c6c833`（fix: 第3題 批次那天沒有成交或缺行情的持股，改用逐
+  檔補查前一個有成交日的收盤價（一天一次））、`31be995`（fix: 第3題
+  新增持股時快取沒有收盤價，只對該市場逐檔補查，失敗仍照常新增）
+
+  ---
+
+  REVIEW.md
+
+  ① 分工表：在 Wynn 那一列下面新增一列
+
+  | 巧馨 | 用自己寫的假官方伺服器檢查第 3 題（master
+  `e058e2f`），提出報告：當天沒成交的股票走批次路徑時顯示「未取得」。修復由我與
+  Claude Code 完成 |
+
+  ② 新的一節：接在檔案最後
+
+  ## 第 3 題：巧馨檢查報告的修復（當天沒成交顯示「未取得」）
+
+  報告以 master `e058e2f` 為準；修復前對照目前的 master（已合併第 4
+  題），確認問題仍在。
+  修復前先寫測試重現問題（排程和新增兩條路徑的新測試都失敗），修好後才通過。
+
+  ### 我做的決定
+  | 項目 | 決定 |
+  |---|---|
+  | 批次寫入後補查 | 排程和啟動查詢都要：批次成功後，對該市場「有人持有，但快取
+  沒有這一列或沒有收盤價」的代號，用逐檔查詢往前找最近一個有成交日的收盤價 |
+  | 補查條件包含「快取沒有這一列」 | 報告只寫「收盤價是 NULL」，AI
+  把「沒有這一列」列為建議；我決定一起做：F-01
+  決定新增時快取寫入失敗仍照常新增、缺的行情由背景排程補上，不擴大就做不到 |
+  | 逐檔規則 | 照原本的規則：一次一個請求、每個請求前隨機等 3.2～5.8
+  秒（第一個也等，因為前一刻剛送過批次請求）、被擋就冷卻並停止這一輪 |
+  | 一天只補查一次 | 查到 FOUND、NOT_FOUND 才記成「今天已補查」；UNAVAILABLE 
+  可能只是暫時的，不記，下一輪再試。記在記憶體、跨日清空，重新啟動後同一天會再補
+  查一次 |
+  | 補查順序 | 
+  同一輪先補舊持股的市場、再補收盤價，剛補上市場的持股同一輪就能補到收盤價 |
+  | 新增持股時 | 
+  快取有這一列但沒有收盤價：市場、名稱用快取的，只對該市場逐檔補查，套用 F-01 
+  的時間預算與同時查詢上限；補查失敗、逾時或被擋，持股照常新增，收盤價留給背景排
+  程補 |
+  | commit | 兩個 fix 
+  commit：批次後補查（含補查條件擴大與順序調整）、新增持股時補查 |
+
+  ### 刻意不做或簡化的部分
+  - 新增持股時沒有檢查該市場是否正在冷卻（被官方擋下）。原因：新增由使用者逐次操
+  作、請求量低，而新增時補查收盤價和原本判斷市場的兩條路徑都要讀排程狀態，改動範
+  圍較大。
+
+  ### AI 犯過的錯
+  | # | 錯誤 | 怎麼發現 | 處理 |
+  |---|---|---|---|
+  | 1 | 寫批次路徑時，只靠 `Quote.apply`「當天沒成交時保留原本的收盤價」處理 
+  "--"，沒想到全新的資料庫根本沒有原本的收盤價；逐檔路徑會往前找有成交的日子，批
+  次路徑卻沒有，兩條路徑不一致 | 巧馨檢查報告 | 見 TESTLOG T-06 |
+  | 2 | 新增持股時，快取有這個代號就直接使用，沒有檢查快取裡的收盤價是不是空的 |
+  巧馨檢查報告 | 見 TESTLOG T-06 |
+
+  ---
+
+  README.md
+
+  你已同意的兩處
+
+  ①「收盤價怎麼更新」：在「全市場批次查詢失敗時…」那一行後面新增
+
+  - 全市場批次只有某一天的資料：有人持有的股票那天沒有成交（或批次裡沒有這一檔）
+  時，會再逐檔查詢，找出前一個有成交日的收盤價；同一檔一天最多補查一次。
+
+  ②「清單的收盤價怎麼顯示」：「未取得」那一行
+
+  - - 顯示「未取得」：還沒拿到這檔股票的行情（例如剛啟動、官方連不上），或這檔股
+  票一直沒有成交紀錄。
+  + - 顯示「未取得」：還沒拿到這檔股票的行情（例如剛啟動、官方連不上），或這檔股
+  票這個月和上個月都沒有成交（例如剛上市、長期停牌）。
+
+  新發現的第三處（請你決定要不要改）
+
+  「使用方式 → 新增」這一行寫「不向官方查詢」，修正之後已經不完全對：
+
+  - - 行情快取已有這個代號時（伺服器啟動後會自動抓全市場行情），直接使用快取的市
+  場與名稱，不向官方查詢
+  + - 行情快取已有這個代號時（伺服器啟動後會自動抓全市場行情），直接使用快取的市
+  場與名稱，不向官方查詢；
+  +   但快取還沒有這檔的收盤價時（例如那天剛好沒成交），會只向該市場補查收盤價，
+  查不到也照常新增，收盤價由背景排程補上
+
+  ---
+
+  建議的 commit 訊息（三份文件各一個 commit，沿用前幾題的做法）
+
+  docs: 第3題 TESTLOG 補上巧馨檢查發現的當天沒成交顯示「未取得」（T-06）
+  docs: 第3題 REVIEW 補上巧馨的檢查分工、修復決定與 AI 犯過的錯
+  docs: 第3題 README 補上當天沒成交時的補查行為與「未取得」的說明
+
+  提醒
+
+  - ai-log：這次的對話記得匯出放進 ai-log/，commit 前檢查有沒有密碼或 token。
+  - 重新 clone 啟動：合併回 master 之後，記得照 CLAUDE.md
+    的規則，在另一個資料夾重新 clone，照 README 從頭啟動一次。
+
+  請告訴我哪些可以寫入，以及 README 第三處要不要改。
+
+✻ Brewed for 48s · done 下午8:50
+
+> 三份草稿都同意寫入，但有以下修改：                                            
+                                                                                
+  1. 名稱：文件裡所有「巧馨」一律改成「Qiao」。                                 
+     - 這次的 TESTLOG、REVIEW、README 草稿都要改。                              
+     - 請用 grep 搜尋整個                                                       
+  repo（README.md、REVIEW.md、TESTLOG.md、CLAUDE.md、src/）                     
+       是否還有其他地方出現「巧馨」，列給我看，我確認後一起改成「Qiao」。       
+  2. README 第三處（「使用方式 → 新增」）：同意修改。                           
+  3. REVIEW 草稿裡「批次寫入後補查」那一列、「AI 犯過的錯」的表格，             
+     我這邊看到的內容不完整，寫入後請把這兩處的完整內容貼給我確認。             
+  4. commit 訊息同意，「巧馨」改成「Qiao」：                                    
+     docs: 第3題 TESTLOG 補上 Qiao 檢查發現的當天沒成交顯示「未取得」（T-06）   
+     docs: 第3題 REVIEW 補上 Qiao 的檢查分工、修復決定與 AI 犯過的錯            
+     docs: 第3題 README 補上當天沒成交時的補查行為與「未取得」的說明            
+                                                                                
+  README 我會先手動驗證，驗證通過再告訴你寫入；TESTLOG 和 REVIEW 可以先寫入。   
+
+  Searched for 1 pattern, ran 1 shell command, recalled 1 memory (ctrl+o to expand)
+
+● 兩個檔案都是 CRLF 換行。我先用 Edit 寫入，再把整個檔案統一成
+  CRLF，避免同一個檔案混用兩種換行。
+
+  Read 2 files (ctrl+o to expand)
+
+● Update(TESTLOG.md)
+  ⎿  Added 7 lines
+      36  - 預期／實際：預期提示保持空白；實際舊的結果回來後，又顯示「台
+          積電（上市）」
+      37  - 原因：代號格式不合時直接結束，沒有讓還在進行中的舊查詢失效
+      38  - 修好的 commit：`2a3c9c8`（fix: 第3題 代號輸入改變時立刻讓舊的
+          查詢結果失效（F-04））
+      39 +                                                               
+      40 +## T-06 全新資料庫走批次路徑時，當天沒成交的股票顯示「未取得」 
+         +（Qiao 檢查時發現）                                            
+      41 +- 怎麼發現：Qiao 檢查 master `e058e2f` 時，用自己寫的假官方伺服
+         +器實際操作                                                     
+      42 +- 怎麼重現：1. 假伺服器上的 2363：11/20 收盤價 10.00，11/23 沒 
+         +有成交（收盤價 "--"），11/24 還沒公布 2. 用全新的資料庫啟動（批
+         +次 API 正常），啟動查詢拿到 11/23 的批次資料 3. 新增 2363、1 張
+         +、10 4. 打開清單                                               
+      43 +- 預期／實際：預期顯示 10.00，並提示「2026-11-23 無成交，顯示 2
+         +026-11-20 收盤價」；實際顯示「未取得」（批次 API 改成 404、只走
+         +逐檔時顯示正確）                                               
+      44 +- 原因：批次只有某一天的資料，那天是 "--" 時，行情快取只有最近 
+         +交易日、沒有收盤價；只有逐檔查詢會往前找有成交的日子，批次成功 
+         +時不走逐檔；新增時快取已經有 2363 這一列，就不再查官方         
+      45 +- 修好的 commit：`6c6c833`（fix: 第3題 批次那天沒有成交或缺行情
+         +的持股，改用逐檔補查前一個有成交日的收盤價（一天一次））、`31be
+         +995`（fix: 第3題 新增持股時快取沒有收盤價，只對該市場逐檔補查，
+         +失敗仍照常新增）                                               
+
+● Update(REVIEW.md)
+  ⎿  Added 1 line
+       7  | 我（開發者） | 讀題、和 AI 討論規格並做所有設計決定、手動驗證
+          每一題、commit／開分支／PR／合併、匯出 AI 對話紀錄（ai-log/）、
+          確認所有文件內容 |
+       8  | Claude Code（AI） | 依我同意的提案撰寫程式與單元測試、提出 co
+          mmit 訊息與文件草稿、回報驗證方式與測試結果 |
+       9  | Wynn | 協助實測官方 API 每天開始有當天資料的時間（第 3 題）；
+          兩輪檢查專案（`1fc2151`、`435cfd9`）並提出檢查報告。報告中 F-01
+          ～F-04 的修復由我與 Claude Code 完成 |
+      10 +| Qiao | 用自己寫的假官方伺服器檢查第 3 題（master `e058e2f`） 
+         +，提出報告：當天沒成交的股票走批次路徑時顯示「未取得」。修復由 
+         +我與 Claude Code 完成 |                                        
+      11 
+      12  除了上表，沒有和其他人討論或分工。第 1、2 題只和 Claude Code 討
+          論，對話紀錄在 `ai-log/`。
+      13 
+
+● Now append the new REVIEW section at the end.
+
+  Read 1 file (ctrl+o to expand)
+
+● Update(REVIEW.md)
+  ⎿  Added 25 lines
+      147  | 7 | 用中文關鍵字 grep 統計 log，但 log 是 Big5 編碼，統計結
+           果都是 0，沒有意義 | AI 回報前自己發現 | 改成在測試裡暫時印出
+           每個請求的結果和耗時來確認，確認後移除 |
+      148  | 8 | 手動驗證步驟只寫了按下新增後的表單錯誤，漏寫了打字時就會
+           出現的即時提示（文字不同），讓我以為結果不正常 | 我手動測試時
+           發現 | 補充說明兩者的差別；程式本身正確 |
+      149  | 9 | 測試用了 `Thread.sleep(Duration)`，這是 Java 19 才有的寫
+           法，專案是 Java 17，編譯失敗 | 編譯錯誤 | 改成毫秒 |
+      150 +                                                              
+      151 +## 第 3 題：Qiao 檢查報告的修復（當天沒成交顯示「未取得」）   
+      152 +                                                              
+      153 +報告以 master `e058e2f` 為準；修復前對照目前的 master（已合併 
+          +第 4 題），確認問題仍在。                                     
+      154 +修復前先寫測試重現問題（排程和新增兩條路徑的新測試都失敗），修
+          +好後才通過。                                                  
+      155 +                                                              
+      156 +### 我做的決定                                                
+      157 +| 項目 | 決定 |                                               
+      158 +|---|---|                                                     
+      159 +| 批次寫入後補查 | 排程和啟動查詢都要：批次成功後，對該市場「 
+          +有人持有，但快取沒有這一列或沒有收盤價」的代號，用逐檔查詢往前
+          +找最近一個有成交日的收盤價 |                                  
+      160 +| 補查條件包含「快取沒有這一列」 | 報告只寫「收盤價是 NULL」，
+          +AI 把「沒有這一列」列為建議；我決定一起做：F-01 決定新增時快取
+          +寫入失敗仍照常新增、缺的行情由背景排程補上，不擴大就做不到 |  
+      161 +| 逐檔規則 | 照原本的規則：一次一個請求、每個請求前隨機等 3.2 
+          +～5.8 秒（第一個也等，因為前一刻剛送過批次請求）、被擋就冷卻並
+          +停止這一輪 |                                                  
+      162 +| 一天只補查一次 | 查到 FOUND、NOT_FOUND 才記成「今天已補查」 
+          +；UNAVAILABLE 可能只是暫時的，不記，下一輪再試。記在記憶體、跨
+          +日清空，重新啟動後同一天會再補查一次 |                        
+      163 +| 補查順序 | 同一輪先補舊持股的市場、再補收盤價，剛補上市場的 
+          +持股同一輪就能補到收盤價 |                                    
+      164 +| 新增持股時 | 快取有這一列但沒有收盤價：市場、名稱用快取的， 
+          +只對該市場逐檔補查，套用 F-01 的時間預算與同時查詢上限；補查失
+          +敗、逾時或被擋，持股照常新增，收盤價留給背景排程補 |          
+      165 +| commit | 兩個 fix commit：批次後補查（含補查條件擴大與順序調
+          +整）、新增持股時補查 |                                        
+      166 +                                                              
+      167 +### 刻意不做或簡化的部分                                      
+      168 +- 新增持股時沒有檢查該市場是否正在冷卻（被官方擋下）。原因：新
+          +增由使用者逐次操作、請求量低，而新增時補查收盤價和原本判斷市場
+          +的兩條路徑都要讀排程狀態，改動範圍較大。                      
+      169 +                                                              
+      170 +### AI 犯過的錯                                               
+      171 +| # | 錯誤 | 怎麼發現 | 處理 |                                
+      172 +|---|---|---|---|                                             
+      173 +| 1 | 寫批次路徑時，只靠 `Quote.apply`「當天沒成交時保留原本的
+          +收盤價」處理 "--"，沒想到全新的資料庫根本沒有原本的收盤價；逐 
+          +檔路徑會往前找有成交的日子，批次路徑卻沒有，兩條路徑不一致 | Q
+          +iao 檢查報告 | 見 TESTLOG T-06 |                              
+      174 +| 2 | 新增持股時，快取有這個代號就直接使用，沒有檢查快取裡的收
+          +盤價是不是空的 | Qiao 檢查報告 | 見 TESTLOG T-06 |            
+
+● Normalize line endings and verify the written content.
+  Ran 1 shell command (ctrl+o to expand)
+
+● 寫入完成，換行統一為 CRLF。git diff 只有新增的 33
+  行，沒有影響到其他行。順便更新記憶，記下這位協助者的代稱。
+
+  Ran 1 shell command, wrote 1 memory (ctrl+o to expand)
+
+● TESTLOG 和 REVIEW 已經寫入，名字都改成 Qiao，換行維持 CRLF，git diff
+  只有新增的 33 行。README 等你手動驗證通過後再寫。
+
+  1. 「巧馨」搜尋結果
+
+  我搜尋了整個 repo。README.md、REVIEW.md、TESTLOG.md、CLAUDE.md、ai-log/
+  都已經沒有「巧馨」。剩下 7 處都在 src/，全部是我在 6c6c833、31be995
+  寫的註解和測試裡的說明文字，還沒改，等你確認：
+
+  ┌────────────────────────────────────┬────────────────────────────────────┐
+  │              檔案:行               │              目前內容              │
+  ├────────────────────────────────────┼────────────────────────────────────┤
+  │ src/main/java/.../quote/MarketReso │ 往前找最近一個有成交日的收盤價（巧 │
+  │ lver.java:138                      │ 馨檢查時發現）。                   │
+  ├────────────────────────────────────┼────────────────────────────────────┤
+  │ src/main/java/.../service/HoldingS │ （例如批次那天剛好沒成交，資料庫又 │
+  │ ervice.java:129                    │ 是全新的，巧馨檢查時發現）：       │
+  ├────────────────────────────────────┼────────────────────────────────────┤
+  │ src/main/java/.../service/QuoteRef │ 清單會顯示「未取得」（巧馨檢查時發 │
+  │ reshService.java:257               │ 現）。                             │
+  ├────────────────────────────────────┼────────────────────────────────────┤
+  │ src/test/java/.../quote/MarketReso │ // =====                           │
+  │ lverTest.java:729                  │ 只查一個市場：…（巧馨檢查時發現）  │
+  │                                    │ =====                              │
+  ├────────────────────────────────────┼────────────────────────────────────┤
+  │ src/test/java/.../service/HoldingS │ // ===== 快取有這一列、但沒有收盤  │
+  │ erviceTest.java:148                │ 價（巧馨檢查時發現） =====         │
+  ├────────────────────────────────────┼────────────────────────────────────┤
+  │ src/test/java/.../service/QuoteRef │ // ===== 批次那天沒有成交：逐檔補  │
+  │ reshServiceTest.java:400           │ 查收盤價（巧馨檢查時發現） =====   │
+  ├────────────────────────────────────┼────────────────────────────────────┤
+  │ src/test/java/.../service/QuoteRef │ // 照巧馨的重現步驟：全新資料庫、… │
+  │ reshServiceTest.java:409           │                                    │
+  └────────────────────────────────────┴────────────────────────────────────┘
+
+  你同意後，我把這 7 處改成「Qiao」，跑一次 ./mvnw test，再提出一個 commit
+  訊息，例如：
+
+  docs: 第3題 程式註解裡的協助者改用代稱 Qiao
+
+  這次只改註解，不影響程式行為，所以用 docs。
+
+  另外有兩件事要注意：
+  - git 歷史：6c6c833 和 31be995 已經包含真名。如果已經 push 到公開
+    repo，這次修改只會改到最新版本，舊的 commit 裡還是看得到。要清掉歷史就得改寫
+    commit 再 force push。CLAUDE.md 規定計分看 commit
+    歷史，所以這件事請你自己決定，我不會主動做。
+  - ai-log：這次對話匯出後會出現真名，因為你的任務資料裡有。CLAUDE.md 規定
+    ai-log 不用整理，要不要在匯出檔裡把真名換掉，也由你決定。
+
+  2. REVIEW 那兩處寫入後的完整內容
+
+  「我做的決定」裡的「批次寫入後補查」（REVIEW.md 第 159 行）
+
+  | 批次寫入後補查 | 排程和啟動查詢都要：批次成功後，對該市場「有人持有，但快取
+  沒有這一列或沒有收盤價」的代號，用逐檔查詢往前找最近一個有成交日的收盤價 |
+
+  「AI 犯過的錯」表格
+
+  ### AI 犯過的錯
+  | # | 錯誤 | 怎麼發現 | 處理 |
+  |---|---|---|---|
+  | 1 | 寫批次路徑時，只靠 `Quote.apply`「當天沒成交時保留原本的收盤價」處理
+  "--"，沒想到全新的資料庫根本沒有原本的收盤價；逐檔路徑會往前找有成交的日子，批
+  次路徑卻沒有，兩條路徑不一致 | Qiao 檢查報告 | 見 TESTLOG T-06 |
+  | 2 | 新增持股時，快取有這個代號就直接使用，沒有檢查快取裡的收盤價是不是空的 |
+  Qiao 檢查報告 | 見 TESTLOG T-06 |
+
+  3. 你要怎麼驗證
+
+  git diff REVIEW.md TESTLOG.md
+
+  預期看到：
+  - TESTLOG 新增 T-06。
+  - REVIEW 分工表新增 Qiao 一列。
+  - REVIEW 最後新增「第 3 題：Qiao 檢查報告的修復」這一節。
+
+  4. Commit 訊息（由你執行）
+
+  git add TESTLOG.md
+  git commit -m "docs: 第3題 TESTLOG 補上 Qiao 
+  檢查發現的當天沒成交顯示「未取得」（T-06）"
+  git add REVIEW.md
+  git commit -m "docs: 第3題 REVIEW 補上 Qiao 的檢查分工、修復決定與 AI 
+  犯過的錯"
+
+  還沒做的部分
+
+  - README：三處都已經同意，等你手動驗證通過後告訴我，我再寫入，草稿裡沒有「巧馨
+    」。
+  - src/ 的 7 處「巧馨」：等你確認後再改。
+
+  我也更新了這個專案的記憶：協助者在 repo
+  裡只寫代稱（Wynn、Qiao），程式註解也一樣。
+
+✻ Baked for 1m 8s · done 下午8:55
+
+> 同意，src 的 7 處改成 Qiao                                                    
+
+● Bash(files=$(grep -rl "巧馨" src) && for f in $files; do file "$f"; done &&
+      sed -i 's/巧馨/Qiao/g' $files && grep -rn "巧馨" . --include=* 2>/dev/null
+      | grep -v "^./target…)
+  ⎿  src/main/java/io/hsiaopingkuo/stockholdings/quote/MarketResolver.java:
+      Java source, Unicode text, UTF-8 text
+     src/main/java/io/hsiaopingkuo/stockholdings/service/HoldingService.jav
+     … +40 lines (ctrl+o to expand)
+  ⎿  Updated
+     src\main\java\io\hsiaopingkuo\stockholdings\quote\MarketResolver.java
+     +1 -1
+      135 
+      136          /**
+      137           * 只查一個市場的最新資料：新增持股時，行情快取已經知
+           道市場、但還沒有收盤價（批次那天剛好沒成交），
+      138 -         * 用逐檔 lookupLatest 往前找最近一個有成交日的收盤價 
+          -（巧馨檢查時發現）。                                          
+      138 +         * 用逐檔 lookupLatest 往前找最近一個有成交日的收盤價 
+          +（Qiao檢查時發現）。                                          
+      139           *
+      140           * 和 resolve 共用號碼牌、執行緒池和時間預算的算法（F-
+           01）；
+      141           * 不做 10 分鐘快取和同代號合併（F-02）：同一個代號只
+           能新增一次，不會有大量重複的查詢。
+  ⎿  Updated src\test\java\io\hsiaopingkuo\stockholdings\service\HoldingSer
+     viceTest.java +1 -1
+      145                  assertThat(quoteRepository.count()).isZero();
+      146          }
+      147 
+      148 -        // ===== 快取有這一列、但沒有收盤價（巧馨檢查時發現） 
+          -=====                                                         
+      148 +        // ===== 快取有這一列、但沒有收盤價（Qiao檢查時發現） 
+          +=====                                                         
+      149 
+      150          /** 批次那天（11/23）2363 沒有成交，全新資料庫裡只有最
+           近交易日，沒有收盤價。 */
+      151          private void cacheWithoutClose(String code, String nam
+           e, Market market) {
+  ⎿  … +4 files changed
+     src\main\java\io\hsiaopingkuo\stockholdings\service\HoldingService.jav
+     a
+     src\main\java\io\hsiaopingkuo\stockholdings\service\QuoteRefreshServic
+     e.java
+     src\test\java\io\hsiaopingkuo\stockholdings\quote\MarketResolverTest.j
+     ava
+     +1 more
+
+● sed 把其中 4 個原本是 CRLF 的檔案改成了 LF。我先確認這會不會影響 commit
+  的內容：
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● commit 的內容不受影響，repo 內部本來就存 LF。我把英文文字前後補上空格，與 repo
+  其他寫法一致（「Wynn 檢查」），並把這幾個檔案的工作副本改回 CRLF。 · summary
+
+● Bash(files=$(git diff --name-only src) && sed -i -e 's/Qiao檢查/Qiao 檢查/g'
+      -e 's/照Qiao的/照 Qiao 的/g' -e 's/\r*$/\r/' $files && file $files | sed
+      's/.*stockholdings\///'…)
+  ⎿  warning: in the working copy of 'src/main/java/io/hsiaopingkuo/stockho
+     ldings/quote/MarketResolver.java', LF will be replaced by CRLF the nex
+     t time Git touches it
+     … +26 lines (ctrl+o to expand)
+  ⎿  6 files changed (binary, mode only or too large to show)
+     src\main\java\io\hsiaopingkuo\stockholdings\quote\MarketResolver.java
+     src\main\java\io\hsiaopingkuo\stockholdings\service\HoldingService.jav
+     a
+     src\main\java\io\hsiaopingkuo\stockholdings\service\QuoteRefreshServic
+     e.java
+     +3 more
+  ⎿  (timeout 10m)
+
+● src/ 的 7 處都改成 Qiao 了，整個 repo 已經沒有「巧馨」。./mvnw test 249
+  個全部通過。
+
+  改了哪些檔案
+
+  只改註解文字，程式沒動。git diff 每處都是一行換一行：
+
+  ┌────────────────────────────────────────────────────────┬──────────┐
+  │                          檔案                          │ 改了幾處 │
+  ├────────────────────────────────────────────────────────┼──────────┤
+  │ src/main/java/.../quote/MarketResolver.java            │ 1        │
+  ├────────────────────────────────────────────────────────┼──────────┤
+  │ src/main/java/.../service/HoldingService.java          │ 1        │
+  ├────────────────────────────────────────────────────────┼──────────┤
+  │ src/main/java/.../service/QuoteRefreshService.java     │ 1        │
+  ├────────────────────────────────────────────────────────┼──────────┤
+  │ src/test/java/.../quote/MarketResolverTest.java        │ 1        │
+  ├────────────────────────────────────────────────────────┼──────────┤
+  │ src/test/java/.../service/HoldingServiceTest.java      │ 1        │
+  ├────────────────────────────────────────────────────────┼──────────┤
+  │ src/test/java/.../service/QuoteRefreshServiceTest.java │ 2        │
+  └────────────────────────────────────────────────────────┴──────────┘
+
+  這次我犯的錯：
+  - 少了空格：一開始直接把兩個中文字換成英文，寫成「Qiao檢查」「照Qiao的」。repo
+    裡一直是「Wynn 檢查」這種前後留空格的寫法，所以補成「Qiao 檢查」「照 Qiao
+    的」。
+  - 換行被改掉：Git Bash 的 sed 把 4 個檔案的換行從 CRLF 改成 LF。repo
+    內部本來就存 LF（core.autocrlf=true），所以 commit 內容不受影響。我還是把 6
+    個檔案都改回 CRLF，和其他檔案一致。
+
+  這兩點都是格式問題，你覺得需要的話可以記進 REVIEW。
+
+  你要怎麼驗證
+
+  git diff src
+
+  預期看到 7 個「-」行（原本的名字）和 7
+  個「+」行（Qiao，前後有空格），沒有其他差異。
+
+  Commit 訊息（由你執行）
+
+  這次工作目錄裡有三組變更，可以分成三個 commit：
+
+  git add TESTLOG.md
+  git commit -m "docs: 第3題 TESTLOG 補上 Qiao 
+  檢查發現的當天沒成交顯示「未取得」（T-06）"
+  git add REVIEW.md
+  git commit -m "docs: 第3題 REVIEW 補上 Qiao 的檢查分工、修復決定與 AI 
+  犯過的錯"
+  git add src
+  git commit -m "docs: 第3題 程式註解裡的協助者改用代稱 Qiao"
+
+  還沒做的部分
+
+  - README：三處都已經同意，等你手動驗證通過後告訴我，我再寫入。
+  - git 歷史：6c6c833、31be995 這兩個 commit
+    裡還是真名。要不要改寫歷史由你決定，我不會主動做。
+  - ai-log：這次對話匯出後會出現真名，要不要換掉也由你決定。commit
+    前一樣要檢查有沒有密碼或 token。
+
+✻ Cogitated for 1m 10s · done 下午8:57
+
+※ recap: 我們在修第 3 題「當天沒成交顯示未取得」的 bug；兩個修正已 commit，TESTLOG、REVIEW 已寫入，程式註解也已改成 Qiao，測試全部通過。下一步請你執行那三個 docs commit，再手動驗證通過後告訴我寫入 README。 (turn off recaps in /config)
+
+> 請提供手動驗證的方法                                                          
+
+● 先查一下批次和逐檔 client
+  怎麼解析回應、會不會檢查日期，這會影響假伺服器要怎麼回資料。
+
+  Ran 3 shell commands (ctrl+o to expand)
+
+● 可以用 JDK 內建的簡易網頁伺服器當假官方伺服器，不需要另外安裝任何東西，也不用
+  Qiao 的伺服器。下面的步驟我還沒實際跑過，只是對照程式確認過。
+
+  原理
+
+  java -m jdk.httpserver 是 JDK 18 以後內建的靜態檔案伺服器，你目前預設的 java
+  是 25，可以用。它有兩個特性剛好適合這次測試：
+
+  - 只看路徑、不看查詢參數：不管程式問哪一天、哪個代號，都回同一個檔案。這正好模
+    擬 Qiao 的情境：批次永遠是 11/23 的資料，2363 那天是 --。
+  - 檔案不存在就回 404：把逐檔的檔案改名，就能模擬「批次正常、逐檔失敗」。
+
+  對照程式：
+  - 程式不會檢查回應的日期是不是查詢的那一天（TwseMiIndexClient
+    用表標題裡的日期）。
+  - 404 會被當成查不了（FAILED／UNAVAILABLE），不會當成被擋。
+
+  所以這個做法可行。
+
+  準備：兩個假資料檔
+
+  建立資料夾 C:\fake-quote\rwd\zh\afterTrading\，在裡面放兩個沒有副檔名的檔案。
+  用記事本存檔時，編碼選「UTF-8」，存檔類型選「所有檔案」，避免被自動加上 .txt。
+
+  MI_INDEX（上市批次：2330 有成交，2363 是 --）
+
+  {"stat":"OK","date":"20261123","tables":[{"title":"115年11月23日 
+  每日收盤行情(全部(不含權證、牛熊證))","fields":["證券代號","證券名稱","收盤價"
+  ],"data":[["2330","台積電","2,030.00"],["2363","矽統","--"]]}]}
+
+  STOCK_DAY（2363 逐檔：11/20 收盤 10.00，11/23 沒有成交）
+
+  {"stat":"OK","date":"20261101","title":"115年11月 2363 矽統           
+  各日成交資訊","fields":["日期","成交股數","成交金額","開盤價","最高價","最低價
+  ","收盤價","漲跌價差","成交筆數","註記"],"data":[["115/11/19","1,000","10,000"
+  ,"9.90","10.00","9.90","9.95","+0.05","10",""],["115/11/20","1,000","10,000","
+  10.00","10.00","10.00","10.00","+0.05","10",""],["115/11/23","0","0","--","--"
+  ,"--","--"," 0.00","0",""]]}
+
+  限制：逐檔不管查哪個代號都會回 2363 的資料，所以這次只測 2363。
+
+  步驟
+
+  視窗 A：啟動假伺服器
+
+  java -m jdk.httpserver -p 9000 -d C:\fake-quote
+
+  這個視窗會印出每個請求，可以看到程式有沒有去查 STOCK_DAY。
+
+  視窗 B：備份資料庫並設定環境變數
+
+  cd C:\TKA102_JavaApp\Workspace_for_practice\stock-holdings
+  Rename-Item data data-backup     # 備份原本的資料庫，不是刪除
+  $env:TWSE_BASE_URL="http://localhost:9000"
+  $env:TPEX_BASE_URL="http://localhost:9000"
+  $env:TWSE_HOLIDAY_URL="http://localhost:9000/holiday"   # 回 
+  404，程式會當成交易日，不會連到真的官方
+  .\mvnw.cmd spring-boot:run
+
+  驗證 1：新增時補查成功（commit 31be995）
+
+  1. 等啟動完成，視窗 A 會看到 GET /rwd/zh/afterTrading/MI_INDEX?...。
+  2. 打開 http://localhost:8080/holdings ，新增 2363、1 張、10。
+  3. 預期：
+     - 視窗 A 出現一次 GET /rwd/zh/afterTrading/STOCK_DAY?...stockNo=2363...。
+     - 不會出現 tradingStock：只查上市，沒有兩個市場都查。
+     - 清單顯示收盤價 10.00，並提示「2026-11-23 無成交，顯示 2026-11-20 
+       收盤價」。
+
+  驗證 2：新增時補查失敗，持股照常新增（commit 31be995）
+
+  1. 在視窗 B 按 Ctrl+C 停止程式，然後：
+
+  Rename-Item data data-test1                                          # 
+  換成全新的資料庫
+  Rename-Item C:\fake-quote\rwd\zh\afterTrading\STOCK_DAY STOCK_DAY.off   # 
+  讓逐檔回 404
+  .\mvnw.cmd spring-boot:run
+  2. 新增 2363、1 張、10。
+  3. 預期：
+     - 新增成功，清單上 2363 的收盤價顯示「未取得」，盈虧顯示「—」。
+     - 視窗 B 的 log 出現「新增 2363 時補查收盤價沒有結果（UNAVAILABLE）」。
+
+  驗證 3：啟動時批次後補查（commit 6c6c833）
+
+  1. 停止程式，不換資料庫，把逐檔檔案改回來再啟動：
+
+  Rename-Item C:\fake-quote\rwd\zh\afterTrading\STOCK_DAY.off STOCK_DAY
+  .\mvnw.cmd spring-boot:run
+  2. 預期：
+     - 啟動時先查 MI_INDEX。
+     - 隨機等 3.2～5.8 秒後，視窗 A 出現 STOCK_DAY。
+     - log 出現「補查收盤價 市場=TWSE 補查=1檔 更新=1筆」。
+     - 大約 10 秒後重新整理清單，2363 變成 10.00，並出現和驗證 1 相同的提示。
+
+  時段說明：如果在週一到週五 13:40～15:40 之間做驗證
+  2，排程每一輪都會再試一次補查。這時把 STOCK_DAY
+  改回來，不用重新啟動也會補上。這是正確的行為（UNAVAILABLE
+  不記成已補查，下一輪再試），只是驗證 3 的 log 可能會先出現。
+
+  驗證完的還原
+
+  # 停止程式後
+  Rename-Item data data-test2
+  Rename-Item data-backup data
+  Remove-Item Env:TWSE_BASE_URL, Env:TPEX_BASE_URL, Env:TWSE_HOLIDAY_URL
+
+  環境變數一定要清掉（或直接關掉這個 PowerShell
+  視窗），否則下次啟動還會連到假伺服器，就是 TESTLOG T-01
+  的情況。確認沒問題後，data-test1、data-test2 可以刪掉。
+
+  單元測試已涵蓋、手動不容易做出來的情況
+
+  以下情況靠單元測試確認，手動驗證不用做：
+  - 同一天不重複補查
+  - 快取沒有這一列
+  - 補查被擋時冷卻
+  - 先補市場、再補收盤價
+
+  假資料檔放在 repo 外面，不會進到
+  commit。如果你希望，我可以把這兩個檔案先建好放在暫存資料夾，省去手動複製的麻煩
+  ，你回覆「同意」我再建立。驗證通過後告訴我，我就寫入 README 那三處。
+
+✻ Crunched for 1m 27s · done 下午9:03
+
+> 同意，請建立假資料檔                                                          
+
+  Made 2 scratchpad edits +4 (ctrl+o to expand)
+
+● Files created. Now a quick check that the fake server actually serves them as
+  expected (query string ignored, no BOM, 404 when missing).
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● 確認沒問題，把這個測試用的伺服器關掉：
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● 兩個假資料檔都建好了，也實際啟動假伺服器測過一次。
+
+  建立的檔案
+
+  放在暫存資料夾（不在 repo 裡，不會被 commit）：
+
+  - C:\Users\Ping\AppData\Local\Temp\claude\d50855ca92fd132e\1ed9a736-fd77-48c7-
+    9a54-d89220e743db\scratchpad\fake-quote\rwd\zh\afterTrading\MI_INDEX
+  - C:\Users\Ping\AppData\Local\Temp\claude\d50855ca92fd132e\1ed9a736-fd77-48c7-
+    9a54-d89220e743db\scratchpad\fake-quote\rwd\zh\afterTrading\STOCK_DAY
+
+  內容和上一則的草稿相同，存成 UTF-8、沒有 BOM（BOM
+  是檔案開頭三個隱形的位元組，有些程式讀 JSON 時會出錯）。
+
+  注意：這個暫存資料夾在重新開機或系統清理時可能被清掉。驗證之前如果發現檔案不見
+  了，再跟我說，我重新建立。
+
+  已經先確認過的事
+
+  我在 port 9123 啟動假伺服器測了一次，測完已經關掉：
+
+  ┌────────────────────────────────────┬────────────────────────────────────┐
+  │                請求                │                結果                │
+  ├────────────────────────────────────┼────────────────────────────────────┤
+  │ MI_INDEX?date=20261124&...（故意問 │ 200，回的是 11/23                  │
+  │  11/24）                           │ 的資料：查詢參數被忽略，符合預期   │
+  ├────────────────────────────────────┼────────────────────────────────────┤
+  │ STOCK_DAY?...stockNo=2363...       │ 200                                │
+  ├────────────────────────────────────┼────────────────────────────────────┤
+  │ tradingStock?...（沒有這個檔案）   │ 404，程式會當成查不了              │
+  └────────────────────────────────────┴────────────────────────────────────┘
+
+  步驟要改的地方
+
+  路徑很長，所以先存成變數。上一則步驟裡所有的 C:\fake-quote 都換成
+  $fake。兩個視窗都要先執行這一行，因為變數只在當前視窗有效：
+
+  $fake = "C:\Users\Ping\AppData\Local\Temp\claude\d50855ca92fd132e\1ed9a736-fd7
+  7-48c7-9a54-d89220e743db\scratchpad\fake-quote"
+
+  視窗 A（假伺服器）
+
+  java -m jdk.httpserver -p 9000 -d $fake
+
+  驗證 2：讓逐檔回 404
+
+  Rename-Item "$fake\rwd\zh\afterTrading\STOCK_DAY" STOCK_DAY.off
+
+  驗證 3：改回來
+
+  Rename-Item "$fake\rwd\zh\afterTrading\STOCK_DAY.off" STOCK_DAY
+
+  其他步驟（備份 data、設定環境變數、.\mvnw.cmd 
+  spring-boot:run、預期結果、驗證完的還原）都和上一則一樣。
+
+  驗證通過後告訴我，我就寫入 README 那三處。過程中結果和預期不同的話，把畫面和
+  log 貼給我，確認原因之後再修正，並照流程提出 TESTLOG 草稿。
+
+✻ Worked for 31s · done 下午9:07
+
+> 跟我說明我現在要怎麼手動測試                                                  
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● port 9000 已經被別的程式占用了，先看看是哪個程式：
+
+  Ran 2 shell commands · 1 failed (ctrl+o to expand)
+
+● 那個程式查不到名稱，可能是系統或其他需要管理員權限的程式。我不會去關掉它，改用
+  前面已經測過、沒有被占用的 port 9123。
+
+  確認過的狀態：
+  - 分支是 fix/q3-no-trade-backfill，工作目錄是乾淨的，表示文件和註解你都已經
+    commit 了。
+  - 兩個假資料檔都還在。
+  - port 8080 沒有被占用。
+
+  下面是完整的手動測試流程。
+
+  ---
+
+  手動測試：當天沒成交的股票（T-06）
+
+  需要開兩個 PowerShell 視窗：視窗 A 跑假官方伺服器，視窗 B 跑我們的程式。
+
+  第 0 步：準備（兩個視窗都要做）
+
+  兩個視窗都先貼上這一行，設定假資料的位置：
+
+  $fake = "C:\Users\Ping\AppData\Local\Temp\claude\d50855ca92fd132e\1ed9a736-fd7
+  7-48c7-9a54-d89220e743db\scratchpad\fake-quote"
+
+  視窗 A：啟動假官方伺服器，這個視窗之後一直開著。
+
+  java -m jdk.httpserver -p 9123 -d $fake
+
+  看到類似 Serving ... at http://127.0.0.1:9123/
+  就成功了。之後程式每查一次官方，這裡都會印出一行請求紀錄。
+
+  視窗 B：備份資料庫、設定環境變數、啟動程式。
+
+  cd C:\TKA102_JavaApp\Workspace_for_practice\stock-holdings
+  Rename-Item data data-backup
+  $env:TWSE_BASE_URL="http://localhost:9123"
+  $env:TPEX_BASE_URL="http://localhost:9123"
+  $env:TWSE_HOLIDAY_URL="http://localhost:9123/holiday"
+  .\mvnw.cmd spring-boot:run
+
+  - Rename-Item data 
+    data-backup：把原本的資料庫改名保存，程式就會用全新的資料庫啟動。
+  - 三個環境變數：讓程式改連假伺服器，不連真的官方。
+
+  ---
+
+  測試 1：新增時補查成功
+
+  1. 等視窗 B 啟動完成。視窗 A 會出現 MI_INDEX 的請求，這是啟動時抓的批次資料。
+  2. 瀏覽器打開 http://localhost:8080/holdings
+  3. 新增：代號 2363、張數 1、買進價 10
+  4. 預期看到：
+     - 視窗 A 多一行 STOCK_DAY，而且只有這一行，沒有
+       tradingStock。代表只查上市，沒有兩個市場都查。
+     - 清單上 2363 的收盤價是 10.00，旁邊提示「2026-11-23 無成交，顯示 
+       2026-11-20 收盤價」。
+
+  修正前這裡會顯示「未取得」。
+
+  ---
+
+  測試 2：新增時補查失敗，持股照樣新增
+
+  1. 視窗 B 按 Ctrl+C 停止程式，然後執行：
+
+  Rename-Item data data-test1
+  Rename-Item "$fake\rwd\zh\afterTrading\STOCK_DAY" STOCK_DAY.off
+  .\mvnw.cmd spring-boot:run
+
+     - 第一行：再換一次全新的資料庫。
+     - 第二行：把逐檔資料改名，假伺服器就會回 404，模擬「批次正常、逐檔失敗」。
+  2. 新增 2363、1、10
+  3. 預期看到：
+     - 新增成功，不會出現錯誤訊息。
+     - 清單上 2363 的收盤價顯示「未取得」，盈虧顯示「—」。
+     - 視窗 B 的 log 有一行「新增 2363 時補查收盤價沒有結果（UNAVAILABLE）」。
+
+  ---
+
+  測試 3：重新啟動時自動補上收盤價
+
+  1. 視窗 B 按 Ctrl+C 停止程式。這次不換資料庫，只把逐檔資料改回來：
+
+  Rename-Item "$fake\rwd\zh\afterTrading\STOCK_DAY.off" STOCK_DAY
+  .\mvnw.cmd spring-boot:run
+  2. 預期看到：
+     - 視窗 A 先出現 MI_INDEX，過 3～6 秒後出現
+       STOCK_DAY。中間的等待是刻意的隨機間隔，用來避免被官方擋。
+     - 視窗 B 的 log 有一行「補查收盤價 市場=TWSE 補查=1檔 更新=1筆」。
+     - 大約 10 秒後重新整理清單，2363 變成 10.00，並出現和測試 1 一樣的提示。
+
+  時段說明：如果在週一到週五 13:40～15:40 之間測試，做完測試 2
+  後，排程每一輪都會自動再補查一次。所以 STOCK_DAY
+  改回來之後，可能不用重新啟動就自動補上了。這也是正確的行為，記下來告訴我就好。
+
+  ---
+
+  第 4 步：還原（一定要做）
+
+  1. 視窗 A、B 都按 Ctrl+C 停止。
+  2. 在視窗 B 執行：
+
+  Rename-Item data data-test2
+  Rename-Item data-backup data
+  Remove-Item Env:TWSE_BASE_URL, Env:TPEX_BASE_URL, Env:TWSE_HOLIDAY_URL
+  3. 最保險的做法是直接關掉這兩個 PowerShell 
+     視窗。環境變數如果還在，下次啟動會連到假伺服器，就是 TESTLOG T-01 的情況。
+  4. 確認原本的持股都還在之後，data-test1、data-test2 可以刪掉。
+
+  ---
+
+  測完之後
+
+  - 三個測試都符合預期：告訴我「驗證通過」，我就寫入 README 那三處，並提出
+    commit 訊息。
+  - 有任何一步和預期不同：把瀏覽器畫面、視窗 A 的請求紀錄、視窗 B 的 log
+    貼給我。我會先確認原因，不會直接改程式。
+
+✻ Cooked for 33s · done 下午9:09
+
+※ recap: 我們在修第 3 題「當天沒成交的股票顯示未取得」，程式和 TESTLOG、REVIEW 都已 commit，現在等你手動驗證。下一步：照上一則的步驟，用 port 9123 的假伺服器跑測試 1 到 3，通過後告訴我，我再寫 README。 (turn off recaps in /config)
+
+> 測試1                                                                         
+  新增：代號 2363、張數 1、買進價 10                                            
+  A的回覆:                                                                      
+  127.0.0.1 - - [24/11??2026:21:13:44 +0800] "GET                               
+  /rwd/zh/afterTrading/STOCK_DAY?date=20261124&stockNo=2363&response=json       
+  HTTP/1.1" 200 -                                                               
+                                                                                
+  測試2                                                                         
+   2363 的收盤價顯示「未取得」，盈虧顯示「—」                                   
+  log： 新增 2363                                                               
+  時補查收盤價沒有結果（UNAVAILABLE），持股照常新增，收盤價由背景排程補上       
+                                                                                
+  測試3                                                                         
+  視窗Ｂlog：補查收盤價 市場=TWSE 補查=1檔 更新=1筆                             
+  刷新後頁面出現和測試1一樣結果                                                 
+                                                                                
+  驗證通過                                                                      
+
+● 驗證通過，開始寫入你已經同意的 README 三處。
+
+  Read 1 file, ran 1 shell command (ctrl+o to expand)
+
+● Update(README.md)  ⎿  Added 2 lines, removed 1 line
+      24  打開 http://localhost:8080 ，點「持股清單」（或直接打開 http://
+          localhost:8080/holdings ）：
+      25 
+      26  - **新增**：輸入股票代號、張數、買進價後按「新增」。
+      27 -  - 行情快取已有這個代號時（伺服器啟動後會自動抓全市場行情）， 
+         -直接使用快取的市場與名稱，不向官方查詢                         
+      27 +  - 行情快取已有這個代號時（伺服器啟動後會自動抓全市場行情）， 
+         +直接使用快取的市場與名稱，不向官方查詢；                       
+      28 +    但快取還沒有這檔的收盤價時（例如那天剛好沒成交），會只向該 
+         +市場補查收盤價，查不到也照常新增，收盤價由背景排程補上         
+      29    - 快取沒有時才向證交所、櫃買中心確認代號，**這時需要能連上網
+          路**
+      30    - 股票代號：必填，只能是英文字母或數字，最多 10 個字；前後空
+          白會自動去掉，英文字母會轉成大寫（例如 `00631l` 存成 `00631L`）
+      31    - 輸入代號後（停止輸入 0.5 秒，或離開欄位），欄位旁會顯示股票
+          名稱與市場，例如「台積電（上市）」
+
+● Update(README.md)
+  ⎿  Added 1 line
+      56    13:40～14:30 約每 60 秒一次，14:30～15:40 每 10 分鐘一次；拿
+          到當天資料後該市場當天就停止。
+      57    （依實測，官方約 13:50～14:02 公布當天收盤價。）
+      58  - 全市場批次查詢失敗時，改成逐檔查詢有人持有的股票；被官方擋下
+          時該市場暫停 30 分鐘。
+      59 +- 全市場批次只有某一天的資料：有人持有的股票那天沒有成交（或批 
+         +次裡沒有這一檔）時，會再逐檔查詢，找出前一個有成交日的收盤價； 
+         +同一檔一天最多補查一次。                                       
+      60  - 排程會讀取證交所的休市日表，事先公布的休市日當天不查詢；休市
+          日表查不到時（例如測試伺服器沒有這支 API）當成交易日，照常查詢
+          。
+      61    颱風假等臨時休市不在表裡，那天會查到「沒有資料」，重試到 15:4
+          0 為止。
+      62  - 非交易時段若官方或測試伺服器的資料有變動，要等下一個交易日 13
+          :40 之後，或重新啟動伺服器才會更新。
+
+● Update(README.md)
+  ⎿  Added 1 line, removed 1 line
+      65 
+      66  - 一般：顯示最近一個交易日的收盤價與日期。
+      67  - 當天沒有成交：顯示前一個有成交日的收盤價，並標示「{最近交易日
+          } 無成交，顯示 {成交日} 收盤價」。
+      68 -- 顯示「未取得」：還沒拿到這檔股票的行情（例如剛啟動、官方連不 
+         -上），或這檔股票一直沒有成交紀錄。                             
+      68 +- 顯示「未取得」：還沒拿到這檔股票的行情（例如剛啟動、官方連不 
+         +上），或這檔股票這個月和上個月都沒有成交（例如剛上市、長期停牌 
+         +）。                                                           
+      69 
+      70  ## 盈虧怎麼算
+      71 
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● README 三處都寫好了，內容和你同意的草稿一樣。只改了 README.md，換行維持
+  CRLF，git diff 是新增 4 行、刪除 2 行。
+
+  改了哪些地方
+
+  ┌──────────────────────────┬───────────────────────────────────────────────┐
+  │           位置           │                     修改                      │
+  ├──────────────────────────┼───────────────────────────────────────────────┤
+  │ 使用方式 → 新增（第 27   │ 句尾加「；」，下面補一行：快取沒有收盤價時，  │
+  │ 行）                     │ 只向該市場補查，查不到也照常新增              │
+  ├──────────────────────────┼───────────────────────────────────────────────┤
+  │ 收盤價怎麼更新（第 58    │ 批次那天沒有成交，或批次裡沒有這一檔時，會逐  │
+  │ 行，新增一行）           │ 檔補查前一個有成交日的收盤價，同一檔一天最多  │
+  │                          │ 一次                                          │
+  ├──────────────────────────┼───────────────────────────────────────────────┤
+  │ 清單的收盤價怎麼顯示（第 │ 「一直沒有成交紀錄」改成「這個月和上個月都沒  │
+  │  67 行）                 │ 有成交（例如剛上市、長期停牌）」              │
+  └──────────────────────────┴───────────────────────────────────────────────┘
+
+  你要怎麼確認
+
+  git diff README.md
+
+  或在 VS Code 打開 README.md 的預覽，確認第 27～28
+  行的縮排有正確顯示在「新增」那一項底下。
+
+  Commit 訊息（由你執行）
+
+  git add README.md
+  git commit -m "docs: 第3題 README 
+  補上當天沒成交時的補查行為與「未取得」的說明"
+
+  你的驗證紀錄
+
+  - 視窗 A 的時間顯示成 24/11??2026：這是 PowerShell
+    主控台的編碼顯示不了「月」這個字，跟程式無關。
+  - 測試 1 只出現一次 STOCK_DAY、沒有 tradingStock，確認新增時只查上市。
+  - 測試 2、3 的 log 和畫面都符合預期。
+
+  這次手動驗證沒有發現新問題，所以 TESTLOG 不用新增。
+
+  提醒
+
+  - 還原：data-backup 已經不在了，所以應該已經改回
+    data。請確認環境變數也清掉了，或確定那兩個 PowerShell
+    視窗已經關掉。打開清單，看原本的持股是否還在；確認後，data-test1、data-test2
+    可以刪掉。
+  - ai-log：這次對話記得匯出放進 ai-log/。commit 前檢查有沒有密碼或
+    token，以及要不要把協助者的真名換成 Qiao。
+  - 合併與重新 clone：這個分支合併回 master 時用一般 merge，不要用 squash
+    merge。合併後在另一個資料夾重新 clone，照 README 從頭啟動一次。
+  - git 歷史：6c6c833、31be995 裡還是協助者的真名，要不要處理由你決定。
+
+✻ Brewed for 28s · done 下午9:23
+
+> 不處理真名，環境變數也清掉了，替我刪除你創的假資料                            
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● 暫存資料夾裡只有我建立的東西：假資料檔，以及先前測試假伺服器時留下的
+  log，全部刪除：
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● 我建立的假資料都刪掉了，暫存資料夾現在是空的。
+
+  刪掉的有：
+  - fake-quote 資料夾，裡面是 MI_INDEX、STOCK_DAY 兩個假資料檔
+  - server.log：我先前在 port 9123 試跑假伺服器時留下的紀錄
+
+  這些都不在 repo 裡，所以 git 沒有任何變動。
+
+  專案資料夾裡的 data-test1、data-test2 是測試時用的資料庫，是你執行指令改名產生
+  的，我沒有動。確認原本的持股都還在之後，可以自己刪掉：
+
+  Remove-Item -Recurse data-test1, data-test2
+
+  這一輪剩下的工作：
+  - README：commit docs: 第3題 README 
+    補上當天沒成交時的補查行為與「未取得」的說明。
+  - ai-log：匯出這次對話放進 ai-log/，commit 前檢查有沒有密碼或 token。
+  - 合併：用一般 merge 合併回 master，不要用 squash。合併後在另一個資料夾重新
+    clone，照 README 從頭啟動一次。
+
+  真名不處理，我知道了。
+
+✻ Sautéed for 10s · done 下午9:25
