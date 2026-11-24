@@ -1,0 +1,923 @@
+ ▐▛███▛█   Claude Code v2.1.329
+▝▜██████▀  Opus 5.5 · Claude Pro
+ ▝▝   ▝▝   C:\TKA102_JavaApp\Workspace_for_practice\stock-holdings
+
+
+> /clear                                                                        
+
+> 【規則】先讀 CLAUDE.md，全程遵守。先提方案等「同意」才動手。commit            
+  由我執行。V1～V6 不能改。                                                     
+                                                                                
+  【背景】朋友第二、三輪驗收都指出網頁沒有 CSRF                                 
+  防護：其他網站可以偷偷送出表單，修改使用者的持股。第 6 階段要做 2.0           
+  的網頁表單，在那之前先加上，新的表單就會自動帶上防護。                        
+                                                                                
+  【開始前】從最新的 master 開分支 fix/csrf。                                   
+                                                                                
+  【要做的】                                                                    
+  1. 加上 Spring Security，只用來做 CSRF：                                      
+     - 網頁表單（POST）要驗證 CSRF token；Thymeleaf 用 th:action                
+  的表單會自動帶上隱藏欄位，請確認現有的表單都會帶到。                          
+     - /api/** 不驗證 CSRF：App 用 JSON，不靠 cookie 登入，不受 CSRF 影響。     
+     - 不加登入：所有網址照樣不用登入；關掉預設的登入頁、HTTP                   
+  Basic、啟動時產生的密碼。                                                     
+     - 沒有 token 或 token 錯誤時，網頁要顯示看得懂的訊息（例如「表單已過期，請 
+  重新整理後再送出」），不能是預設的錯誤頁；/api 的錯誤格式維持                 
+  {"error":{code,message}}。                                                    
+     - Spring Security 預設加的安全性                                           
+  header，請列出來，說明會不會影響現有功能。                                    
+  2. 順便修正 HoldingCreateForm.java 第 34                                      
+  行附近那行寫錯的註解：註解說會忽略尾端的 0，實際上 10.100                     
+  會被拒絕。只改註解，不改行為。                                                
+                                                                                
+  【測試：只做必要的】                                                          
+  - 沒有 CSRF token 的網頁 POST → 被擋，顯示看得懂的訊息；帶 token → 正常。     
+  - /api/v1 的 POST、PUT、DELETE 不需要 token，行為不變。                       
+  - 現有網頁的 POST 測試：只能補上 .with(csrf())，預期值不能改。                
+    開發途中只跑相關的測試類別，用 ./mvnw -q；全部測試由我自己跑。              
+                                                                                
+  【回覆格式】                                                                  
+  - 提案：用表格，控制在 40 行內，只寫做法、預設 header                         
+  的影響、會改的檔案、需要我決定的問題。                                        
+  - 完成回報：只寫跟提案不一樣的地方、需要我決定的事、commit 訊息。             
+                                                                                
+  【規則再提醒】先提方案等「同意」；不加登入；不改 /api 的行為；main 和 test    
+  一起 commit；設計文件和驗收報告不 commit。                                    
+
+  Ran 5 shell commands (ctrl+o to expand)
+
+● 目前在讀現有程式碼（表單、錯誤處理、測試設定），確認 Spring Boot 4 的 Security
+  模組怎麼接進 @WebMvcTest，接著就提出方案。
+
+  Ran 3 shell commands (ctrl+o to expand)
+
+● 已經從最新的 master 開好 fix/csrf
+  分支，還沒有改任何檔案。以下是方案，請你確認。
+
+  CSRF 方案（CSRF：別的網站趁你開著本站時，偷偷用你的瀏覽器送出表單）
+
+  ┌──────────┬───────────────────────────────────────────────────────────────┐
+  │   項目   │                             做法                              │
+  ├──────────┼───────────────────────────────────────────────────────────────┤
+  │          │ 加 spring-boot-starter-security；測試加                       │
+  │ 依賴     │ spring-boot-starter-security-test。這是 Boot 4                │
+  │          │ 拆出來的測試模組，名稱我不確定，下載時會先確認                │
+  ├──────────┼───────────────────────────────────────────────────────────────┤
+  │ 規則     │ 新增 SecurityConfig：所有網址都不用登入（permitAll）；/api/** │
+  │          │  不檢查 CSRF；關掉預設登入頁、HTTP Basic、logout              │
+  ├──────────┼───────────────────────────────────────────────────────────────┤
+  │ 啟動密碼 │ 在 application.properties 排除 UserDetailsServiceAutoConfigur │
+  │          │ ation，啟動時就不會印出產生的密碼                             │
+  ├──────────┼───────────────────────────────────────────────────────────────┤
+  │ 表單     │ 3 個表單（新增、修改、刪除）都已經用 th:action +              │
+  │ token    │ method="post"，Thymeleaf 會自動帶上隱藏欄位 _csrf，不用改     │
+  │          │ HTML。測試會確認畫面上真的有這個欄位                          │
+  ├──────────┼───────────────────────────────────────────────────────────────┤
+  │          │ 自訂 AccessDeniedHandler：網頁導回 /holdings，頁面上方顯示「  │
+  │ 被擋時   │ 表單已過期，請重新整理後再送出」。用的是現有的 errorMessage   │
+  │          │ 顯示區，跟「找不到持股」同一套做法                            │
+  ├──────────┼───────────────────────────────────────────────────────────────┤
+  │ 註解     │ 修正 HoldingCreateForm.java:34 的註解：@Digits 不會去掉尾端的 │
+  │          │  0，10.100 會被當成三位小數而被拒絕。只改註解                 │
+  └──────────┴───────────────────────────────────────────────────────────────┘
+
+  Spring Security 預設加的 header
+
+  ┌─────────────────────────────┬────────────────────────────────────────────┐
+  │           Header            │                    影響                    │
+  ├─────────────────────────────┼────────────────────────────────────────────┤
+  │ X-Content-Type-Options:     │ 不影響，回應類型本來就正確                 │
+  │ nosniff                     │                                            │
+  ├─────────────────────────────┼────────────────────────────────────────────┤
+  │ X-Frame-Options: DENY       │ 頁面不能被別人用 iframe 嵌入。本站沒用     │
+  │                             │ iframe，也沒開 H2 console，所以不影響      │
+  ├─────────────────────────────┼────────────────────────────────────────────┤
+  │ Cache-Control: no-cache,    │ 每次都重新抓頁面。缺點是表單驗證失敗後按「 │
+  │ no-store…、Pragma、Expires: │ 上一頁」，瀏覽器可能問要不要重新送出。App  │
+  │  0                          │ 不受影響                                   │
+  ├─────────────────────────────┼────────────────────────────────────────────┤
+  │ X-XSS-Protection: 0         │ 關掉舊瀏覽器的 XSS                         │
+  │                             │ 過濾器（現在官方建議這樣做），不影響       │
+  ├─────────────────────────────┼────────────────────────────────────────────┤
+  │ Strict-Transport-Security   │ 只有 HTTPS 才會送出，本站是                │
+  │                             │ HTTP，所以不會出現                         │
+  ├─────────────────────────────┼────────────────────────────────────────────┤
+  │ CSP                         │ 預設不加，所以頁面內的 <script> 照常執行   │
+  └─────────────────────────────┴────────────────────────────────────────────┘
+
+  會改的檔案
+
+  檔案: pom.xml、application.properties
+  內容: 加依賴、排除產生密碼的自動設定
+  ────────────────────────────────────────
+  檔案: config/SecurityConfig.java（新）、config/CsrfDeniedHandler.java（新）
+  內容: 上面說的規則和被擋時的處理
+  ────────────────────────────────────────
+  檔案: dto/HoldingCreateForm.java
+  內容: 只改註解
+  ────────────────────────────────────────
+  檔案: controller/CsrfProtectionTest.java（新）
+  內容: 網頁 POST 沒帶 token 會被擋並顯示訊息、資料沒變；帶 token
+    正常；/api/v1 的 POST、PUT、DELETE 不帶 token 也正常
+  ────────────────────────────────────────
+  檔案:
+  HoldingControllerTest、NoOfficialCallTest、HoldingApiV1TradeTest（裡面有網頁
+    POST 的部分）
+  內容: 只補 .with(csrf())；@WebMvcTest 可能還要加
+    @Import(SecurityConfig.class)。預期值都不改
+
+  需要你決定的問題
+
+  1. 被擋時的畫面：
+     - A（建議）：導回清單頁，用現有的紅字顯示訊息。
+     - B：回 403，另外做一頁說明加上「回清單」連結。
+     - 兩種做法，修改頁上已經填的內容都會不見。
+  2. /api 的特殊網址：Spring Security 內建一道檢查，網址含 ;、//、%2F
+     這類字元時會直接回 400，這時回應不是 {"error":…} 格式。要不要多寫一個小
+     handler，把 /api 的這種情況也轉成
+     {"error":{"code":"BAD_REQUEST",…}}？我建議要做，這樣 /api
+     的錯誤格式才完全不變。
+
+  回覆「同意」並選好 1 和 2 之後，我才開始改檔案。
+
+✻ Cogitated for 1m 43s · done 上午6:01
+
+> 同意。                                                                        
+  1. 選 A：導回清單頁，用現有的 errorMessage                                    
+  顯示「表單已過期，請重新整理後再送出」。                                      
+  2. 要做：/api 被 Spring Security 的網址檢查擋下時，也回                       
+  {"error":{"code":"BAD_REQUEST",...}}，/api                                    
+  的錯誤格式要完全不變。請加一個測試（例如網址含 // 或 ;）。                    
+                                                                                
+  測試依賴的模組名稱請確認後再加，跟提案不一樣的話在完成回報說明。              
+  完成後只回報：跟提案不一樣的地方、需要我決定的事、commit                      
+  訊息。全部測試由我自己跑。                                                    
+
+  Ran 6 shell commands (ctrl+o to expand)
+
+● 已確認測試模組名稱 spring-boot-starter-security-test
+  存在（4.2.0）。現在開始寫設定檔，再補測試。
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+● Now write the main code.
+
+● Update(pom.xml)
+  ⎿  Added 5 lines
+      45        <groupId>org.springframework.boot</groupId>
+      46        <artifactId>spring-boot-starter-flyway</artifactId>
+      47      </dependency>
+      48 +    <!-- 只用來做網頁表單的 CSRF 防護，不做登入（規則在 config/
+         +SecurityConfig） -->                                           
+      49 +    <dependency>                                               
+      50 +      <groupId>org.springframework.boot</groupId>              
+      51 +      <artifactId>spring-boot-starter-security</artifactId>    
+      52 +    </dependency>                                              
+      53      <!-- 資料庫：H2（檔案模式在 application.properties 設定） -
+          ->
+      54      <dependency>
+      55        <groupId>com.h2database</groupId>
+
+● Update(pom.xml)
+  ⎿  Added 6 lines
+      73        <artifactId>spring-boot-starter-data-jpa-test</artifactId
+          >
+      74        <scope>test</scope>
+      75      </dependency>
+      76 +    <!-- 測試用的 .with(csrf())；@WebMvcTest 也要靠它才會套用 S
+         +pring Security -->                                             
+      77 +    <dependency>                                               
+      78 +      <groupId>org.springframework.boot</groupId>              
+      79 +      <artifactId>spring-boot-starter-security-test</artifactId
+         +>                                                              
+      80 +      <scope>test</scope>                                      
+      81 +    </dependency>                                              
+      82    </dependencies>
+      83 
+      84    <build>
+
+● Update(src\main\resources\application.properties)
+  ⎿  Added 4 lines
+       3  # session 只用 cookie 記錄，不要把 ;jsessionid=... 加在網址後面
+          （避免網址難看、session id 外流）
+       4  server.servlet.session.tracking-modes=cookie
+       5 
+       6 +# Spring Security 只用來做 CSRF 防護、不做登入：關掉「啟動時產 
+         +生一組使用者和密碼」的自動設定，                               
+       7 +# 不然 log 會印出用不到的密碼，看起來像需要登入                
+       8 +spring.autoconfigure.exclude=org.springframework.boot.security.
+         +autoconfigure.UserDetailsServiceAutoConfiguration              
+       9 +                                                               
+      10  # 埠號：預設 8080，主考官電腦被占用時可用環境變數 SERVER_PORT 
+          改掉
+      11  server.port=${SERVER_PORT:8080}
+      12 
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\dto\HoldingCreateForm.java)
+  ⎿  Added 1 line, removed 1 line
+      31 
+      32    @NotNull(message = "請輸入買進價")
+      33    @DecimalMin(value = "0", inclusive = false, message = "買進價
+          必須大於 0")
+      34 -  // integer = 10 對應 DECIMAL(12,2) 的整數位數；Digits 會先去 
+         -掉尾端的 0，所以 10.100 視為兩位小數                           
+      34 +  // integer = 10 對應 DECIMAL(12,2) 的整數位數；Digits 不會去 
+         +掉尾端的 0，所以 10.100 算三位小數，會被拒絕                   
+      35    @Digits(integer = 10, fraction = 2, message = "買進價最多兩位
+          小數（整數部分最多 10 位）")
+      36    private BigDecimal buyPrice;
+      37 
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\config\SecurityConfig.java)
+  ⎿  Wrote 42 lines to
+     src\main\java\io\hsiaopingkuo\stockholdings\config\SecurityConfig.java
+       1 package io.hsiaopingkuo.stockholdings.config;
+       2 
+       3 import org.springframework.context.annotation.Bean;
+       4 import org.springframework.context.annotation.Configuration;
+       5 import org.springframework.security.config.annotation.web.builde
+         rs.HttpSecurity;
+       6 import org.springframework.security.config.annotation.web.config
+         urers.AbstractHttpConfigurer;
+       7 import org.springframework.security.web.SecurityFilterChain;
+       8 import org.springframework.security.web.firewall.RequestRejected
+     … +35 lines (~1 KB) (ctrl+o to expand)
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\config\CsrfDeniedHandler.jav
+       a)
+  ⎿  Wrote 48 lines to src\main\java\io\hsiaopingkuo\stockholdings\config\C
+     srfDeniedHandler.java
+       1 package io.hsiaopingkuo.stockholdings.config;
+       2 
+       3 import java.io.IOException;
+       4 
+       5 import org.springframework.security.access.AccessDeniedException
+         ;
+       6 import org.springframework.security.web.access.AccessDeniedHandl
+         er;
+       7 import org.springframework.security.web.access.AccessDeniedHandl
+         erImpl;
+     … +41 lines (ctrl+o to expand)
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\api\ApiRequestRejectedHandle
+       r.java)
+  ⎿  Wrote 43 lines to src\main\java\io\hsiaopingkuo\stockholdings\api\ApiR
+     equestRejectedHandler.java
+       1 package io.hsiaopingkuo.stockholdings.api;
+       2 
+       3 import java.io.IOException;
+       4 
+       5 import org.springframework.http.HttpStatus;
+       6 import org.springframework.security.web.firewall.HttpStatusReque
+         stRejectedHandler;
+       7 import org.springframework.security.web.firewall.RequestRejected
+         Exception;
+       8 import org.springframework.security.web.firewall.RequestRejected
+     … +36 lines (~1 KB) (ctrl+o to expand)
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Bash(cd /c/TKA102_JavaApp/Workspace_for_practice/stock-holdings/src/test/java/
+      io/hsiaopingkuo/stockholdings && sed -i
+      's#post("\(/holdings[^"]*\)")#post("\1").with(c…)
+  ⎿  controller/HoldingControllerTest.java:21
+     NoOfficialCallTest.java:1
+     api/HoldingApiV1TradeTest.java:1
+     … +11 lines (ctrl+o to expand)
+  ⎿  Updated
+     src\test\java\io\hsiaopingkuo\stockholdings\NoOfficialCallTest.java +1
+     -1
+      111                                  .andExpect(status().isOk())
+      112                                  .andExpect(jsonPath("$.name").
+           value("環球晶"))
+      113                                  .andExpect(jsonPath("$.market"
+           ).value("TPEX"));
+      114 -                mockMvc.perform(post("/holdings").param("code"
+          -, "6488").param("lots", "1").param("buyPrice", "450"))        
+      114 +                mockMvc.perform(post("/holdings").with(csrf())
+          +.param("code", "6488").param("lots", "1").param("buyPrice", "4
+          +50"))                                                         
+      115                                  .andExpect(redirectedUrl("/hol
+           dings"));
+      116 
+      117                  assertThat(holdingRepository.findAll()).single
+           Element()
+  ⎿  Updated src\test\java\io\hsiaopingkuo\stockholdings\api\HoldingApiV1Tr
+     adeTest.java +1 -1
+      506                          assertThat(Duration.ofNanos(System.nan
+           oTime() - start)).isGreaterThanOrEqualTo(Duration.ofMillis(150
+           0));
+      507                          expectError(perform(delete("/api/v1/ho
+           ldings/{id}", h.getId())), 409, "HOLDING_BUSY");
+      508                          expectError(perform(postJson("{\"code\
+           ":\"2330\",\"lots\":1,\"buy_price\":900}")), 409, "HOLDING_BUS
+           Y");
+      509 -                        perform(post("/holdings/{id}/delete", 
+          -h.getId()))                                                   
+      509 +                        perform(post("/holdings/{id}/delete", 
+          +h.getId()).with(csrf()))                                      
+      510                                          .andExpect(redirectedU
+           rl("/holdings"))
+      511                                          .andExpect(flash().att
+           ribute("errorMessage", "這筆持股正在被其他裝置修改，請稍後再試
+           "));
+      512 
+  ⎿  Updated src\test\java\io\hsiaopingkuo\stockholdings\controller\Holding
+     ControllerTest.java +21 -21
+      281          void 查無此代號_表單顯示錯誤且不導頁() throws Exceptio
+           n {
+      282                  given(holdingService.create(anyString(), anyIn
+           t(), any())).willThrow(new StockCodeNotFoundException("9999"))
+           ;
+      283 
+      284 -                mockMvc.perform(post("/holdings").param("code"
+          -, "9999").param("lots", "1").param("buyPrice", "1000"))       
+      284 +                mockMvc.perform(post("/holdings").with(csrf())
+          +.param("code", "9999").param("lots", "1").param("buyPrice", "1
+          +000"))                                                        
+      285                                  .andExpect(status().isOk())
+      286                                  .andExpect(content().string(co
+           ntainsString("查無此股票代號：9999（上市、上櫃都找不到）")));
+      287          }
+     ...
+      290          void 官方連不上_表單顯示稍後再試且保留輸入內容() throw
+           s Exception {
+      291                  given(holdingService.create(anyString(), anyIn
+           t(), any())).willThrow(new MarketUnavailableException());
+      292 
+      293 -                mockMvc.perform(post("/holdings").param("code"
+          -, "2330").param("lots", "3").param("buyPrice", "1000"))       
+      293 +                mockMvc.perform(post("/holdings").with(csrf())
+          +.param("code", "2330").param("lots", "3").param("buyPrice", "1
+          +000"))                                                        
+      294                                  .andExpect(status().isOk())
+      295                                  .andExpect(content().string(co
+           ntainsString("暫時無法連線官方網站確認代號，請稍後再試")))
+      296                                  // 使用者不用重打：剛才輸入的
+           值還在表單上
+     ...
+      302          void 兩個市場無法判斷_表單顯示請聯絡管理者且不導頁() t
+           hrows Exception {
+      303                  given(holdingService.create(anyString(), anyIn
+           t(), any())).willThrow(new MarketAmbiguousException("1234"));
+      304 
+      305 -                mockMvc.perform(post("/holdings").param("code"
+          -, "1234").param("lots", "1").param("buyPrice", "10"))         
+      305 +                mockMvc.perform(post("/holdings").with(csrf())
+          +.param("code", "1234").param("lots", "1").param("buyPrice", "1
+          +0"))                                                          
+      306                                  .andExpect(status().isOk())
+      307                                  .andExpect(content().string(co
+           ntainsString("無法判斷 1234 是上市或上櫃，請聯絡管理者")));
+      308          }
+     ...
+      435          void 新增成功後導回清單() throws Exception {
+      436                  given(holdingService.create("2330", 1, new Big
+           Decimal("1000"))).willReturn(holding(1, "2330"));
+      437 
+      438 -                mockMvc.perform(post("/holdings").param("code"
+          -, " 2330 ").param("lots", "1").param("buyPrice", "1000"))     
+      438 +                mockMvc.perform(post("/holdings").with(csrf())
+          +.param("code", " 2330 ").param("lots", "1").param("buyPrice", 
+          +"1000"))                                                      
+      439                                  .andExpect(status().is3xxRedir
+           ection())
+      440                                  .andExpect(redirectedUrl("/hol
+           dings"))
+      441                                  .andExpect(flash().attribute("
+           message", "已新增 2330"));
+     ...
+      447          void 重複代號_表單顯示錯誤() throws Exception {
+      448                  given(holdingService.create(anyString(), anyIn
+           t(), any())).willThrow(new DuplicateCodeException("2330"));
+      449 
+      450 -                mockMvc.perform(post("/holdings").param("code"
+          -, "2330").param("lots", "1").param("buyPrice", "1000"))       
+      450 +                mockMvc.perform(post("/holdings").with(csrf())
+          +.param("code", "2330").param("lots", "1").param("buyPrice", "1
+          +000"))                                                        
+      451                                  .andExpect(status().isOk())
+      452                                  .andExpect(content().string(co
+           ntainsString("2330 已在持股中")));
+      453          }
+     … +128 lines (ctrl+o to expand)
+
+● Bash(for f in controller/HoldingControllerTest.java NoOfficialCallTest.java
+      api/HoldingApiV1TradeTest.java; do sed -i '/^import static
+      org.springframework.test.web.s…)
+  ⎿  controller/HoldingControllerTest.java: C++ source, Unicode text, UTF-8
+      text
+     == controller/HoldingControllerTest.java
+     … +42 lines (ctrl+o to expand)
+  ⎿  Updated
+     src\test\java\io\hsiaopingkuo\stockholdings\NoOfficialCallTest.java +1
+       4  import static org.hamcrest.Matchers.containsString;
+       5  import static org.mockito.Mockito.verifyNoInteractions;
+       6  import static org.springframework.test.web.servlet.request.Mock
+          MvcRequestBuilders.get;
+       7 +import static org.springframework.security.test.web.servlet.req
+         +uest.SecurityMockMvcRequestPostProcessors.csrf;                
+       8  import static org.springframework.test.web.servlet.request.Mock
+          MvcRequestBuilders.post;
+       9  import static org.springframework.test.web.servlet.result.MockM
+          vcResultMatchers.content;
+      10  import static org.springframework.test.web.servlet.result.MockM
+          vcResultMatchers.jsonPath;
+  ⎿  Updated src\test\java\io\hsiaopingkuo\stockholdings\api\HoldingApiV1Tr
+     adeTest.java +1
+       7  import static org.mockito.BDDMockito.given;
+       8  import static org.springframework.test.web.servlet.request.Mock
+          MvcRequestBuilders.delete;
+       9  import static org.springframework.test.web.servlet.request.Mock
+          MvcRequestBuilders.get;
+      10 +import static org.springframework.security.test.web.servlet.req
+         +uest.SecurityMockMvcRequestPostProcessors.csrf;                
+      11  import static org.springframework.test.web.servlet.request.Mock
+          MvcRequestBuilders.post;
+      12  import static org.springframework.test.web.servlet.request.Mock
+          MvcRequestBuilders.put;
+      13  import static org.springframework.test.web.servlet.result.MockM
+          vcResultMatchers.content;
+  ⎿  Updated src\test\java\io\hsiaopingkuo\stockholdings\controller\Holding
+     ControllerTest.java +1
+      11  import static org.mockito.Mockito.never;
+      12  import static org.mockito.Mockito.verify;
+      13  import static org.springframework.test.web.servlet.request.Mock
+          MvcRequestBuilders.get;
+      14 +import static org.springframework.security.test.web.servlet.req
+         +uest.SecurityMockMvcRequestPostProcessors.csrf;                
+      15  import static org.springframework.test.web.servlet.request.Mock
+          MvcRequestBuilders.post;
+      16  import static org.springframework.test.web.servlet.result.MockM
+          vcResultMatchers.content;
+      17  import static org.springframework.test.web.servlet.result.MockM
+          vcResultMatchers.flash;
+
+● Bash(for f in controller/HoldingControllerTest.java
+      controller/HomeControllerTest.java api/ApiErrorResponseTest.java; do
+      grep -q "^import org.springframework.context…)
+  ⎿  package io.hsiaopingkuo.stockholdings.controller;
+
+     import static org.hamcrest.Matchers.containsString;
+     … +54 lines (ctrl+o to expand)
+  ⎿  Updated src\test\java\io\hsiaopingkuo\stockholdings\api\ApiErrorRespon
+     seTest.java +108 -104
+        1 -package io.hsiaopingkuo.stockholdings.api;                    
+        2 -                                                              
+        3 -import static org.assertj.core.api.Assertions.assertThat;     
+        4 -import static org.hamcrest.Matchers.containsString;           
+        5 -import static org.mockito.BDDMockito.given;                   
+        6 -import static org.springframework.test.web.servlet.request.Moc
+          -kMvcRequestBuilders.get;                                      
+        7 -import static org.springframework.test.web.servlet.request.Moc
+          -kMvcRequestBuilders.patch;                                    
+        8 -import static org.springframework.test.web.servlet.request.Moc
+          -kMvcRequestBuilders.post;                                     
+        9 -import static org.springframework.test.web.servlet.request.Moc
+          -kMvcRequestBuilders.put;                                      
+       10 -import static org.springframework.test.web.servlet.result.Mock
+          -MvcResultMatchers.content;                                    
+       11 -import static org.springframework.test.web.servlet.result.Mock
+          -MvcResultMatchers.header;                                     
+       12 -import static org.springframework.test.web.servlet.result.Mock
+          -MvcResultMatchers.jsonPath;                                   
+       13 -import static org.springframework.test.web.servlet.result.Mock
+          -MvcResultMatchers.status;                                     
+       14 -                                                              
+       15 -import java.nio.charset.StandardCharsets;                     
+       16 -                                                              
+       17 -import org.junit.jupiter.api.Test;                            
+       18 -import org.springframework.beans.factory.annotation.Autowired;
+       19 -import org.springframework.boot.webmvc.test.autoconfigure.WebM
+          -vcTest;                                                       
+       20 -import org.springframework.test.context.bean.override.mockito.
+          -MockitoBean;                                                  
+       21 -import org.springframework.test.web.servlet.MockMvc;          
+       22 -import org.springframework.test.web.servlet.MvcResult;        
+       23 -import org.springframework.test.web.servlet.ResultActions;    
+       24 -                                                              
+       25 -import io.hsiaopingkuo.stockholdings.service.HoldingService;  
+       26 -                                                              
+       27 -/**                                                           
+       28 - * App API 的「所有」錯誤都要是 {"error":{"code":"...","messag
+          -e":"..."}} 格式，                                             
+       29 - * 包括路徑不存在、方法不支援、{id} 不是數字、非預期的例外，而
+          -且不能露出 stack trace。                                      
+       30 - * Service 用假的，才能讓它丟出「非預期的例外」。             
+       31 - */                                                           
+       32 -@WebMvcTest(HoldingApiController.class)                       
+       33 -class ApiErrorResponseTest {                                  
+       34 -                                                              
+       35 -        @Autowired                                            
+       36 -        private MockMvc mockMvc;                              
+       37 -                                                              
+       38 -        @MockitoBean                                          
+       39 -        private HoldingService holdingService;                
+       40 -                                                              
+     … +172 lines (ctrl+o to expand)
+  ⎿  Updated src\test\java\io\hsiaopingkuo\stockholdings\controller\Holding
+     ControllerTest.java +4
+      28  import org.junit.jupiter.api.Test;
+      29  import org.springframework.beans.factory.annotation.Autowired;
+      30  import org.springframework.boot.webmvc.test.autoconfigure.WebMv
+          cTest;
+      31 +import org.springframework.context.annotation.Import;          
+      32  import org.springframework.http.MediaType;
+      33  import org.springframework.test.context.bean.override.mockito.M
+          ockitoBean;
+      34  import org.springframework.test.util.ReflectionTestUtils;
+      35  import org.springframework.test.web.servlet.MockMvc;
+      36 
+      37 +import io.hsiaopingkuo.stockholdings.config.SecurityConfig;    
+      38  import io.hsiaopingkuo.stockholdings.calc.HoldingReplayCalculat
+          or;
+      39  import io.hsiaopingkuo.stockholdings.calc.PortfolioSummary;
+      40  import io.hsiaopingkuo.stockholdings.calc.SummaryCalculator;
+     ...
+      61   * Service 用假的（MockitoBean），業務規則另外在 HoldingService
+          Test 測。
+      62   */
+      63  @WebMvcTest(HoldingController.class)
+      64 +// @WebMvcTest 不會載入一般的 @Configuration；不 import 的話會 
+         +套用 Spring Security 預設（全部要登入）                        
+      65 +@Import(SecurityConfig.class)                                  
+      66  class HoldingControllerTest {
+      67 
+      68          @Autowired
+  ⎿  Updated src\test\java\io\hsiaopingkuo\stockholdings\controller\HomeCon
+     trollerTest.java +62 -58
+       1 -package io.hsiaopingkuo.stockholdings.controller;              
+       2 -                                                               
+       3 -import static org.hamcrest.Matchers.containsString;            
+       4 -import static org.springframework.test.web.servlet.request.Mock
+         -MvcRequestBuilders.get;                                        
+       5 -import static org.springframework.test.web.servlet.result.MockM
+         -vcResultMatchers.content;                                      
+       6 -import static org.springframework.test.web.servlet.result.MockM
+         -vcResultMatchers.status;                                       
+       7 -                                                               
+       8 -import java.time.Clock;                                        
+       9 -import java.time.Instant;                                      
+      10 -import java.time.ZoneId;                                       
+      11 -                                                               
+      12 -import org.junit.jupiter.api.Test;                             
+      13 -import org.springframework.beans.factory.annotation.Autowired; 
+      14 -import org.springframework.boot.test.context.TestConfiguration;
+      15 -import org.springframework.boot.webmvc.test.autoconfigure.WebMv
+         -cTest;                                                         
+      16 -import org.springframework.context.annotation.Bean;            
+      17 -import org.springframework.test.web.servlet.MockMvc;           
+      18 -                                                               
+      19 -@WebMvcTest(HomeController.class)                              
+      20 -class HomeControllerTest {                                     
+      21 -                                                               
+      22 -        // UTC 06:00 = 台北 14:00；頁面要顯示 14:00 才代表真的 
+         -用台北時區                                                     
+      23 -        private static final Instant FIXED = Instant.parse("202
+         -6-11-24T06:00:00Z");                                           
+      24 -                                                               
+      25 -        @TestConfiguration                                     
+      26 -        static class FixedClockConfig {                        
+      27 -                @Bean                                          
+      28 -                Clock clock() {                                
+      29 -                        return Clock.fixed(FIXED, ZoneId.of("As
+         -ia/Taipei"));                                                  
+      30 -                }                                              
+      31 -        }                                                      
+      32 -                                                               
+      33 -        @Autowired                                             
+      34 -        private MockMvc mockMvc;                               
+      35 -                                                               
+      36 -        @Test                                                  
+      37 -        void 首頁顯示標題與台北時間() throws Exception {       
+      38 -                mockMvc.perform(get("/"))                      
+      39 -                                .andExpect(status().isOk())    
+      40 -                                .andExpect(content().string(con
+         -tainsString("<h1>持股記帳</h1>")))                             
+     … +80 lines (ctrl+o to expand)
+
+● Fix the stray "n" in HomeControllerTest:
+
+● Bash(f=src/test/java/io/hsiaopingkuo/stockholdings/controller/HomeControllerTe
+      st.java && sed -i 's/^nimport
+      io.hsiaopingkuo.stockholdings.config.SecurityConfig;/\nim…)
+  ⎿  import org.springframework.context.annotation.Bean;
+     import org.springframework.test.web.servlet.MockMvc;
+     … +23 lines (ctrl+o to expand)
+  ⎿  Updated src\test\java\io\hsiaopingkuo\stockholdings\controller\HomeCon
+     trollerTest.java +2 -1
+      16  import org.springframework.context.annotation.Import;
+      17  import org.springframework.context.annotation.Bean;
+      18  import org.springframework.test.web.servlet.MockMvc;
+      19 -nimport io.hsiaopingkuo.stockholdings.config.SecurityConfig;   
+      19 +                                                               
+      20 +import io.hsiaopingkuo.stockholdings.config.SecurityConfig;    
+      21 
+      22  @WebMvcTest(HomeController.class)
+      23  // @WebMvcTest 不會載入一般的 @Configuration；不 import 的話會
+          套用 Spring Security 預設（全部要登入）
+
+● Bash(f=src/test/java/io/hsiaopingkuo/stockholdings/controller/HomeControllerTe
+      st.java && sed -i '/^import
+      org.springframework.context.annotation.Import;/d' $f && sed…)  ⎿  import org.springframework.beans.factory.annotation.Autowired;
+     import org.springframework.boot.test.context.TestConfiguration;
+     import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
+     … +26 lines (ctrl+o to expand)
+  ⎿  Updated src\test\java\io\hsiaopingkuo\stockholdings\controller\HomeCon
+     trollerTest.java +1 -1
+      13  import org.springframework.beans.factory.annotation.Autowired;
+      14  import org.springframework.boot.test.context.TestConfiguration;
+      15  import org.springframework.boot.webmvc.test.autoconfigure.WebMv
+          cTest;
+      16 -import org.springframework.context.annotation.Import;          
+      16  import org.springframework.context.annotation.Bean;
+      17 +import org.springframework.context.annotation.Import;          
+      18  import org.springframework.test.web.servlet.MockMvc;
+      19 
+      20  import io.hsiaopingkuo.stockholdings.config.SecurityConfig;
+
+  Ran 3 shell commands (ctrl+o to expand)
+
+● Write(src\test\java\io\hsiaopingkuo\stockholdings\controller\CsrfProtectionTes
+       t.java)
+  ⎿  Wrote 206 lines to src\test\java\io\hsiaopingkuo\stockholdings\control
+     ler\CsrfProtectionTest.java
+       1 package io.hsiaopingkuo.stockholdings.controller;
+       2 
+       3 import static org.assertj.core.api.Assertions.assertThat;
+       4 import static org.hamcrest.Matchers.containsString;
+       5 import static org.mockito.ArgumentMatchers.any;
+       6 import static org.mockito.ArgumentMatchers.eq;
+       7 import static org.mockito.BDDMockito.given;
+       8 import static org.mockito.Mockito.verifyNoInteractions;
+       9 import static org.springframework.security.test.web.servlet.requ
+         est.SecurityMockMvcRequestPostProcessors.csrf;
+     … +197 lines (ctrl+o to expand)
+
+● 主程式和新測試都寫好了，接著確認一下 Trade 的欄位名稱，然後跑相關的測試類別。
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+● Bash(sed -i 's/assertThat(t.getQuantity()).isEqualTo(1000)/assertThat(t.getSha
+      res()).isEqualTo(1000)/'
+      src/test/java/io/hsiaopingkuo/stockholdings/controller/CsrfPro…)
+  ⎿  2026-11-25T06:06:10.673+08:00 ERROR 18844 --- [stock-holdings] [
+          main] i.h.s.api.ApiExceptionHandler            : App API �o�ͥ��w��
+     �����~�GGET /api/v1/holdings
+     … +34 lines (ctrl+o to expand)
+  ⎿  Updated src\test\java\io\hsiaopingkuo\stockholdings\controller\CsrfPro
+     tectionTest.java +1 -1
+      141 
+      142                  expectRejectedWithMessage(result);
+      143                  assertThat(tradeRepository.findAll()).singleEl
+           ement()
+      144 -                                .satisfies(t -> assertThat(t.g
+          -etQuantity()).isEqualTo(1000));                               
+      144 +                                .satisfies(t -> assertThat(t.g
+          +etShares()).isEqualTo(1000));                                 
+      145          }
+      146 
+      147          @Test
+  ⎿  (timeout 10m)
+
+  Read 1 file (ctrl+o to expand)
+
+● Add debug info to see which URL passes through and what MockMvc sets as the
+  request URI:
+
+● Update(src\test\java\io\hsiaopingkuo\stockholdings\controller\CsrfProtectionTe
+        st.java)
+  ⎿  Added 3 lines
+      189    @Test
+      190    void api網址被SpringSecurity擋下_仍回規格的錯誤格式() throws
+            Exception {
+      191      for (String url : new String[] { "/api/v1/holdings;x=1", "
+           /api/v1//holdings" }) {
+      192 +      MvcResult debug = mockMvc.perform(get(url)).andReturn();
+      193 +      System.out.println("DEBUG url=" + url + " requestURI=" +
+          + debug.getRequest().getRequestURI()                           
+      194 +          + " servletPath=" + debug.getRequest().getServletPat
+          +h() + " status=" + debug.getResponse().getStatus());          
+      195        mockMvc.perform(get(url))
+      196            .andExpect(status().isBadRequest())
+      197            .andExpect(content().contentType("application/json;c
+           harset=UTF-8"))
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● MockMvc 自己會把 // 合併成 /，請求根本沒帶到 //。改用 URI
+  物件傳入原始網址再試一次：
+
+● Update(src\test\java\io\hsiaopingkuo\stockholdings\controller\CsrfProtectionTe
+        st.java)
+  ⎿  Added 1 line, removed 1 line
+      189    @Test
+      190    void api網址被SpringSecurity擋下_仍回規格的錯誤格式() throws
+            Exception {
+      191      for (String url : new String[] { "/api/v1/holdings;x=1", "
+           /api/v1//holdings" }) {
+      192 -      MvcResult debug = mockMvc.perform(get(url)).andReturn();
+      192 +      MvcResult debug = mockMvc.perform(get(URI.create(url))).
+          +andReturn();                                                  
+      193        System.out.println("DEBUG url=" + url + " requestURI=" +
+            debug.getRequest().getRequestURI()
+      194            + " servletPath=" + debug.getRequest().getServletPat
+           h() + " status=" + debug.getResponse().getStatus());
+      195        mockMvc.perform(get(url))
+
+● Bash(sed -i 's/^import java.math.BigDecimal;/import
+      java.math.BigDecimal;\nimport java.net.URI;/'
+      src/test/java/io/hsiaopingkuo/stockholdings/controller/CsrfProtecti…)
+  ⎿  DEBUG url=/api/v1/holdings;x=1 requestURI=/api/v1/holdings;x=1 servlet
+     Path= status=400
+     DEBUG url=/api/v1//holdings requestURI=/api/v1//holdings servletPath=
+     … +5 lines (ctrl+o to expand)
+  ⎿  Updated src\test\java\io\hsiaopingkuo\stockholdings\controller\CsrfPro
+     tectionTest.java +1
+      18  import static org.springframework.test.web.servlet.result.MockM
+          vcResultMatchers.status;
+      19 
+      20  import java.math.BigDecimal;
+      21 +import java.net.URI;                                           
+      22  import java.time.LocalDate;
+      23  import java.time.LocalDateTime;
+      24 
+  ⎿  (timeout 10m)
+
+● Debug 確認了原因：用 URI 傳入就會被擋成 400。拿掉 debug，把正式檢查也改用
+  URI：
+
+  Read 1 file (ctrl+o to expand)
+
+● Update(src\test\java\io\hsiaopingkuo\stockholdings\controller\CsrfProtectionTe
+        st.java)
+  ⎿  Added 2 lines, removed 4 lines
+      190    @Test
+      191    void api網址被SpringSecurity擋下_仍回規格的錯誤格式() throws
+            Exception {
+      192      for (String url : new String[] { "/api/v1/holdings;x=1", "
+           /api/v1//holdings" }) {
+      193 -      MvcResult debug = mockMvc.perform(get(URI.create(url))).
+          -andReturn();                                                  
+      194 -      System.out.println("DEBUG url=" + url + " requestURI=" +
+          - debug.getRequest().getRequestURI()                           
+      195 -          + " servletPath=" + debug.getRequest().getServletPat
+          -h() + " status=" + debug.getResponse().getStatus());          
+      196 -      mockMvc.perform(get(url))                               
+      193 +      // 用 URI 傳入：直接傳字串的話，MockMvc 會先把 // 合併成
+          + /，請求就不含 // 了                                          
+      194 +      mockMvc.perform(get(URI.create(url)))                   
+      195            .andExpect(status().isBadRequest())
+      196            .andExpect(content().contentType("application/json;c
+           harset=UTF-8"))
+      197            .andExpect(jsonPath("$.error.code").value("BAD_REQUE
+           ST"))
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● 相關測試全部通過。最後確認啟動時不會印出產生的密碼：
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● 啟動時還是印出了密碼。先查是哪個 context 印的：
+
+  Listed 1 directory, ran 1 shell command (ctrl+o to expand)
+
+● 測試設定檔整份取代了主程式設定，所以排除設定在測試中沒生效、實際啟動並不受影響
+  。我已在測試設定檔補上同一行，讓兩邊一致，接著驗證它確實有效。 · summary
+
+● Bash(f=src/test/resources/application.properties && file $f && sed -i
+      '0,/^spring.application.name=stock-holdings/{s//spring.application.name=st
+      ock-holdings\n\n# 和正式…)
+  ⎿  src/test/resources/application.properties: Unicode text, UTF-8 text
+     spring.application.name=stock-holdings
+     … +8 lines (ctrl+o to expand)
+  ⎿  Updated src\test\resources\application.properties +3
+      1  spring.application.name=stock-holdings
+      2 
+      3 +# 和正式設定一樣：Spring Security 不做登入，不產生用不到的密碼  
+      4 +spring.autoconfigure.exclude=org.springframework.boot.security.a
+        +utoconfigure.UserDetailsServiceAutoConfiguration                
+      5 +                                                                
+      6  # 測試用記憶體資料庫：跑測試不會在 ./data/ 產生檔案，也不會動到
+         本機正式資料
+      7  spring.datasource.url=jdbc:h2:mem:testdb;DB_CLOSE_DELAY=-1
+      8  spring.datasource.username=sa
+  ⎿  (timeout 10m)
+
+● 做好了。網頁表單現在會檢查 CSRF token，/api 不檢查，App 的行為不變。相關的 9
+  個測試類別我用 ./mvnw -q 跑過，全部通過；全部測試請你自己跑。
+
+  跟提案不一樣的地方
+  1. 測試依賴名稱：確認是
+     spring-boot-starter-security-test（4.2.0），跟提案一樣。
+  2. 多一個新檔 api/ApiRequestRejectedHandler.java：這是你選的第 2 點。網址被
+     Spring Security 擋下時，/api 回
+     {"error":{"code":"BAD_REQUEST",...}}，其他網址照舊回空白的 400。它在
+     SecurityConfig 裡註冊。
+  3. 多改了 src/test/resources/application.properties：測試會用這份檔案取代主程
+     式的設定檔，所以排除產生密碼的那行在測試裡沒生效（正式啟動不受影響）。我補
+     上同一行後，log 裡就沒有 generated security password 了。
+  4. @Import(SecurityConfig.class) 加在 3 個檔案：HoldingControllerTest、HomeCon
+     trollerTest、ApiErrorResponseTest。原因是 @WebMvcTest 不會載入一般的 @Confi
+     guration，不加的話會套用預設的「全部要登入」。三個檔案的預期值都沒改。
+  5. 測試寫法：
+     - 測 // 時要用 get(URI.create(url))。直接傳字串的話，MockMvc 會先把 //
+       合併成 /，請求根本不含 //。這點我是先加 debug 輸出確認的。
+     - 另外多一個測試：網頁網址被擋時仍是空白的 400。
+  6. CsrfDeniedHandler 的備援：不是 CSRF
+     造成的拒絕，交回預設處理（403）。目前所有網址都不用登入，理論上不會發生。
+
+  需要你決定的事
+  - 要不要記進 TESTLOG：這是朋友驗收時找到的問題，如果要記，等你 commit
+    之後我再提草稿（要附 commit 編號）。
+  - README：不用裝新東西，啟動方式也沒變，我判斷不用改。
+
+  Commit 訊息（main 和 test 一起）
+  fix: 網頁表單加上 CSRF 防護（/api 不檢查、不加登入），並修正 HoldingCreateForm
+  買進價註解
+
+✻ Crunched for 6m 51s · done 上午6:09
+
+※ recap: CSRF 防護已經在 fix/csrf 分支做完：網頁表單要驗證 token，/api 不受影響，相關測試都通過。下一步請你自己跑全部測試，再用我提的訊息 commit。
+
+> 同意，請照下面的訊息 commit（main 和 test 一起）：                            
+  fix: 第2題 網頁表單加上 CSRF 防護，/api 不檢查且錯誤格式維持 JSON             
+                                                                                
+  TESTLOG 要記，照 T-08～T-10 的格式：發現者寫 Wynn 第二、三輪驗收（模擬跨來源  
+  POST，回 302 並且資料被改掉）。commit 後我告訴你編號，你再給草稿。README      
+  不改。                                                                        
+
+  Searched for 1 pattern, ran 1 shell command (ctrl+o to expand)
+
+● 已經 commit 好了，編號是 327b6cd。分支是 fix/csrf，還沒合併回 master，也還沒
+  push。
+
+  編號我已經有了，所以直接附上 TESTLOG
+  草稿，你確認後我才寫入檔案。有兩個地方我不知道，用【】標出來，請你補上。
+
+  ## T-11 其他網站可以偷偷送出表單，修改或刪除持股（Wynn
+  第二、三輪驗收時發現【報告編號，例如 F-xx、G-xx】）
+  - 怎麼發現：Wynn 第二、三輪驗收【驗收的 commit 編號】時，模擬從其他網站送出
+  POST 到本站
+  - 怎麼重現：1. 啟動並新增 2330 2.
+  在另一個來源的網頁放一個會自動送出的表單，POST 到
+  `http://localhost:8080/holdings/{id}/delete`（或 POST `/holdings/{id}`，帶
+  lots、buyPrice） 3. 用瀏覽器打開那個網頁
+  - 預期／實際：預期被擋下、資料不變；實際回 302 導回清單，持股被刪除或修改
+  - 原因：網頁表單沒有 CSRF
+  token，伺服器分不出請求是本站表單送的，還是其他網站送的
+  - 修好的 commit：`327b6cd`（fix: 第2題 網頁表單加上 CSRF 防護，/api
+  不檢查且錯誤格式維持 JSON）
+
+  提醒
+  - 這段對話記得匯出放進 ai-log/，commit 前檢查裡面有沒有密碼或 token。
+  - 合併前請在 fix/csrf 上跑一次 ./mvnw test。合併回 master 時用一般
+    merge，不要用 squash。
+  - 合併後請另外 clone 一份，照 README
+    從頭啟動，確認能用。另外打開清單頁新增一筆，確認表單照常可以送出。
+
+✻ Crunched for 20s · done 上午6:12
+
+> 同意，報告編號 F-05、G-04，驗收 commit 2ff2f68                                
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Bash(cat >> TESTLOG.md <<'EOF'…)  ⎿   TESTLOG.md | 7 +++++++
+      1 file changed, 7 insertions(+)
+     - 修好的 commit：`29f200f`（fix: 第3題 G-03 15:40 後還沒拿到資料的市場
+     … +16 lines (ctrl+o to expand)
+  ⎿  Updated TESTLOG.md +7
+      71  - 預期／實際：預期繼續查，官方公布後一小時內更新；實際不執行，
+          下一輪排到隔天 13:40
+      72  - 原因：排程在 15:40 固定截止，不管這個市場今天有沒有拿到資料
+      73  - 修好的 commit：`29f200f`（fix: 第3題 G-03 15:40 後還沒拿到資
+          料的市場每 20 分鐘再查，到 23:40 為止）、`622d1eb`（docs: 第3題
+           README 更新背景排程時段（15:40 後延長到 23:40））
+      74 +                                                               
+      75 +## T-11 其他網站可以偷偷送出表單，修改或刪除持股（Wynn 第二、三
+         +輪驗收時發現，報告 F-05、G-04）                                
+      76 +- 怎麼發現：Wynn 第二、三輪驗收 `2ff2f68` 時，模擬從其他網站送 
+         +出 POST 到本站                                                 
+      77 +- 怎麼重現：1. 啟動並新增 2330 2. 在另一個來源的網頁放一個會自 
+         +動送出的表單，POST 到 `http://localhost:8080/holdings/{id}/dele
+         +te`（或 POST `/holdings/{id}`，帶 lots、buyPrice） 3. 用瀏覽器 
+         +打開那個網頁                                                   
+      78 +- 預期／實際：預期被擋下、資料不變；實際回 302 導回清單，持股被
+         +刪除或修改                                                     
+      79 +- 原因：網頁表單沒有 CSRF token，伺服器分不出請求是本站表單送的
+         +，還是其他網站送的                                             
+      80 +- 修好的 commit：`327b6cd`（fix: 第2題 網頁表單加上 CSRF 防護，
+         +/api 不檢查且錯誤格式維持 JSON）                               
+
+● T-11 已經寫進 TESTLOG.md，接在 T-10 後面，報告編號用 F-05、G-04，驗收 commit
+  用 2ff2f68。這個檔案還沒 commit，現在在 fix/csrf 分支上。
+
+  建議的 commit 訊息：
+  docs: 第2題 TESTLOG 記錄 CSRF 防護（F-05、G-04）
+
+  提醒
+  - 合併回 master 前，請在 fix/csrf 上跑一次 ./mvnw test，合併時用一般 merge。
+  - 這段對話記得匯出放進 ai-log/，commit 前檢查裡面有沒有密碼或 token。
+
+✻ Cooked for 13s · done 上午6:13
