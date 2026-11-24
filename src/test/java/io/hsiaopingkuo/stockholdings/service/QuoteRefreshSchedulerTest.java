@@ -40,6 +40,8 @@ class QuoteRefreshSchedulerTest {
 	private TaskScheduler taskScheduler;
 	private final MarketRefreshState twseState = new MarketRefreshState(Market.TWSE);
 	private final MarketRefreshState tpexState = new MarketRefreshState(Market.TPEX);
+	/** 收到「啟動輪結束」通知的市場（第 6 題：除權息的啟動輪從這裡開始）。 */
+	private final List<Market> startupFinished = new ArrayList<>();
 
 	@BeforeEach
 	void setUp() {
@@ -53,7 +55,7 @@ class QuoteRefreshSchedulerTest {
 
 	private QuoteRefreshScheduler scheduler(boolean enabled) {
 		return new QuoteRefreshScheduler(refreshService, holidayCalendar, new RefreshSchedule(SETTINGS, new Random(1)),
-				taskScheduler, clock, enabled);
+				taskScheduler, clock, enabled, new MarketLocks(), startupFinished::add);
 	}
 
 	/** 排進 TaskScheduler 的時間。 */
@@ -68,10 +70,11 @@ class QuoteRefreshSchedulerTest {
 	}
 
 	@Test
-	void 排程關閉時_啟動後什麼都不排() {
+	void 排程關閉時_啟動後什麼都不排_直接通知除權息可以開始() {
 		scheduler(false).onApplicationReady();
 
 		verifyNoInteractions(taskScheduler, refreshService);
+		assertThat(startupFinished).containsExactly(Market.TWSE, Market.TPEX);
 	}
 
 	@Test
@@ -84,12 +87,13 @@ class QuoteRefreshSchedulerTest {
 	}
 
 	@Test
-	void 啟動輪不看休市日_一定查一次_做完排下一輪() {
+	void 啟動輪不看休市日_一定查一次_做完排下一輪_並通知除權息() {
 		scheduler(true).runStartupRound(Market.TWSE);
 
 		verify(refreshService).runRound(Market.TWSE, Trigger.STARTUP);
 		verifyNoInteractions(holidayCalendar);
 		assertThat(scheduledTimes()).hasSize(1);
+		assertThat(startupFinished).containsExactly(Market.TWSE);
 	}
 
 	@Test

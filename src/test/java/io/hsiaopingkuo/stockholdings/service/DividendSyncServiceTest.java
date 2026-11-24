@@ -241,6 +241,25 @@ class DividendSyncServiceTest {
 		assertThat(rangeRepository.count()).isZero();
 	}
 
+	// ===== 補抓排程用的判斷（第 4c 階段）=====
+
+	@Test
+	void 有沒有缺的年份_沒交易時沒有_同步完沒有_補登更早的交易後有() {
+		assertThat(service.hasMissingYears(Market.TWSE)).isFalse();
+
+		hold("2330", Market.TWSE, LocalDate.of(2025, 6, 10), 1500);
+		assertThat(service.hasMissingYears(Market.TWSE)).isTrue();
+
+		service.syncAll();
+		// 2025 抓完、2026 沒抓完：兩年都有紀錄，就不算缺
+		assertThat(service.hasMissingYears(Market.TWSE)).isFalse();
+		assertThat(service.hasMissingYears(Market.TPEX)).isFalse();
+
+		hold("2884", Market.TWSE, LocalDate.of(2023, 3, 1), 1000);
+		assertThat(service.hasMissingYears(Market.TWSE)).isTrue();
+		assertThat(service.hasMissingYears(Market.TPEX)).isTrue();
+	}
+
 	// ===== 列表失敗、被擋 =====
 
 	@Test
