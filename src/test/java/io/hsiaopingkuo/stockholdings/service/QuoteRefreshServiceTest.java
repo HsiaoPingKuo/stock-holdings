@@ -397,7 +397,7 @@ class QuoteRefreshServiceTest {
 		verifyNoInteractions(marketResolver);
 	}
 
-	// ===== 批次那天沒有成交：逐檔補查收盤價（巧馨檢查時發現） =====
+	// ===== 批次那天沒有成交：逐檔補查收盤價（Qiao 檢查時發現） =====
 
 	/** 2363 在 11/20 收盤 10.00，11/23 沒有成交：逐檔 lookupLatest 會回最近交易日 11/23、收盤價用 11/20 的。 */
 	private static StockLookup noTradeOn1123(Market market) {
@@ -406,7 +406,7 @@ class QuoteRefreshServiceTest {
 
 	@Test
 	void 批次那天沒有成交_快取沒有收盤價_有人持有_逐檔補查前一個有成交日的收盤價_清單顯示提示() {
-		// 照巧馨的重現步驟：全新資料庫、11/24 啟動，今天還沒公布，往前找到 11/23 的批次，2363 那天是 "--"
+		// 照 Qiao 的重現步驟：全新資料庫、11/24 啟動，今天還沒公布，往前找到 11/23 的批次，2363 那天是 "--"
 		hold("2363", Market.TWSE);
 		twseBatch.answer = date -> date.equals(YESTERDAY) ? batchOf(date, Market.TWSE, "2330", "2030.00", "2363", "--")
 				: BatchQuoteResult.noData();

@@ -145,7 +145,7 @@ class HoldingServiceTest {
 		assertThat(quoteRepository.count()).isZero();
 	}
 
-	// ===== 快取有這一列、但沒有收盤價（巧馨檢查時發現） =====
+	// ===== 快取有這一列、但沒有收盤價（Qiao 檢查時發現） =====
 
 	/** 批次那天（11/23）2363 沒有成交，全新資料庫裡只有最近交易日，沒有收盤價。 */
 	private void cacheWithoutClose(String code, String name, Market market) {
