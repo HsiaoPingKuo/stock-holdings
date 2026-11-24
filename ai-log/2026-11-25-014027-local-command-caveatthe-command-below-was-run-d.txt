@@ -1,0 +1,681 @@
+ ▐▛███▛█   Claude Code v2.1.329
+▝▜██████▀  Opus 5.5 · Claude Pro
+ ▝▝   ▝▝   C:\TKA102_JavaApp\Workspace_for_practice\stock-holdings
+
+
+> /clear                                                                        
+
+> 【規則】先讀 CLAUDE.md，全程遵守。先提出方案，等我回覆「同意」才動手寫程式。  
+  只做這一階段的範圍。commit 要等我指示才做。                                   
+                                                                                
+  【先做這件事（不用等同意）】                                                  
+  把專案根目錄的「第6題設計決定.md」和「第六題設計方向分析.md」加到             
+  .git/info/exclude（不要改 .gitignore），這兩個檔不                            
+  commit、不搬動、不修改。加完執行 git                                          
+  status，確認這兩個檔不再出現在未追蹤清單裡，把結果給我看。                    
+                                                                                
+  【背景】                                                                      
+  第 6 題（2.0 版）的設計已經定好，寫在專案根目錄的「第6題設計決定.md」。請完整 
+  讀過，特別是第 9 節（計算規則）、第 12 節（例子）、第 13                      
+  節（刻意不處理的規則）。文件沒寫到的地方，先問我，不要自己決定。              
+                                                                                
+  【這一階段的目標】第 1 階段：計算核心＋單元測試                               
+  - 從最新的 master 開分支 feature/q6-calc-core。                               
+  - 在 calc                                                                     
+  套件新增「重播交易與除權息事件」的計算，純計算：不碰資料庫、不連網、不用      
+  Spring。                                                                      
+    - 輸入：股票代號（判斷 ETF                                                  
+  稅率）、交易清單（id、日期、買或賣、股數、價格）、除權息事件清單（除權息日、  
+  種類、每股現金股利、每千股配股、來源：官方／估算／無法取得）、收盤價（可能是  
+  null）。                                                                      
+    - 輸出：總股數、總成本、平均成本、已實現損益、未實現損益、累計現金股利、含  
+  息總報酬、每一次除權息的明細；超賣時要能指出是哪一筆交易。                    
+    - 手續費和證交稅沿用 ProfitCalculator                                       
+  現有的方法，不要複製一份規則。ProfitCalculator 的行為不要改（債券 ETF 也照 00 
+  開頭 0.1%，見文件第 13 節）。                                                 
+    - 規則照文件第 9                                                            
+  節：同一天的順序、成交金額元以下捨去、賣出按比例扣成本、小數 10 位            
+  HALF_UP、顯示時才捨入、含息總報酬用捨入後的數字相加、股數歸零時成本歸零、「無 
+  法取得」的事件不計入。                                                        
+                                                                                
+  【單元測試至少要有】                                                          
+  1. 文件第 12 節的五個例子（含 29.745 → 29.75）                                
+  2. 零股成交金額捨去：7 股 × 10.55 = 73.85 → 73                                
+  3. 除權息當天買進領不到、當天賣出領得到                                       
+  4. 同一天先買後賣不算超賣；中間某個時間點超賣要被擋（最後總數是正的也一樣）   
+  5. 2884 同一天除權又除息，現金股利用配股前的股數                              
+  6. 部分賣出除不盡（例如賣出 1/3），重算兩次結果一樣                           
+  7. 全部賣出後總成本是 0、平均成本是 null                                      
+  8. 「無法取得」的事件不計入股利和配股，但明細裡有這一筆                       
+  9. 沒有收盤價時，未實現損益和含息總報酬是 null                                
+  10. 回歸測試：只有一筆整張買進時，結果跟 ProfitCalculator（Part A）一模一樣   
+                                                                                
+  【請先回覆】                                                                  
+  - 類別、record 的名稱和欄位，放在哪個套件                                     
+  - 每個規則對應到哪個方法                                                      
+  - 測試清單（含每個測試的預期數字和算法）                                      
+  - 你認為文件有矛盾或沒寫清楚的地方                                            
+                                                                                
+  【規則再提醒】先提方案等「同意」；只做計算核心和測試，不碰                    
+  migration、Entity、Controller、網頁；只用 BigDecimal；兩份 md 檔不            
+  commit；commit 等我指示。                                                     
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● 「第六題設計方向分析.md」目前不在專案根目錄裡，但先兩行都加進去（不存在也無害
+  ，之後放進來就會自動被排除）。
+
+  Read 1 file, ran 1 shell command (ctrl+o to expand)
+
+● exclude 已生效（git status 顯示 working tree clean）。接著看現有的計算程式。
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● 先做的事：已完成
+
+  .git/info/exclude 最後加了這三行：
+
+  # 第6題設計筆記，本機自用、不 commit
+  /第6題設計決定.md
+  /第六題設計方向分析.md
+
+  git status 的結果：
+
+  On branch master
+  Your branch is up to date with 'origin/master'.
+  nothing to commit, working tree clean
+
+  ⚠️ 專案根目錄裡只有「第6題設計決定.md」，沒有「第六題設計方向分析.md」。那一行
+  我還是先加了，之後把檔案放進來也會自動被排除。
+
+  .gitignore 沒有動。
+
+  ---
+
+  第 1 階段方案（還沒動手，等你回「同意」）
+
+  結論： 在 calc 套件新增 7 個檔案，其中 1 個是計算類別，其餘是輸入、輸出用的
+  record、enum 和例外。ProfitCalculator 完全不改：它的 fee()、transactionTax()
+  是 package-private（同一個套件才能用），新類別也放在 calc 套件，可以直接呼叫。
+
+  一、類別與欄位（都在 io.hsiaopingkuo.stockholdings.calc）
+
+  檔案: TradeSide
+  種類: enum
+  欄位／內容: BUY, SELL
+  ────────────────────────────────────────
+  檔案: DividendKind
+  種類: enum
+  欄位／內容: CASH（息）、STOCK（權）、CASH_AND_STOCK（權息）
+  ────────────────────────────────────────
+  檔案: DividendSource
+  種類: enum
+  欄位／內容: OFFICIAL（官方）、ESTIMATED（估算）、UNAVAILABLE（無法取得）
+  ────────────────────────────────────────
+  檔案: TradeInput
+  種類: record
+  欄位／內容: long id, LocalDate date, TradeSide side, long shares, BigDecimal
+    price
+  ────────────────────────────────────────
+  檔案: DividendEventInput
+  種類: record
+  欄位／內容: LocalDate exDate, DividendKind kind, BigDecimal cashPerShare,
+    BigDecimal stockPerThousand, DividendSource
+    source（「無法取得」時兩個數字可以是 null）
+  ────────────────────────────────────────
+  檔案: DividendDetail
+  種類: record
+  欄位／內容: exDate, kind, long eligibleShares, BigDecimal cashDividend, Long
+    stockDividendShares, source（「無法取得」時兩個金額是 null）
+  ────────────────────────────────────────
+  檔案: HoldingReplayResult
+  種類: record
+  欄位／內容: long totalShares, BigDecimal totalCost（元）, BigDecimal
+    averageCost（2 位，股數 0 時 null）, BigDecimal realizedPnl（元）,
+    BigDecimal unrealizedPnl（元，可能 null）, BigDecimal
+    cumulativeCashDividend, BigDecimal totalReturn（可能 null）,
+    List<DividendDetail> dividends
+  ────────────────────────────────────────
+  檔案: OversellException
+  種類: RuntimeException
+  欄位／內容: long tradeId, LocalDate tradeDate, long
+    heldShares（賣出前的股數）, long sellShares, boolean
+    mayMissStockDividend（之前有「無法取得」的權／權息事件）
+  ────────────────────────────────────────
+  檔案: HoldingReplayCalculator
+  種類: final class，只有 static 方法
+  欄位／內容: 見下表
+
+  二、規則對應的方法（HoldingReplayCalculator）
+
+  規則: 入口：檢查輸入、重播、組結果
+  方法: public static HoldingReplayResult replay(String code, List<TradeInput>
+    trades, List<DividendEventInput> events, BigDecimal closePrice)
+  ────────────────────────────────────────
+  規則: 同一天：除權息 → 買進 → 賣出；同類依 id
+  方法: 依日期分組（TreeMap）後逐日處理；交易依 (date, BUY 在前, id) 排序
+  ────────────────────────────────────────
+  規則: 可參與股數 = 處理到那一刻的股數；同一天多個事件都用配股前的股數
+  方法: applyDividendDay(...)：先記下當天開始時的股數，所有事件都用這個數字，配
+  股最後才加
+  ────────────────────────────────────────
+  規則: 成交金額元以下捨去
+  方法: tradeAmount(price, shares) → setScale(0, DOWN)
+  ────────────────────────────────────────
+  規則: 手續費、證交稅
+  方法: 直接呼叫 ProfitCalculator.fee()、ProfitCalculator.transactionTax()
+  ────────────────────────────────────────
+  規則: 買進
+  方法: applyBuy(...)：總成本 += 成交金額 ＋ 手續費
+  ────────────────────────────────────────
+  規則: 賣出：超賣檢查、按比例扣成本、已實現損益
+  方法: applySell(...)：先乘再除（總成本 × 賣出股數 ÷
+    持有股數），只捨入一次，小數 10 位、HALF_UP；股數歸零時總成本強制設為 0
+  ────────────────────────────────────────
+  規則: 現金股利、配股
+  方法: cashDividend(...)（DOWN 到元）、stockDividend(...)（÷1000 後 DOWN
+    到整股）
+  ────────────────────────────────────────
+  規則: 「無法取得」不計入，但明細要有
+  方法: applyDividendDay 裡判斷 source
+  ────────────────────────────────────────
+  規則: 未實現損益
+  方法: unrealized(...)：市值（收盤價 × 股數，元以下捨去）− 賣出手續費 −
+    證交稅 − 總成本
+  ────────────────────────────────────────
+  規則: 顯示時才捨入
+  方法: toYuan()（元，HALF_UP）、averageCost()（2 位，HALF_UP，從 10
+    位小數的成本直接算，只捨入一次）
+  ────────────────────────────────────────
+  規則: 含息總報酬
+  方法: 捨入後的已實現 ＋ 捨入後的未實現 ＋ 累計現金股利；未實現是 null 時也回
+    null
+
+  每次呼叫都用新的區域變數重新算，不留任何狀態，所以同樣的輸入不管算幾次，結果都
+  一樣。
+
+  三、測試清單（HoldingReplayCalculatorTest）
+
+  題目只給股數、沒給價格的例子，下面的價格是我自己選的，只用來驗算成本。
+
+  #: 1a
+  情境: 2330 06-10 買 1,500 股 @1000.00，06-12 除息 4.5
+  預期與算法: 現金股利 1,500 × 4.5 = 6,750；成本 1,500,000 ＋ 2,137 =
+    1,502,137
+  ────────────────────────────────────────
+  #: 1b
+  情境: 2884 07-01 買 2,000 @30.00，07-22 權息（1.2 元、每千股 10 股）
+  預期與算法: 現金 2,400、配股 20、持股 2,020、總成本 60,085、平均成本 60,085
+    ÷ 2,020 = 29.7450… → 29.75
+  ────────────────────────────────────────
+  #: 1c
+  情境: 2884 買 1,550 @30.00
+  預期與算法: 現金 1,860；配股 15.5 → 15；持股 1,565
+  ────────────────────────────────────────
+  #: 1d
+  情境: 8069 買 1,000 @300.00，07-24 除息 4.99013930
+  預期與算法: 4,990.139 → 4,990
+  ────────────────────────────────────────
+  #: 1e
+  情境: 平均成本剛好落在 5 的邊界（補充）
+  預期與算法: 800 股 @10.00：8,000 ＋ 20 = 8,020 ÷ 800 = 10.025 → 10.03（用
+    HALF_EVEN 會得到 10.02）
+  ────────────────────────────────────────
+  #: 2
+  情境: 7 股 @10.55
+  預期與算法: 73.85 → 73；手續費 0.10 → 最低 20；成本 93；平均成本 13.2857… →
+    13.29
+  ────────────────────────────────────────
+  #: 3
+  情境: 除權息當天買進／當天賣出
+  預期與算法: 當天買 1,000：股利 0、明細沒有這筆。06-10 買 1,000 @1000、06-12
+    賣 1,000 @1000：股利 4,500、已實現 995,575 − 1,001,425 =
+    −5,850、含息總報酬 −1,350
+  ────────────────────────────────────────
+  #: 4
+  情境: 超賣
+  預期與算法: 同一天賣（id 1）、買（id 2）各 1,000 → 不算超賣。D1 買 1,000、D2
+    賣 1,000、D3 賣 500（id 3）、D4 買 2,000 → 最後是 1,500 股，仍丟
+    OversellException，tradeId = 3、heldShares = 0
+  ────────────────────────────────────────
+  #: 5
+  情境: 2884 同一天除權又除息
+  預期與算法:
+  寫成一筆「權息」，或拆成「權」「息」兩筆（權那筆排在前面），現金都是
+    2,000 × 1.2 = 2,400（不是 2,424），持股 2,020
+  ────────────────────────────────────────
+  #: 6
+  情境: 賣出 1/3 除不盡
+  預期與算法: 買 3,000 @20.00，成本 60,085；賣 1,000 @21.00，淨收
+    20,908。扣掉的成本 20,028.3333333333，已實現 879.67 → 880，剩下的成本
+    40,056.67 → 40,057，平均成本 20.03。算兩次、或把輸入順序打亂，結果 equals
+  ────────────────────────────────────────
+  #: 7
+  情境: 全部賣出
+  預期與算法: 買 2,000 @20.00（成本 40,057），賣 2,000 @21.00（淨收
+    41,815）：已實現 1,758、總成本 0、平均成本 null、未實現 0
+  ────────────────────────────────────────
+  #: 8
+  情境: 「無法取得」
+  預期與算法: 一筆官方 2330 息（計入 6,750）＋一筆 2884「無法取得」：股利只有
+    6,750，配股不增加；明細有 2 筆，第 2 筆金額是 null、來源
+    UNAVAILABLE。之後賣出配股的股數造成超賣時，mayMissStockDividend = true
+  ────────────────────────────────────────
+  #: 9
+  情境: 沒有收盤價
+  預期與算法: 未實現 null、含息總報酬 null；已實現、股利照算
+  ────────────────────────────────────────
+  #: 10
+  情境: 回歸：跟 Part A 一樣
+  預期與算法: 用 Part A
+    三個例子（2330、0050、2363）加上「沒有收盤價」：總成本等於
+    ProfitCalculator 的 cost()，未實現等於 profit()（例如
+    1,001,425、93,708）。2330 的平均成本 1001.425 → 1001.43
+  ────────────────────────────────────────
+  #: 11
+  情境: 含息總報酬用捨入後的數字相加（補充）
+  預期與算法: 買 2,000 @20.00（成本 40,057），賣 1,000 @21.00：已實現 879.5 →
+    880；收盤 21.00 時未實現 879.5 → 880。含息總報酬 1,760（不是 1,759）
+
+  四、文件矛盾或沒寫清楚的地方（需要你決定）
+
+  1. 股數是 0、又沒有收盤價時，未實現損益是 0 還是 null？ 第 9 節 D
+     兩個條件都寫了，但沒說兩個同時成立時聽哪一個。建議回 
+     0：手上已經沒有股票，不需要收盤價。這樣全部賣光的持股也算得出含息總報酬。
+  2. 「29.745 要是 29.75，不能用 HALF_EVEN」這句不精確。 實際值是
+     29.7450495…，不是剛好卡在 5，用 HALF_EVEN 一樣會得到
+     29.75。這個例子只抓得到「先捨入到 3 位、再捨入到 2 位」的錯誤。所以我補了
+     1e（10.025）和 10（1001.425）兩個剛好卡在 5 的例子，才真的分得出 HALF_UP 和
+     HALF_EVEN。建議修正文件的說法。
+  3. 明細要不要列出可參與股數是 0 的事件（買進之前、賣光之後、除權息當天才買的）
+     ？建議不列，「持有期間」才列。測試 3 照這個寫。
+  4. 同一天有兩筆分開的事件（權、息各一筆）：文件只有「權息」一筆的例子。我打算
+     兩種寫法都用配股前的股數（第 5 題測兩種）。請確認。
+  5. 超賣時要指出「那筆推估的買進」（決定 1）：
+     輸入裡沒有「是否推估」的欄位。建議計算核心只回報超賣的那一筆，加上
+     mayMissStockDividend；錯誤訊息裡提到推估買進的部分，交給第 5 階段的 service
+     組出來。這樣輸入欄位就照你列的，不用多加。
+  6. 輸出要不要加市值（marketValue）？ 第 9 節 D 沒有列，但 /api/v1
+     要用全部股數算市值（決定 2），現在的網頁也有顯示。反正算未實現損益時已經算
+     出來了。建議加（沒有收盤價時是 null）。
+  7. 畫面上的數字可能差 1 元（不是矛盾，先讓你知道）：測試 11 的總成本顯示
+     20,029、未實現 880，但淨市值 20,908 − 20,029 =
+     879。這是「各自捨入」一定會發生的情況，第 8 題 API.md 可能需要說明。
+  8. 負數的 HALF_UP 是往遠離 0 的方向捨入（−0.5 → −1），跟 Part A
+     收益率的規則一致。只是說明，不用決定。
+
+  五、同意後的步驟
+
+  1. git fetch 確認 master 是最新的，再開分支 feature/q6-calc-core。
+  2. 新增上面 7 個主程式檔和 1 個測試檔。
+  3. 執行 ./mvnw test，回報結果，並提出 commit 訊息（feat: 第6題 ...）。commit
+     由你執行。
+
+  建議（未實作）
+
+  - OversellException 我打算放在 calc 套件，不放 exception
+    套件，讓計算核心不依賴網頁層。如果你希望例外集中管理，再告訴我。
+
+  請回覆第 1、3、4、5、6 點的決定（照建議就回「同意」），我再開始實作。
+
+✻ Churned for 2m 34s · done 上午1:23
+
+> 同意，照方案實作。五點的決定：                                                
+                                                                                
+  1. 股數 0、又沒有收盤價時，未實現損益回 0。                                   
+  2. 你說得對，29.745 那句不精確，我已經修正設計文件。1e、10 兩個卡在 5         
+  的測試保留。                                                                  
+  3. 明細只列可參與股數大於 0                                                   
+  的事件（除權息當天買進、買進之前、賣光之後的事件都不列）。                    
+  4. 同一天有多筆事件（權、息分開）時，全部用當天開始時的股數，配股最後才加。兩 
+  種寫法都測。                                                                  
+  5. 同意：計算核心只回報超賣的那一筆和                                         
+  mayMissStockDividend，推估買進的訊息交給第 5 階段。                           
+  6. 同意加 marketValue：收盤價 × 股數，元以下捨去；沒有收盤價時 null；股數 0   
+  時是 0。                                                                      
+                                                                                
+  第 7、8 點了解，第 8 題寫 API.md 時再說明。OversellException 放在 calc        
+  套件，同意。                                                                  
+  設計文件已經更新，開始前請重新讀一次第 9 節。                                 
+                                                                                
+  【規則再提醒】只做計算核心和測試；只用 BigDecimal；兩份 md 檔不 commit；跑完  
+  ./mvnw test 回報結果並提出 commit 訊息，commit 由我執行。                     
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● 第 9 節我重讀後發現仍是舊寫法（第 253 行還是「不能用 HALF_EVEN」，D 表也沒有
+  marketValue），檔案大小有變動，但可能改在別處或尚未存檔；這不影響實作，我會照
+  你這次的六點決定進行，最後回報時再提醒你。 · summary
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● 分支已從最新的 master（256ff20）開好。開始寫程式。
+  ⎿  Interrupted · What should Claude do instead?
+
+> continue                                                                      
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\calc\TradeSide.java)
+  ⎿  Wrote 6 lines to
+     src\main\java\io\hsiaopingkuo\stockholdings\calc\TradeSide.java
+      1 package io.hsiaopingkuo.stockholdings.calc;
+      2 
+      3 /** 交易方向（第 6 題）。同一天重播時，買進一律排在賣出前面。 */
+      4 public enum TradeSide {
+      5   BUY, SELL
+      6 }
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\calc\DividendKind.java)
+  ⎿  Wrote 11 lines to
+     src\main\java\io\hsiaopingkuo\stockholdings\calc\DividendKind.java
+       1 package io.hsiaopingkuo.stockholdings.calc;
+       2 
+       3 /** 除權息種類（第 6 題），對應官方的「息／權／權息」。 */
+       4 public enum DividendKind {
+       5   /** 息：只發現金股利。 */
+       6   CASH,
+       7   /** 權：只配股。 */
+       8   STOCK,
+       9   /** 權息：同一天現金和配股都有。 */
+      10   CASH_AND_STOCK
+     … +1 line (ctrl+o to expand)
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\calc\DividendSource.java)
+  ⎿  Wrote 11 lines to
+     src\main\java\io\hsiaopingkuo\stockholdings\calc\DividendSource.java
+       1 package io.hsiaopingkuo.stockholdings.calc;
+       2 
+       3 /** 除權息數字的來源（第 6 題設計決定 7-C）。 */
+       4 public enum DividendSource {
+       5   /** 官方：上櫃列表，或上市明細。 */
+       6   OFFICIAL,
+       7   /** 估算：上市沒有明細時，從「權值＋息值」反推。 */
+       8   ESTIMATED,
+       9   /** 無法取得：拆不出現金和配股，不猜數字，也不計入股利和配股。
+          */
+     … +2 lines (ctrl+o to expand)
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\calc\TradeInput.java)
+  ⎿  Wrote 30 lines to
+     src\main\java\io\hsiaopingkuo\stockholdings\calc\TradeInput.java
+       1 package io.hsiaopingkuo.stockholdings.calc;
+       2 
+       3 import java.math.BigDecimal;
+       4 import java.time.LocalDate;
+       5 
+       6 /**
+       7  * 重播用的一筆交易（第 6 題）。計算核心不碰資料庫，所以不直接用
+          Entity，由 service 轉成這個 record。
+       8  *
+       9  * @param id     交易 id：同一天同方向時依 id 排序，超賣時也用它
+     … +22 lines (ctrl+o to expand)
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\calc\DividendEventInput.java
+       )
+  ⎿  Wrote 32 lines to src\main\java\io\hsiaopingkuo\stockholdings\calc\Div
+     idendEventInput.java
+       1 package io.hsiaopingkuo.stockholdings.calc;
+       2 
+       3 import java.math.BigDecimal;
+       4 import java.time.LocalDate;
+       5 
+       6 /**
+       7  * 重播用的一筆除權息事件（第 6 題）。呼叫端只傳同一個代號的事件
+         。
+       8  *
+       9  * @param exDate           除權息交易日
+     … +23 lines (ctrl+o to expand)
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\calc\DividendDetail.java)
+  ⎿  Wrote 15 lines to
+     src\main\java\io\hsiaopingkuo\stockholdings\calc\DividendDetail.java
+       1 package io.hsiaopingkuo.stockholdings.calc;
+       2 
+       3 import java.math.BigDecimal;
+       4 import java.time.LocalDate;
+       5 
+       6 /**
+       7  * 持有期間某一次除權息的明細（第 6 題）。只列可參與股數大於 0
+         的事件。
+       8  *
+       9  * @param eligibleShares      可參與股數：除權息日前一個交易日收
+     … +7 lines (ctrl+o to expand)
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\calc\HoldingReplayResult.jav
+       a)
+  ⎿  Wrote 27 lines to src\main\java\io\hsiaopingkuo\stockholdings\calc\Hol
+     dingReplayResult.java
+       1 package io.hsiaopingkuo.stockholdings.calc;
+       2 
+       3 import java.math.BigDecimal;
+       4 import java.util.List;
+       5 
+       6 /**
+       7  * 一檔持股重播交易與除權息後的結果（第 6 題）。金額都已經捨入成
+         顯示用的值。
+       8  *
+       9  * @param totalShares            總股數（含配股）
+     … +18 lines (ctrl+o to expand)
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\calc\OversellException.java)
+  ⎿  Wrote 60 lines to src\main\java\io\hsiaopingkuo\stockholdings\calc\Ove
+     rsellException.java
+      1 package io.hsiaopingkuo.stockholdings.calc;
+      2 
+      3 import java.time.LocalDate;
+      4 
+      5 /**
+      6  * 重播到某一筆賣出時，股數不夠（第 6 題）。
+      7  * 放在 calc 套件，計算核心才不用依賴網頁層；要顯示給使用者的完整
+        訊息（例如提到推估的買進）由 service 組。
+      8  */
+      9 public class OversellException extends RuntimeException {
+     … +51 lines (ctrl+o to expand)
+
+● Now the calculator itself.
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\calc\HoldingReplayCalculator
+       .java)
+  ⎿  Wrote 204 lines to src\main\java\io\hsiaopingkuo\stockholdings\calc\Ho
+     ldingReplayCalculator.java
+       1 package io.hsiaopingkuo.stockholdings.calc;
+       2 
+       3 import java.math.BigDecimal;
+       4 import java.math.RoundingMode;
+       5 import java.time.LocalDate;
+       6 import java.util.ArrayList;
+       7 import java.util.Comparator;
+       8 import java.util.List;
+       9 import java.util.Map;
+      10 import java.util.TreeMap;
+     … +194 lines (ctrl+o to expand)
+
+● Now the test file.
+● Write(src\test\java\io\hsiaopingkuo\stockholdings\calc\HoldingReplayCalculator
+       Test.java)
+  ⎿  Wrote 389 lines to src\test\java\io\hsiaopingkuo\stockholdings\calc\Ho
+     ldingReplayCalculatorTest.java
+       1 package io.hsiaopingkuo.stockholdings.calc;
+       2 
+       3 import static org.assertj.core.api.Assertions.assertThat;
+       4 import static org.assertj.core.api.Assertions.assertThatThrownBy
+         ;
+       5 
+       6 import java.math.BigDecimal;
+       7 import java.time.LocalDate;
+       8 import java.util.ArrayList;
+       9 import java.util.Collections;
+     … +380 lines (ctrl+o to expand)
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● 結論
+
+  第 1 階段的計算核心和測試都寫好了。./mvnw test 全部通過：29 個測試類別、339
+  個測試，0 失敗、0 錯誤。新增的 HoldingReplayCalculatorTest 有 22 個測試。
+
+  ProfitCalculator 和其他既有檔案都沒有改。兩份設計 md 也沒有出現在 git status
+  裡。
+
+  1. 改了哪些檔案
+
+  全部是新增，都在分支 feature/q6-calc-core 的 calc 套件：
+
+  ┌────────────────────────────────────┬────────────────────────────────────┐
+  │                檔案                │                內容                │
+  ├────────────────────────────────────┼────────────────────────────────────┤
+  │ TradeSide、DividendKind、DividendS │ 三個 enum                          │
+  │ ource                              │                                    │
+  ├────────────────────────────────────┼────────────────────────────────────┤
+  │ TradeInput、DividendEventInput     │ 輸入用的                           │
+  │                                    │ record，建立時就擋掉不合理的資料   │
+  ├────────────────────────────────────┼────────────────────────────────────┤
+  │ DividendDetail、HoldingReplayResul │ 輸出用的 record，已經加上          │
+  │ t                                  │ marketValue                        │
+  ├────────────────────────────────────┼────────────────────────────────────┤
+  │                                    │ 超賣的那一筆（tradeId、日期、當時  │
+  │ OversellException                  │ 持有幾股、要賣幾股、mayMissStockDi │
+  │                                    │ vidend）                           │
+  ├────────────────────────────────────┼────────────────────────────────────┤
+  │ HoldingReplayCalculator            │ 重播計算，入口是 replay(code,      │
+  │                                    │ trades, events, closePrice)        │
+  ├────────────────────────────────────┼────────────────────────────────────┤
+  │ src/test/.../calc/HoldingReplayCal │ 測試                               │
+  │ culatorTest.java                   │                                    │
+  └────────────────────────────────────┴────────────────────────────────────┘
+
+  我之前的錯誤，請記進 REVIEW.md： 提案裡我寫「新增 7 個主程式檔」，實際是 9 
+  個（3 個 enum ＋ 2 個輸入 ＋ 2 個輸出 ＋ 例外 ＋ 計算類別）。提案表格本身列了
+  9 列，是我數錯了。
+
+  2. 怎麼驗證
+
+  ./mvnw test -Dtest=HoldingReplayCalculatorTest
+
+  預期看到 Tests run: 22, Failures: 
+  0。每個測試的預期數字和算法都寫在測試的註解裡，跟提案的表一致。
+
+  除了提案裡的測試，另外補了兩個：「沒有交易時全部是 0」和「輸入不合理時丟
+  IllegalArgumentException」。
+
+  你這次的六點決定，實作在 HoldingReplayCalculator.java 這幾個地方：
+  - 第 1、6 點：股數是 0 時，未實現和市值都回 0，不看收盤價。在 toResult()。
+  - 第 3、4 點：可參與股數是 0
+    就不列明細；同一天的所有事件都用當天開始時的股數，配股最後才加。在
+    applyDividendDay()。
+
+  3. 測試結果
+
+  ./mvnw test：339 個測試，0 失敗、0 錯誤、0 略過。
+
+  4. 還沒做或要提醒的
+
+  - 設計文件第 9 節看起來還沒更新：第 253 行仍然寫「29.745 要是 29.75，不能用
+    HALF_EVEN」，D 表也還沒有 marketValue 和「股數 0 時優先回
+    0」。檔案大小有變，可能改到別的地方，或還沒存檔。請再確認一次。
+  - 已經在分支上，還沒 commit。建議的 commit 訊息：
+
+  feat: 第6題 計算核心：依日期重播交易與除權息，算出股數、成本、損益與股利
+
+  - 每題結束的提醒：
+    - README：這個階段沒有改「要裝什麼、怎麼啟動、怎麼設定、怎麼使用」，不需要更
+      新。
+    - TESTLOG：這個階段只有單元測試，沒有實際操作，沒有要記的。
+    - ai-log：這個階段的對話記得匯出放進去，commit 前檢查有沒有密碼、token。
+
+  建議（未實作）
+
+  - 第 8 題寫 API.md
+    時，記得說明「各自捨入，所以畫面上的總成本和未實現損益可能差 1
+    元」（例如總成本 20,029、未實現 880，但淨市值是 20,908）。
+
+✻ Cooked for 3m 42s · done 上午1:31
+
+> 確認過了，同意 commit。                                                       
+                                                                                
+  1. 設計文件第 9 節已經更新（第 253 行、市值、股數 0 時優先回                  
+  0），請重新讀一次確認，不用改程式。                                           
+  2. 檔案數量數錯的事不用記進 REVIEW.md。REVIEW.md 照 CLAUDE.md 5.3             
+  的規則，等第 9 題再一起整理，現在不要動。                                     
+  3. commit 訊息照你提的：                                                      
+     feat: 第6題 計算核心：依日期重播交易與除權息，算出股數、成本、損益與股利   
+     commit 由我執行。commit 前請再跑一次 git status，確認兩份 md               
+  檔沒有出現在要 commit 的清單裡。                                              
+  4. 「各自捨入可能差 1 元」已經寫進設計文件第 9 節，第 8 題寫 API.md           
+  時會用到。                                                                    
+                                                                                
+  這一階段到這裡結束，先不要開始第 2 階段。                                     
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● 結論
+
+  設計文件第 9 節我重讀過了，內容跟程式一致，不用改程式。git status 也確認過：要
+  commit 的只有 10 個 Java 檔，兩份設計 md 都不在清單裡。
+
+  第 9 節對照
+
+  ┌──────────────────────────────────────────────────┬───────────────────────┐
+  │                     文件內容                     │      程式的寫法       │
+  ├──────────────────────────────────────────────────┼───────────────────────┤
+  │                                                  │ toResult() 用未捨入的 │
+  │ 平均成本從未捨入的成本直接算，只捨入一次（29.745 │  cost 直接除，小數 2  │
+  │ 0495… → 29.75；10.025 → 10.03）                  │ 位、HALF_UP；測試     │
+  │                                                  │ 1b、1e 鎖住           │
+  ├──────────────────────────────────────────────────┼───────────────────────┤
+  │ 市值：收盤價 ×                                   │ toResult()            │
+  │ 股數，元以下捨去；沒有收盤價是「未取得」；股數 0 │ 先判斷股數是不是      │
+  │  時是 0                                          │ 0，再判斷收盤價是不是 │
+  │                                                  │  null                 │
+  ├──────────────────────────────────────────────────┼───────────────────────┤
+  │ 未實現損益：股數 0 時一律是 0；股數大於 0        │ 同一段判斷；測試 7、9 │
+  │ 又沒有收盤價時是「未取得」                       │  鎖住                 │
+  ├──────────────────────────────────────────────────┼───────────────────────┤
+  │                                                  │ applyDividendDay()    │
+  │ 明細只列可參與股數大於 0 的事件                  │ 一開始就判斷；測試 3  │
+  │                                                  │ 鎖住                  │
+  ├──────────────────────────────────────────────────┼───────────────────────┤
+  │ 負數 HALF_UP 往遠離 0 的方向捨入                 │ toYuan() 用           │
+  │                                                  │ RoundingMode.HALF_UP  │
+  └──────────────────────────────────────────────────┴───────────────────────┘
+
+  git status（目前在 feature/q6-calc-core）
+
+  Untracked files:
+          src/main/java/io/hsiaopingkuo/stockholdings/calc/DividendDetail.java
+
+  src/main/java/io/hsiaopingkuo/stockholdings/calc/DividendEventInput.java
+          src/main/java/io/hsiaopingkuo/stockholdings/calc/DividendKind.java
+          src/main/java/io/hsiaopingkuo/stockholdings/calc/DividendSource.java
+
+  src/main/java/io/hsiaopingkuo/stockholdings/calc/HoldingReplayCalculator.java
+
+  src/main/java/io/hsiaopingkuo/stockholdings/calc/HoldingReplayResult.java
+
+  src/main/java/io/hsiaopingkuo/stockholdings/calc/OversellException.java
+          src/main/java/io/hsiaopingkuo/stockholdings/calc/TradeInput.java
+          src/main/java/io/hsiaopingkuo/stockholdings/calc/TradeSide.java
+          src/test/java/io/hsiaopingkuo/stockholdings/calc/HoldingReplayCalculat
+  orTest.java
+
+  用 git status --ignored
+  檢查，「第6題設計決定.md」列在被忽略的清單（!!），就算執行 git add .
+  也不會被加進去。「第六題設計方向分析.md」目前還是不在資料夾裡。
+
+  你要執行的指令
+
+  git add src/main/java/io/hsiaopingkuo/stockholdings/calc 
+  src/test/java/io/hsiaopingkuo/stockholdings/calc
+  git status
+  git commit -m "feat: 第6題 
+  計算核心：依日期重播交易與除權息，算出股數、成本、損益與股利"
+
+  只 add calc 這兩個資料夾，範圍最清楚。
+
+  REVIEW.md 我沒有動。這一階段到這裡結束，第 2 階段（V4
+  migration）等你指示再開始。commit 之前別忘了把這一段的 ai-log 匯出放好。
+
+✻ Brewed for 16s · done 上午1:37
+
+※ recap: 第 6 題 2.0 版第 1 階段（計算核心＋單元測試）已完成，`./mvnw test` 全部通過，程式在 `feature/q6-calc-core` 分支上，還沒 commit。下一步：你照我給的指令 add、commit 這 10 個 Java 檔。
