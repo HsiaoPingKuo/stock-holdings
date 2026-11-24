@@ -31,7 +31,7 @@ public class HoldingCreateForm {
 
 	@NotNull(message = "請輸入買進價")
 	@DecimalMin(value = "0", inclusive = false, message = "買進價必須大於 0")
-	// integer = 10 對應 DECIMAL(12,2) 的整數位數；Digits 會先去掉尾端的 0，所以 10.100 視為兩位小數
+	// integer = 10 對應 DECIMAL(12,2) 的整數位數；Digits 不會去掉尾端的 0，所以 10.100 算三位小數，會被拒絕
 	@Digits(integer = 10, fraction = 2, message = "買進價最多兩位小數（整數部分最多 10 位）")
 	private BigDecimal buyPrice;
 

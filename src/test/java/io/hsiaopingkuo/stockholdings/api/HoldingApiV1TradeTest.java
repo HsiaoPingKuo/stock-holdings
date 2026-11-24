@@ -7,6 +7,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
@@ -506,7 +507,7 @@ class HoldingApiV1TradeTest {
 			assertThat(Duration.ofNanos(System.nanoTime() - start)).isGreaterThanOrEqualTo(Duration.ofMillis(1500));
 			expectError(perform(delete("/api/v1/holdings/{id}", h.getId())), 409, "HOLDING_BUSY");
 			expectError(perform(postJson("{\"code\":\"2330\",\"lots\":1,\"buy_price\":900}")), 409, "HOLDING_BUSY");
-			perform(post("/holdings/{id}/delete", h.getId()))
+			perform(post("/holdings/{id}/delete", h.getId()).with(csrf()))
 					.andExpect(redirectedUrl("/holdings"))
 					.andExpect(flash().attribute("errorMessage", "這筆持股正在被其他裝置修改，請稍後再試"));
 

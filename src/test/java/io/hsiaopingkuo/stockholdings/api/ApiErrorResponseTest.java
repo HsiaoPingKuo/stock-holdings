@@ -17,11 +17,13 @@ import java.nio.charset.StandardCharsets;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
+import org.springframework.context.annotation.Import;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.ResultActions;
 
+import io.hsiaopingkuo.stockholdings.config.SecurityConfig;
 import io.hsiaopingkuo.stockholdings.service.HoldingService;
 
 /**
@@ -30,6 +32,8 @@ import io.hsiaopingkuo.stockholdings.service.HoldingService;
  * Service 用假的，才能讓它丟出「非預期的例外」。
  */
 @WebMvcTest(HoldingApiController.class)
+// @WebMvcTest 不會載入一般的 @Configuration；不 import 的話會套用 Spring Security 預設（全部要登入）
+@Import(SecurityConfig.class)
 class ApiErrorResponseTest {
 
 	@Autowired
