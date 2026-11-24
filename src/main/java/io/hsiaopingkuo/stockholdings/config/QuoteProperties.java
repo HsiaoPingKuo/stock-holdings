@@ -15,10 +15,11 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  * @param readTimeout    等待回應的上限
  * @param lookupTimeout  新增持股時「同時查兩個市場」的整體上限（題目要求 10 秒內看到結果）
  * @param lookupCacheTtl 代號查詢結果記住多久；輸入代號時的即時提示和按下新增共用，避免重複打官方
+ * @param holidayUrl     證交所休市日表的完整網址（主機是 openapi.twse.com.tw，和行情不同，所以獨立設定）
  */
 @ConfigurationProperties("quote")
 public record QuoteProperties(Host twse, Host tpex, Duration connectTimeout, Duration readTimeout,
-		Duration lookupTimeout, Duration lookupCacheTtl) {
+		Duration lookupTimeout, Duration lookupCacheTtl, String holidayUrl) {
 
 	/** @param baseUrl 主機網址，例如 https://www.twse.com.tw；路徑和參數寫在 client 裡，不能改 */
 	public record Host(String baseUrl) {

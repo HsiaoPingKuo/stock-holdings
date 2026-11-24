@@ -8,7 +8,9 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.web.client.RestClient;
 
+import io.hsiaopingkuo.stockholdings.quote.HolidayCalendar;
 import io.hsiaopingkuo.stockholdings.quote.MarketResolver;
+import io.hsiaopingkuo.stockholdings.quote.TwseHolidayClient;
 import io.hsiaopingkuo.stockholdings.quote.TpexOtcClient;
 import io.hsiaopingkuo.stockholdings.quote.TpexTradingStockClient;
 import io.hsiaopingkuo.stockholdings.quote.TwseMiIndexClient;
@@ -42,6 +44,17 @@ public class QuoteConfig {
 	@Bean
 	TpexOtcClient tpexOtcClient(QuoteProperties properties, JsonMapper jsonMapper) {
 		return new TpexOtcClient(restClient(properties.tpex().baseUrl(), properties), jsonMapper);
+	}
+
+	// 休市日表的主機和行情不同，用自己的網址設定（TWSE_HOLIDAY_URL）
+	@Bean
+	TwseHolidayClient twseHolidayClient(QuoteProperties properties, JsonMapper jsonMapper) {
+		return new TwseHolidayClient(restClient(properties.holidayUrl(), properties), jsonMapper);
+	}
+
+	@Bean
+	HolidayCalendar holidayCalendar(TwseHolidayClient twseHolidayClient, Clock clock) {
+		return new HolidayCalendar(twseHolidayClient, clock);
 	}
 
 	// MarketResolver 有 close()，容器關閉時 Spring 會自動呼叫，把查詢用的執行緒收掉
