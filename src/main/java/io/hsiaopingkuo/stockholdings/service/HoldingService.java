@@ -5,13 +5,17 @@ import java.time.Clock;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Locale;
+import java.util.Optional;
 
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
+import io.hsiaopingkuo.stockholdings.dto.HoldingListItem;
 import io.hsiaopingkuo.stockholdings.entity.Holding;
+import io.hsiaopingkuo.stockholdings.entity.Market;
+import io.hsiaopingkuo.stockholdings.entity.Quote;
 import io.hsiaopingkuo.stockholdings.exception.DuplicateCodeException;
 import io.hsiaopingkuo.stockholdings.exception.HoldingNotFoundException;
 import io.hsiaopingkuo.stockholdings.exception.MarketUnavailableException;
@@ -33,17 +37,21 @@ public class HoldingService {
 	private static final String UNIQUE_CODE_CONSTRAINT = "UK_HOLDING_CODE";
 
 	private final HoldingRepository holdingRepository;
+	private final QuoteService quoteService;
 	private final MarketResolver marketResolver;
 	private final Clock clock;
 
-	public HoldingService(HoldingRepository holdingRepository, MarketResolver marketResolver, Clock clock) {
+	public HoldingService(HoldingRepository holdingRepository, QuoteService quoteService,
+			MarketResolver marketResolver, Clock clock) {
 		this.holdingRepository = holdingRepository;
+		this.quoteService = quoteService;
 		this.marketResolver = marketResolver;
 		this.clock = clock;
 	}
 
-	public List<Holding> findAll() {
-		return holdingRepository.findAllByOrderByCodeAsc();
+	/** 清單頁：持股加上收盤價。只讀資料庫（行情快取），不呼叫官方，打開清單才不會每次都打官方。 */
+	public List<HoldingListItem> findAllForList() {
+		return holdingRepository.findAllForList();
 	}
 
 	public Holding findById(Long id) {
@@ -52,8 +60,8 @@ public class HoldingService {
 
 	/**
 	 * @throws DuplicateCodeException      代號已在持股中
-	 * @throws StockCodeNotFoundException  上市、上櫃都查不到這個代號（第 3 題）
-	 * @throws MarketUnavailableException  官方網站連不上，無法確認代號（第 3 題）
+	 * @throws StockCodeNotFoundException  行情快取沒有，上市、上櫃也都查不到這個代號（第 3 題）
+	 * @throws MarketUnavailableException  行情快取沒有，官方網站又連不上，無法確認代號（第 3 題）
 	 */
 	@Transactional
 	public Holding create(String code, int lots, BigDecimal buyPrice) {
@@ -65,13 +73,25 @@ public class HoldingService {
 			throw new DuplicateCodeException(normalizedCode);
 		}
 
-		// 第 3 題：由官方 API 判斷上市或上櫃；查不到或無法確認時直接丟例外，後面的儲存不會執行
-		StockLookup lookup = marketResolver.resolve(normalizedCode);
+		// 第 3 題：先查行情快取。排程每天會寫入全市場的行情，大部分代號在這裡就知道市場和名稱，不必打官方
+		Market market;
+		String name;
+		Optional<Quote> cached = quoteService.findByCode(normalizedCode);
+		if (cached.isPresent()) {
+			market = cached.get().getMarket();
+			name = cached.get().getName();
+		} else {
+			// 快取沒有才問官方；查不到或無法確認時直接丟例外，後面的儲存不會執行
+			StockLookup lookup = marketResolver.resolve(normalizedCode);
+			// 官方已經回了最近交易日和收盤價，順手寫進快取：新增後清單馬上看得到價格
+			quoteService.upsert(List.of(lookup.toDailyQuote(normalizedCode)));
+			market = lookup.market();
+			name = lookup.name();
+		}
 
 		try {
 			// saveAndFlush：立刻把 INSERT 送到資料庫，違反約束時在這裡就丟例外，才接得到
-			return holdingRepository.saveAndFlush(
-					new Holding(normalizedCode, lookup.name(), lookup.market(), lots, buyPrice, now()));
+			return holdingRepository.saveAndFlush(new Holding(normalizedCode, name, market, lots, buyPrice, now()));
 		} catch (DataIntegrityViolationException e) {
 			// 最後防線：兩個請求同時新增同一代號時，上面的檢查都會通過，由資料庫的 UNIQUE 約束擋下
 			if (isUniqueCodeViolation(e)) {
@@ -84,15 +104,23 @@ public class HoldingService {
 
 	/**
 	 * 新增表單輸入代號時的即時提示：查這個代號的名稱與市場。
-	 * 結果由 MarketResolver 記住 10 分鐘，使用者接著按下新增時不會再打一次官方。
-	 * NOT_SUPPORTED：這裡完全不碰資料庫，不要為了等官方回應（最多 8 秒）白白佔住一條資料庫連線。
+	 * 先查行情快取，有就直接回傳，不打官方；沒有才問官方，結果由 MarketResolver 記住 10 分鐘。
+	 * NOT_SUPPORTED：不要為了等官方回應（最多 8 秒）白白佔住一條資料庫連線；
+	 * 查快取那一下由 QuoteService 自己開一個很短的唯讀交易。
 	 *
-	 * @throws StockCodeNotFoundException 上市、上櫃都查不到
-	 * @throws MarketUnavailableException 官方網站連不上，無法確認
+	 * @throws StockCodeNotFoundException 快取沒有，上市、上櫃也都查不到
+	 * @throws MarketUnavailableException 快取沒有，官方網站又連不上，無法確認
 	 */
 	@Transactional(propagation = Propagation.NOT_SUPPORTED)
 	public StockLookup lookupStock(String code) {
-		return marketResolver.resolve(normalizeCode(code));
+		String normalizedCode = normalizeCode(code);
+		Optional<Quote> cached = quoteService.findByCode(normalizedCode);
+		if (cached.isPresent()) {
+			Quote quote = cached.get();
+			return StockLookup.found(quote.getMarket(), quote.getName(), quote.getLatestTradeDate(),
+					quote.getClosePrice(), quote.getCloseDate());
+		}
+		return marketResolver.resolve(normalizedCode);
 	}
 
 	@Transactional

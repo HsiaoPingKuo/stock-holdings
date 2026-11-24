@@ -1,6 +1,7 @@
 package io.hsiaopingkuo.stockholdings.config;
 
 import java.time.Duration;
+import java.time.LocalTime;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
@@ -15,12 +16,35 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  * @param readTimeout    等待回應的上限
  * @param lookupTimeout  新增持股時「同時查兩個市場」的整體上限（題目要求 10 秒內看到結果）
  * @param lookupCacheTtl 代號查詢結果記住多久；輸入代號時的即時提示和按下新增共用，避免重複打官方
+ * @param holidayUrl     證交所休市日表的完整網址（主機是 openapi.twse.com.tw，和行情不同，所以獨立設定）
+ * @param refresh        背景更新行情的排程設定
  */
 @ConfigurationProperties("quote")
 public record QuoteProperties(Host twse, Host tpex, Duration connectTimeout, Duration readTimeout,
-		Duration lookupTimeout, Duration lookupCacheTtl) {
+		Duration lookupTimeout, Duration lookupCacheTtl, String holidayUrl, Refresh refresh) {
 
 	/** @param baseUrl 主機網址，例如 https://www.twse.com.tw；路徑和參數寫在 client 裡，不能改 */
 	public record Host(String baseUrl) {
+	}
+
+	/**
+	 * 背景更新行情（quote.refresh.*）。Spring 會自動對應環境變數，例如 QUOTE_REFRESH_ENABLED=false 可以關掉。
+	 * 時間一律是台北時間。
+	 *
+	 * @param enabled             排程開關（測試時關掉，避免跑測試時發出請求）
+	 * @param startTime           每個交易日開始查詢的時間（收盤 13:30、盤後最晚 13:33，官方約 13:50 後公布）
+	 * @param slowdownTime        過了這個時間改成慢速（應付官方延遲公布）
+	 * @param endTime             過了這個時間當天停止
+	 * @param fastInterval        快速時段每一輪的間隔
+	 * @param fastJitter          快速間隔的隨機加減範圍（避免每次都在整數秒送出）
+	 * @param slowInterval        慢速時段，以及批次失敗改用逐檔時的間隔
+	 * @param perRequestDelayMin  逐檔查詢（和啟動時往前找）每個請求之間最少等多久
+	 * @param perRequestDelayMax  每個請求之間最多等多久
+	 * @param cooldown            被官方擋下後，這個市場暫停多久
+	 * @param startupLookbackDays 伺服器啟動時，今天沒有資料最多往前找幾天
+	 */
+	public record Refresh(boolean enabled, LocalTime startTime, LocalTime slowdownTime, LocalTime endTime,
+			Duration fastInterval, Duration fastJitter, Duration slowInterval, Duration perRequestDelayMin,
+			Duration perRequestDelayMax, Duration cooldown, int startupLookbackDays) {
 	}
 }

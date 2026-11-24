@@ -76,12 +76,13 @@ class TpexTradingStockClientTest {
 	}
 
 	@Test
-	void 回傳HTML_UNAVAILABLE() {
+	void 回傳HTML_當成被擋_BLOCKED() {
+		// 第 3 題第二階段：被擋要和一般失敗分開（排程要冷卻），原本預期 UNAVAILABLE
 		TpexTradingStockClient client = clientFor(BASE_URL);
 		server.expect(requestTo(BASE_URL + "/www/zh-tw/afterTrading/tradingStock?code=6488&date=2026/11/23&response=json"))
 				.andRespond(withSuccess("<html><body>維護中</body></html>", MediaType.TEXT_HTML));
 
-		assertThat(client.lookupMonth("6488", NOV_23).status()).isEqualTo(Status.UNAVAILABLE);
+		assertThat(client.lookupMonth("6488", NOV_23).status()).isEqualTo(Status.BLOCKED);
 	}
 
 	@Test
@@ -91,6 +92,25 @@ class TpexTradingStockClientTest {
 				.andRespond(withException(new SocketTimeoutException("Read timed out")));
 
 		assertThat(client.lookupMonth("6488", NOV_23).status()).isEqualTo(Status.UNAVAILABLE);
+	}
+
+	@Test
+	void 最後一天沒有成交_收盤價取前一個有成交的列() {
+		TpexTradingStockClient client = clientFor(BASE_URL);
+		// 櫃買的欄位名稱前後有空白（"日 期"、"收盤 "），照實測格式
+		String body = """
+				{"stat":"ok","name":"測試股","tables":[{"fields":["日 期","收盤 "],
+				 "data":[["115/11/20","25.10"],["115/11/23","--"]]}]}
+				""";
+		server.expect(requestTo(BASE_URL + "/www/zh-tw/afterTrading/tradingStock?code=1234&date=2026/11/23&response=json"))
+				.andRespond(withSuccess(body, MediaType.APPLICATION_JSON));
+
+		StockLookup result = client.lookupMonth("1234", NOV_23);
+
+		assertThat(result.status()).isEqualTo(Status.FOUND);
+		assertThat(result.tradeDate()).isEqualTo(NOV_23);
+		assertThat(result.closePrice()).isEqualByComparingTo("25.10");
+		assertThat(result.closeDate()).isEqualTo(LocalDate.of(2026, 11, 20));
 	}
 
 	@Test

@@ -6,6 +6,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 
 import java.math.BigDecimal;
 import java.time.Clock;
@@ -22,21 +23,26 @@ import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.annotation.Transactional;
 
 import io.hsiaopingkuo.stockholdings.entity.Holding;
 import io.hsiaopingkuo.stockholdings.entity.Market;
+import io.hsiaopingkuo.stockholdings.entity.Quote;
 import io.hsiaopingkuo.stockholdings.exception.DuplicateCodeException;
 import io.hsiaopingkuo.stockholdings.exception.HoldingNotFoundException;
 import io.hsiaopingkuo.stockholdings.exception.MarketUnavailableException;
 import io.hsiaopingkuo.stockholdings.exception.StockCodeNotFoundException;
+import io.hsiaopingkuo.stockholdings.quote.DailyQuote;
 import io.hsiaopingkuo.stockholdings.quote.MarketResolver;
 import io.hsiaopingkuo.stockholdings.quote.StockLookup;
 import io.hsiaopingkuo.stockholdings.repository.HoldingRepository;
+import io.hsiaopingkuo.stockholdings.repository.QuoteRepository;
 import jakarta.persistence.EntityManager;
 
 /** Service 搭配真的資料庫（測試用 H2 記憶體模式 + Flyway）測試業務規則。 */
 @DataJpaTest
-@Import({ HoldingService.class, HoldingServiceTest.FixedClockConfig.class })
+@Import({ HoldingService.class, QuoteService.class, HoldingServiceTest.FixedClockConfig.class })
 class HoldingServiceTest {
 
 	// UTC 06:00 = 台北 14:00；存進去的時間要是 14:00 才代表真的用台北時區
@@ -67,6 +73,71 @@ class HoldingServiceTest {
 	void 預設任何代號都判斷為上市() {
 		given(marketResolver.resolve(anyString())).willAnswer(invocation -> StockLookup.found(
 				Market.TWSE, "測試股", LocalDate.of(2026, 11, 23), new BigDecimal("10.00")));
+	}
+
+	// ===== 第 3 題：先查行情快取 =====
+
+	@Autowired
+	private QuoteRepository quoteRepository;
+
+	private void cacheQuote(String code, String name, Market market) {
+		quoteRepository.saveAndFlush(new Quote(DailyQuote.ofDay(code, name, market, LocalDate.of(2026, 11, 23),
+				new BigDecimal("460.50")), LocalDateTime.of(2026, 11, 23, 14, 0)));
+	}
+
+	@Test
+	void 行情快取有這個代號_用快取的市場和名稱新增_不呼叫官方() {
+		cacheQuote("6488", "環球晶", Market.TPEX);
+
+		Holding created = holdingService.create("6488", 1, new BigDecimal("450.00"));
+
+		assertThat(created.getMarket()).isEqualTo(Market.TPEX);
+		assertThat(created.getName()).isEqualTo("環球晶");
+		verifyNoInteractions(marketResolver);
+	}
+
+	@Test
+	void 行情快取沒有_問官方並把查到的收盤價寫入快取() {
+		given(marketResolver.resolve("6488")).willReturn(StockLookup.found(
+				Market.TPEX, "環球晶", LocalDate.of(2026, 11, 24), new BigDecimal("460.50"), LocalDate.of(2026, 11, 23)));
+
+		holdingService.create("6488", 1, new BigDecimal("450.00"));
+		entityManager.flush();
+		entityManager.clear();
+
+		Quote quote = quoteRepository.findById("6488").orElseThrow();
+		assertThat(quote.getMarket()).isEqualTo(Market.TPEX);
+		assertThat(quote.getClosePrice()).isEqualByComparingTo("460.50");
+		assertThat(quote.getCloseDate()).isEqualTo(LocalDate.of(2026, 11, 23));
+		assertThat(quote.getLatestTradeDate()).isEqualTo(LocalDate.of(2026, 11, 24));
+	}
+
+	@Test
+	void 行情快取沒有_官方又連不上_錯誤且持股和快取都不儲存() {
+		given(marketResolver.resolve("2330")).willThrow(new MarketUnavailableException());
+
+		assertThatThrownBy(() -> holdingService.create("2330", 1, new BigDecimal("1000.00")))
+				.isInstanceOf(MarketUnavailableException.class);
+		assertThat(holdingRepository.count()).isZero();
+		assertThat(quoteRepository.count()).isZero();
+	}
+
+	@Test
+	// lookupStock 是 NOT_SUPPORTED：會暫停交易、用另一條連線讀快取，看不到測試交易裡還沒 commit 的資料。
+	// 所以這個測試不包交易，讓快取資料真的寫進去，測完自己刪掉
+	@Transactional(propagation = Propagation.NOT_SUPPORTED)
+	void 即時查詢_行情快取有這個代號_直接回傳不呼叫官方() {
+		cacheQuote("6488", "環球晶", Market.TPEX);
+		try {
+			StockLookup result = holdingService.lookupStock(" 6488 ");
+
+			assertThat(result.market()).isEqualTo(Market.TPEX);
+			assertThat(result.name()).isEqualTo("環球晶");
+			assertThat(result.closePrice()).isEqualByComparingTo("460.50");
+			verifyNoInteractions(marketResolver);
+		} finally {
+			quoteRepository.deleteAll();
+		}
 	}
 
 	@Test

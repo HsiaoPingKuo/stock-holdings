@@ -10,6 +10,7 @@
 		td.num { text-align: right; }
 		.error { color: #c00; }
 		.message { color: #070; }
+		.note { color: #888; }
 		.hint { margin-left: 0.5em; }
 		.hint.found { color: #036; font-weight: bold; }
 		.hint.muted { color: #888; }
@@ -48,7 +49,7 @@
 	<p th:if="${#lists.isEmpty(holdings)}">目前沒有持股。</p>
 	<table th:unless="${#lists.isEmpty(holdings)}">
 		<thead>
-			<tr><th>股票代號</th><th>名稱</th><th>市場</th><th>張數</th><th>買進價</th><th>操作</th></tr>
+			<tr><th>股票代號</th><th>名稱</th><th>市場</th><th>張數</th><th>買進價</th><th>收盤價</th><th>收盤價日期</th><th>操作</th></tr>
 		</thead>
 		<tbody>
 			<tr th:each="h : ${holdings}">
@@ -59,6 +60,17 @@
 				<td class="num" th:text="${h.lots}">1</td>
 				<!-- 買進價固定顯示兩位小數、加千分位 -->
 				<td class="num" th:text="${#numbers.formatDecimal(h.buyPrice, 1, 'COMMA', 2, 'POINT')}">1,000.00</td>
+				<!-- 收盤價：沒有行情或從沒成交過顯示「未取得」，日期留空 -->
+				<td class="num" th:if="${h.hasClosePrice()}"
+						th:text="${#numbers.formatDecimal(h.closePrice, 1, 'COMMA', 2, 'POINT')}">2,030.00</td>
+				<td th:unless="${h.hasClosePrice()}">未取得</td>
+				<td>
+					<span th:if="${h.hasClosePrice()}" th:text="${h.closeDate}">2026-11-23</span>
+					<!-- 最近交易日沒成交：顯示的是更早一天的收盤價，提示使用者 -->
+					<br th:if="${h.showsEarlierClose()}">
+					<small class="note" th:if="${h.showsEarlierClose()}"
+							th:text="|${h.latestTradeDate} 無成交，顯示 ${h.closeDate} 收盤價|">2026-11-24 無成交，顯示 2026-11-23 收盤價</small>
+				</td>
 				<td>
 					<a th:href="@{/holdings/{id}/edit(id=${h.id})}">修改</a>
 					<form class="inline" th:action="@{/holdings/{id}/delete(id=${h.id})}" method="post"

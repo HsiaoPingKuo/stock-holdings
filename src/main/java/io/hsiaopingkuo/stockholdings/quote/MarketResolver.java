@@ -119,17 +119,13 @@ public class MarketResolver implements AutoCloseable {
 	}
 
 	/**
-	 * 先查這個月；這個月「查不到」時再查上個月。
+	 * 這個月查不到（或整月沒成交）時再查上個月，規則在 StockLookupClient.lookupLatest。
 	 * 月初陷阱：證交所對「代號不存在」和「這個月還沒有交易日」回的是同一句話，
 	 * 只查這個月的話，每月 1 號（或連假後的第一個交易日前）所有股票都會被當成不存在。
 	 */
 	private static StockLookup lookupRecentMonths(StockLookupClient client, String code, LocalDate today) {
 		try {
-			StockLookup thisMonth = client.lookupMonth(code, today);
-			if (thisMonth.status() != Status.NOT_FOUND) {
-				return thisMonth;
-			}
-			return client.lookupMonth(code, today.minusMonths(1));
+			return client.lookupLatest(code, today);
 		} catch (RuntimeException e) {
 			// client 約定不丟例外；萬一丟了，也只算這一邊查不了，不讓整個新增流程變成 500
 			log.warn("{} 查詢 {} 時發生例外", client.market(), code, e);
