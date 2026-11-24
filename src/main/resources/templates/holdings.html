@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="zh-Hant" xmlns:th="http://www.thymeleaf.org">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>持股清單 - 持股記帳</title>
+	<style>
+		table { border-collapse: collapse; }
+		th, td { border: 1px solid #999; padding: 4px 10px; }
+		td.num { text-align: right; }
+		.error { color: #c00; }
+		.message { color: #070; }
+		form.inline { display: inline; }
+	</style>
+</head>
+<body>
+	<h1>持股記帳</h1>
+	<p><a th:href="@{/}">回首頁</a></p>
+
+	<p class="message" th:if="${message}" th:text="${message}">已新增 2330</p>
+	<p class="error" th:if="${errorMessage}" th:text="${errorMessage}">找不到這筆持股</p>
+
+	<h2>新增持股</h2>
+	<!-- 欄位用 text 而不是 number：檢查規則以伺服器為準，錯誤訊息統一顯示在表單上 -->
+	<form th:action="@{/holdings}" th:object="${createForm}" method="post">
+		<p>
+			<label>股票代號 <input type="text" th:field="*{code}" maxlength="20" placeholder="例：2330"></label>
+			<span class="error" th:if="${#fields.hasErrors('code')}" th:errors="*{code}">錯誤</span>
+		</p>
+		<p>
+			<label>張數 <input type="text" th:field="*{lots}" inputmode="numeric" placeholder="1～999"></label>
+			<span class="error" th:if="${#fields.hasErrors('lots')}" th:errors="*{lots}">錯誤</span>
+		</p>
+		<p>
+			<label>買進價 <input type="text" th:field="*{buyPrice}" inputmode="decimal" placeholder="每股價格"></label>
+			<span class="error" th:if="${#fields.hasErrors('buyPrice')}" th:errors="*{buyPrice}">錯誤</span>
+		</p>
+		<button type="submit">新增</button>
+	</form>
+
+	<h2>持股清單</h2>
+	<p th:if="${#lists.isEmpty(holdings)}">目前沒有持股。</p>
+	<table th:unless="${#lists.isEmpty(holdings)}">
+		<thead>
+			<tr><th>股票代號</th><th>張數</th><th>買進價</th><th>操作</th></tr>
+		</thead>
+		<tbody>
+			<tr th:each="h : ${holdings}">
+				<td th:text="${h.code}">2330</td>
+				<td class="num" th:text="${h.lots}">1</td>
+				<!-- 買進價固定顯示兩位小數、加千分位 -->
+				<td class="num" th:text="${#numbers.formatDecimal(h.buyPrice, 1, 'COMMA', 2, 'POINT')}">1,000.00</td>
+				<td>
+					<a th:href="@{/holdings/{id}/edit(id=${h.id})}">修改</a>
+					<form class="inline" th:action="@{/holdings/{id}/delete(id=${h.id})}" method="post"
+							th:attr="data-code=${h.code}"
+							onsubmit="return confirm('確定要刪除 ' + this.dataset.code + ' 嗎？');">
+						<button type="submit">刪除</button>
+					</form>
+				</td>
+			</tr>
+		</tbody>
+	</table>
+</body>
+</html>
