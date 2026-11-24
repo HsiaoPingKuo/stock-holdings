@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="zh-Hant" xmlns:th="http://www.thymeleaf.org">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>持股記帳</title>
+</head>
+<body>
+	<h1>持股記帳</h1>
+	<p>目前時間：<span id="now" th:data-epoch-millis="${nowEpochMillis}" th:text="${now}">2026-01-01 00:00:00</span>（台北時間）</p>
+
+	<script>
+		// 伺服器先算好台北時間顯示出來（關掉 JS 也看得到）；JS 只負責讓它每秒往前走
+		(function () {
+			var el = document.getElementById('now');
+			// 伺服器時間和瀏覽器時鐘的差距：使用者電腦時間不準時，仍以伺服器時間為準
+			var offset = Number(el.dataset.epochMillis) - Date.now();
+			// 固定用台北時區格式化，使用者人在國外、電腦時區不同也一樣顯示台北時間
+			var formatter = new Intl.DateTimeFormat('zh-TW', {
+				timeZone: 'Asia/Taipei', hourCycle: 'h23',
+				year: 'numeric', month: '2-digit', day: '2-digit',
+				hour: '2-digit', minute: '2-digit', second: '2-digit'
+			});
+
+			function render() {
+				var p = {};
+				formatter.formatToParts(new Date(Date.now() + offset)).forEach(function (part) {
+					p[part.type] = part.value;
+				});
+				// 組成跟伺服器一樣的 yyyy-MM-dd HH:mm:ss 格式
+				el.textContent = p.year + '-' + p.month + '-' + p.day + ' '
+						+ p.hour + ':' + p.minute + ':' + p.second;
+			}
+
+			setInterval(render, 1000);
+		})();
+	</script>
+</body>
+</html>
