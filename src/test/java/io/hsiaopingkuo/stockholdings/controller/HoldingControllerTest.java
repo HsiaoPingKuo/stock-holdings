@@ -36,6 +36,7 @@ import io.hsiaopingkuo.stockholdings.entity.Holding;
 import io.hsiaopingkuo.stockholdings.entity.Market;
 import io.hsiaopingkuo.stockholdings.exception.DuplicateCodeException;
 import io.hsiaopingkuo.stockholdings.exception.HoldingNotFoundException;
+import io.hsiaopingkuo.stockholdings.exception.MarketAmbiguousException;
 import io.hsiaopingkuo.stockholdings.exception.MarketUnavailableException;
 import io.hsiaopingkuo.stockholdings.exception.StockCodeNotFoundException;
 import io.hsiaopingkuo.stockholdings.quote.StockLookup;
@@ -156,6 +157,15 @@ class HoldingControllerTest {
 				.andExpect(content().string(containsString("value=\"3\"")));
 	}
 
+	@Test
+	void 兩個市場無法判斷_表單顯示請聯絡管理者且不導頁() throws Exception {
+		given(holdingService.create(anyString(), anyInt(), any())).willThrow(new MarketAmbiguousException("1234"));
+
+		mockMvc.perform(post("/holdings").param("code", "1234").param("lots", "1").param("buyPrice", "10"))
+				.andExpect(status().isOk())
+				.andExpect(content().string(containsString("無法判斷 1234 是上市或上櫃，請聯絡管理者")));
+	}
+
 	// ===== 輸入代號時的即時提示：GET /holdings/lookup =====
 
 	private static StockLookup found(Market market, String name) {
@@ -212,6 +222,16 @@ class HoldingControllerTest {
 				.andExpect(status().isServiceUnavailable())
 				.andExpect(jsonPath("$.error.code").value("QUOTE_UNAVAILABLE"))
 				.andExpect(jsonPath("$.error.message").value("暫時無法連線官方網站確認代號，請稍後再試"));
+	}
+
+	@Test
+	void 即時查詢_兩個市場無法判斷回409與錯誤格式() throws Exception {
+		given(holdingService.lookupStock("1234")).willThrow(new MarketAmbiguousException("1234"));
+
+		mockMvc.perform(get("/holdings/lookup").param("code", "1234"))
+				.andExpect(status().isConflict())
+				.andExpect(jsonPath("$.error.code").value("MARKET_AMBIGUOUS"))
+				.andExpect(jsonPath("$.error.message").value("無法判斷 1234 是上市或上櫃，請聯絡管理者"));
 	}
 
 	@Test

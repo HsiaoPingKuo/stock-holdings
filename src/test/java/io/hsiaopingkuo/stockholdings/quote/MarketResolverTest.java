@@ -26,6 +26,7 @@ import org.springframework.test.web.client.MockRestServiceServer;
 import org.springframework.web.client.RestClient;
 
 import io.hsiaopingkuo.stockholdings.entity.Market;
+import io.hsiaopingkuo.stockholdings.exception.MarketAmbiguousException;
 import io.hsiaopingkuo.stockholdings.exception.MarketUnavailableException;
 import io.hsiaopingkuo.stockholdings.exception.StockCodeNotFoundException;
 import io.hsiaopingkuo.stockholdings.quote.StockLookup.Status;
@@ -235,14 +236,55 @@ class MarketResolverTest {
 		assertThat(Duration.ofNanos(System.nanoTime() - start)).isLessThan(Duration.ofSeconds(2));
 	}
 
-	@Test
-	void 兩邊都查到_以證交所為準() {
-		resolver = new MarketResolver(
-				fakeClient(Market.TWSE, (code, day) -> found(Market.TWSE)),
-				fakeClient(Market.TPEX, (code, day) -> found(Market.TPEX)),
-				clockAt(LocalDate.of(2026, 11, 24)), LOOKUP_TIMEOUT, CACHE_TTL);
+	// ===== 兩邊都查到（F-03）：選最近交易日較新的一邊，日期相同就無法判斷 =====
 
-		assertThat(resolver.resolve("1234").market()).isEqualTo(Market.TWSE);
+	private static StockLookup foundOn(Market market, LocalDate tradeDate) {
+		return StockLookup.found(market, "測試", tradeDate, new BigDecimal("10.00"));
+	}
+
+	private MarketResolver resolverBothFound(LocalDate twseDate, LocalDate tpexDate) {
+		resolver = new MarketResolver(
+				fakeClient(Market.TWSE, (code, day) -> foundOn(Market.TWSE, twseDate)),
+				fakeClient(Market.TPEX, (code, day) -> foundOn(Market.TPEX, tpexDate)),
+				clockAt(LocalDate.of(2026, 11, 24)), LOOKUP_TIMEOUT, CACHE_TTL);
+		return resolver;
+	}
+
+	@Test
+	void 兩邊都查到_證交所日期較舊_選上櫃() {
+		MarketResolver resolver = resolverBothFound(LocalDate.of(2026, 10, 30), LocalDate.of(2026, 11, 24));
+
+		StockLookup result = resolver.resolve("1234");
+
+		assertThat(result.market()).isEqualTo(Market.TPEX);
+		assertThat(result.tradeDate()).isEqualTo(LocalDate.of(2026, 11, 24));
+	}
+
+	@Test
+	void 兩邊都查到_櫃買日期較舊_選上市() {
+		MarketResolver resolver = resolverBothFound(LocalDate.of(2026, 11, 24), LocalDate.of(2026, 10, 30));
+
+		StockLookup result = resolver.resolve("1234");
+
+		assertThat(result.market()).isEqualTo(Market.TWSE);
+		assertThat(result.tradeDate()).isEqualTo(LocalDate.of(2026, 11, 24));
+	}
+
+	@Test
+	void 兩邊都查到_日期相同_無法判斷且不記住() {
+		AtomicInteger twseCalls = new AtomicInteger();
+		AtomicInteger tpexCalls = new AtomicInteger();
+		LocalDate sameDay = LocalDate.of(2026, 11, 24);
+		MarketResolver resolver = resolverWithCounting(twseCalls, foundOn(Market.TWSE, sameDay),
+				tpexCalls, foundOn(Market.TPEX, sameDay));
+
+		assertThatThrownBy(() -> resolver.resolve("1234"))
+				.isInstanceOf(MarketAmbiguousException.class)
+				.hasMessage("無法判斷 1234 是上市或上櫃，請聯絡管理者");
+		// 「不儲存」：沒有記進 10 分鐘的快取，再查一次會重新問官方
+		assertThatThrownBy(() -> resolver.resolve("1234")).isInstanceOf(MarketAmbiguousException.class);
+		assertThat(twseCalls.get()).isEqualTo(2);
+		assertThat(tpexCalls.get()).isEqualTo(2);
 	}
 
 	@Test

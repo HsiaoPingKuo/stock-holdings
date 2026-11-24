@@ -127,6 +127,9 @@
 							show((result.body.name || '（名稱未知）') + '（' + result.body.market_label + '）', 'found');
 						} else if (result.status === 404) {
 							show('查無此股票代號', 'error');
+						} else if (result.status === 409) {
+							// 兩個市場都查到、無法判斷：顯示伺服器的訊息（請聯絡管理者），重試也不會好，所以不重設 lastCode
+							show(result.body.error.message, 'error');
 						} else {
 							unavailable();
 						}

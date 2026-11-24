@@ -28,6 +28,7 @@ import io.hsiaopingkuo.stockholdings.dto.HoldingUpdateForm;
 import io.hsiaopingkuo.stockholdings.entity.Holding;
 import io.hsiaopingkuo.stockholdings.exception.DuplicateCodeException;
 import io.hsiaopingkuo.stockholdings.exception.HoldingNotFoundException;
+import io.hsiaopingkuo.stockholdings.exception.MarketAmbiguousException;
 import io.hsiaopingkuo.stockholdings.exception.MarketUnavailableException;
 import io.hsiaopingkuo.stockholdings.exception.StockCodeNotFoundException;
 import io.hsiaopingkuo.stockholdings.quote.StockLookup;
@@ -87,6 +88,10 @@ public class HoldingController {
 			// 第 3 題：官方連不上時不能出現錯誤頁，請使用者稍後再試；表單內容保留，不用重打
 			bindingResult.rejectValue("code", "unavailable", e.getMessage());
 			return showList(model);
+		} catch (MarketAmbiguousException e) {
+			// 兩個市場都查到且日期相同：資料不儲存，請使用者聯絡管理者（重試也不會好）
+			bindingResult.rejectValue("code", "ambiguous", e.getMessage());
+			return showList(model);
 		}
 	}
 
@@ -113,6 +118,9 @@ public class HoldingController {
 			// 503：伺服器本身正常，只是暫時拿不到官方資料
 			return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
 					.body(ErrorResponse.of("QUOTE_UNAVAILABLE", e.getMessage()));
+		} catch (MarketAmbiguousException e) {
+			// 409：兩個市場的資料互相衝突；和 503 分開，畫面才不會叫使用者「稍後再試」
+			return ResponseEntity.status(HttpStatus.CONFLICT).body(ErrorResponse.of("MARKET_AMBIGUOUS", e.getMessage()));
 		}
 	}
 

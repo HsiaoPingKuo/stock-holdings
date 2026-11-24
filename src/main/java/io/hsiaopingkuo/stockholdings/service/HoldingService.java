@@ -18,6 +18,7 @@ import io.hsiaopingkuo.stockholdings.entity.Market;
 import io.hsiaopingkuo.stockholdings.entity.Quote;
 import io.hsiaopingkuo.stockholdings.exception.DuplicateCodeException;
 import io.hsiaopingkuo.stockholdings.exception.HoldingNotFoundException;
+import io.hsiaopingkuo.stockholdings.exception.MarketAmbiguousException;
 import io.hsiaopingkuo.stockholdings.exception.MarketUnavailableException;
 import io.hsiaopingkuo.stockholdings.exception.StockCodeNotFoundException;
 import io.hsiaopingkuo.stockholdings.quote.MarketResolver;
@@ -62,6 +63,7 @@ public class HoldingService {
 	 * @throws DuplicateCodeException      代號已在持股中
 	 * @throws StockCodeNotFoundException  行情快取沒有，上市、上櫃也都查不到這個代號（第 3 題）
 	 * @throws MarketUnavailableException  行情快取沒有，官方網站又連不上，無法確認代號（第 3 題）
+	 * @throws MarketAmbiguousException    行情快取沒有，兩個市場都查到且最近交易日相同，無法判斷（F-03）
 	 */
 	@Transactional
 	public Holding create(String code, int lots, BigDecimal buyPrice) {
@@ -110,6 +112,7 @@ public class HoldingService {
 	 *
 	 * @throws StockCodeNotFoundException 快取沒有，上市、上櫃也都查不到
 	 * @throws MarketUnavailableException 快取沒有，官方網站又連不上，無法確認
+	 * @throws MarketAmbiguousException   快取沒有，兩個市場都查到且最近交易日相同，無法判斷
 	 */
 	@Transactional(propagation = Propagation.NOT_SUPPORTED)
 	public StockLookup lookupStock(String code) {

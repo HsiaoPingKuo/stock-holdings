@@ -26,6 +26,7 @@ import org.springframework.context.annotation.Import;
 
 import io.hsiaopingkuo.stockholdings.entity.Holding;
 import io.hsiaopingkuo.stockholdings.entity.Market;
+import io.hsiaopingkuo.stockholdings.exception.MarketAmbiguousException;
 import io.hsiaopingkuo.stockholdings.exception.MarketUnavailableException;
 import io.hsiaopingkuo.stockholdings.exception.StockCodeNotFoundException;
 import io.hsiaopingkuo.stockholdings.quote.DailyQuote;
@@ -146,6 +147,20 @@ class HoldingBackfillServiceTest {
 		assertThat(holdingOf("2303").getMarket()).isNull();
 		assertThat(holdingOf("2330").getMarket()).isEqualTo(Market.TWSE);
 		assertThat(pause.waits).hasSize(1);
+	}
+
+	@Test
+	void 兩個市場無法判斷_跳過繼續補下一檔() {
+		oldHolding("1234");
+		oldHolding("2330");
+		given(marketResolver.resolve("1234")).willThrow(new MarketAmbiguousException("1234"));
+		given(marketResolver.resolve("2330")).willReturn(
+				StockLookup.found(Market.TWSE, "台積電", LocalDate.of(2026, 11, 23), new BigDecimal("2030.00")));
+
+		service.backfill(true);
+
+		assertThat(holdingOf("1234").getMarket()).isNull();
+		assertThat(holdingOf("2330").getMarket()).isEqualTo(Market.TWSE);
 	}
 
 	@Test

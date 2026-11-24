@@ -15,6 +15,7 @@ import io.hsiaopingkuo.stockholdings.config.QuoteProperties;
 import io.hsiaopingkuo.stockholdings.entity.Holding;
 import io.hsiaopingkuo.stockholdings.entity.Market;
 import io.hsiaopingkuo.stockholdings.entity.Quote;
+import io.hsiaopingkuo.stockholdings.exception.MarketAmbiguousException;
 import io.hsiaopingkuo.stockholdings.exception.MarketUnavailableException;
 import io.hsiaopingkuo.stockholdings.exception.StockCodeNotFoundException;
 import io.hsiaopingkuo.stockholdings.quote.MarketResolver;
@@ -88,6 +89,10 @@ public class HoldingBackfillService {
 				} catch (StockCodeNotFoundException e) {
 					// 上市上櫃都沒有（可能已下市）：留著 NULL，清單顯示「—」，不影響其他持股
 					log.warn("補查舊持股 {}：上市、上櫃都查不到", holding.getCode());
+				} catch (MarketAmbiguousException e) {
+					// 兩個市場都查到且日期相同：這一檔留著 NULL，等人工追查；不影響其他持股
+					// （兩邊的日期已由 MarketResolver 記在 log）
+					log.warn("補查舊持股 {}：無法判斷上市或上櫃，先跳過", holding.getCode());
 				} catch (MarketUnavailableException e) {
 					// 官方連不上：再查下一檔也只會失敗，這次先停，下一輪再補
 					log.warn("補查舊持股 {}：官方暫時連不上，這次先停止", holding.getCode());
