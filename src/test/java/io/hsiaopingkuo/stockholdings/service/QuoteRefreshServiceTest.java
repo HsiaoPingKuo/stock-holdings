@@ -465,6 +465,32 @@ class QuoteRefreshServiceTest {
 	}
 
 	@Test
+	void 今天的批次成功_第一次補查失敗_下一輪只補查不重抓批次_同一天補到價格() {
+		// G-02：上一個案例回的是昨天的批次，不會「今天完成」；這裡回今天的批次，市場當天就完成
+		hold("2363", Market.TWSE);
+		twseBatch.answer = date -> batchOf(date, Market.TWSE, "2330", "2050.00", "2363", "--");
+		twseStock.answer = code -> StockLookup.unavailable(Market.TWSE);
+
+		var first = service.runRound(Market.TWSE, Trigger.SCHEDULED);
+		assertThat(first.mode()).isEqualTo(Mode.BATCH);
+		assertThat(service.state(Market.TWSE).isDoneFor(TODAY)).isTrue();
+		assertThat(service.state(Market.TWSE).hasPendingCloseBackfill(TODAY)).isTrue();
+
+		twseStock.answer = code -> noTradeOn1123(Market.TWSE);
+		clock.advance(Duration.ofMinutes(10));
+		var second = service.runRound(Market.TWSE, Trigger.SCHEDULED);
+
+		assertThat(second.mode()).isEqualTo(Mode.CLOSE_BACKFILL);
+		assertThat(twseBatch.asked).as("拿到今天的批次後不再抓整個市場").containsExactly(TODAY);
+		assertThat(twseStock.asked).containsExactly("2363", "2363");
+		assertThat(quoteRepository.findById("2363").orElseThrow().getClosePrice()).isEqualByComparingTo("10.00");
+		assertThat(service.state(Market.TWSE).hasPendingCloseBackfill(TODAY)).isFalse();
+
+		clock.advance(Duration.ofMinutes(10));
+		assertThat(service.runRound(Market.TWSE, Trigger.SCHEDULED).mode()).as("補到之後就停").isEqualTo(Mode.SKIPPED);
+	}
+
+	@Test
 	void 沒有人持有的代號那天沒有成交_不補查() {
 		hold("2330", Market.TWSE);
 		twseBatch.answer = date -> batchOf(date, Market.TWSE, "2330", "2050.00", "9999", "--");

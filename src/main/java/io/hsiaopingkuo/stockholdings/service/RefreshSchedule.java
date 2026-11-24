@@ -16,8 +16,9 @@ import io.hsiaopingkuo.stockholdings.config.QuoteProperties;
  * - 週一到週五 13:40～14:30：約每 60 秒一輪（60 秒 ± 0～5 秒，毫秒級隨機）
  * - 14:30～15:40：每 10 分鐘一輪（應付官方延遲公布）
  * - 上一輪批次失敗改用逐檔：這個市場改成每 10 分鐘一輪（逐檔請求多，太頻繁容易被擋）
+ * - 今天已拿到資料、但還有持股的收盤價待補查（G-02）：每 10 分鐘一輪，只做補查
  * - 冷卻中：等冷卻結束
- * - 今天已拿到資料、已過 15:40、週末：下一個平日 13:40
+ * - 今天已拿到資料而且沒有待補查、已過 15:40、週末：下一個平日 13:40
  */
 public class RefreshSchedule {
 
@@ -31,8 +32,8 @@ public class RefreshSchedule {
 
 	/** 現在這個時間，這個市場的排程輪該不該執行（13:40 前、15:40 後、週末、今天已完成都不執行）。 */
 	public boolean shouldRun(ZonedDateTime now, MarketRefreshState state) {
-		return isWeekday(now.toLocalDate()) && inWindow(now.toLocalTime()) && !state.isDoneFor(now.toLocalDate())
-				&& !state.isCoolingDown(now.toInstant());
+		return isWeekday(now.toLocalDate()) && inWindow(now.toLocalTime())
+				&& !finishedToday(state, now.toLocalDate()) && !state.isCoolingDown(now.toInstant());
 	}
 
 	/** 這一輪結束後，下一輪排在什麼時候。 */
@@ -43,13 +44,14 @@ public class RefreshSchedule {
 		}
 		LocalDate today = now.toLocalDate();
 		LocalTime time = now.toLocalTime();
-		if (!isWeekday(today) || state.isDoneFor(today) || !time.isBefore(settings.endTime())) {
+		if (!isWeekday(today) || finishedToday(state, today) || !time.isBefore(settings.endTime())) {
 			return nextWeekdayStart(today.plusDays(1), now);
 		}
 		if (time.isBefore(settings.startTime())) {
 			return now.with(settings.startTime());
 		}
-		boolean slow = !time.isBefore(settings.slowdownTime()) || state.usedPerStock();
+		// 只剩補查收盤價時（今天已拿到資料）也用慢速：補查是逐檔請求，太頻繁容易被擋
+		boolean slow = !time.isBefore(settings.slowdownTime()) || state.usedPerStock() || state.isDoneFor(today);
 		Duration interval = slow ? settings.slowInterval() : fastIntervalWithJitter();
 		return withinWindowOrNextDay(now.plus(interval));
 	}
@@ -82,6 +84,11 @@ public class RefreshSchedule {
 			day = day.plusDays(1);
 		}
 		return day.atTime(settings.startTime()).atZone(zoneSource.getZone());
+	}
+
+	/** 今天的資料拿到了，也沒有持股的收盤價待補查：這個市場今天不用再跑（G-02）。 */
+	private static boolean finishedToday(MarketRefreshState state, LocalDate today) {
+		return state.isDoneFor(today) && !state.hasPendingCloseBackfill(today);
 	}
 
 	private boolean inWindow(LocalTime time) {
