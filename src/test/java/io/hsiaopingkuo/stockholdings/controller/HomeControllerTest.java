@@ -42,6 +42,13 @@ class HomeControllerTest {
 	}
 
 	@Test
+	void 首頁有連到持股清單的連結() throws Exception {
+		mockMvc.perform(get("/"))
+				.andExpect(status().isOk())
+				.andExpect(content().string(containsString("<a href=\"/holdings\">持股清單</a>")));
+	}
+
+	@Test
 	void 頁面帶有伺服器時間給JS每秒更新() throws Exception {
 		mockMvc.perform(get("/"))
 				.andExpect(status().isOk())

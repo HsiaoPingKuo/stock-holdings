@@ -8,6 +8,8 @@
 <body>
 	<h1>持股記帳</h1>
 	<p>目前時間：<span id="now" th:data-epoch-millis="${nowEpochMillis}" th:text="${now}">2026-01-01 00:00:00</span>（台北時間）</p>
+	<!-- 連到 controller 的網址 /holdings（由 HoldingController 查資料後再組頁面），不是直接連 html 檔 -->
+	<p><a th:href="@{/holdings}">持股清單</a></p>
 
 	<script>
 		// 伺服器先算好台北時間顯示出來（關掉 JS 也看得到）；JS 只負責讓它每秒往前走

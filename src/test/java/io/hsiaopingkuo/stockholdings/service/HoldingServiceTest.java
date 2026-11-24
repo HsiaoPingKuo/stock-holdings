@@ -1,0 +1,111 @@
+package io.hsiaopingkuo.stockholdings.service;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+import java.math.BigDecimal;
+import java.time.Clock;
+import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
+
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest;
+import org.springframework.boot.test.context.TestConfiguration;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Import;
+
+import io.hsiaopingkuo.stockholdings.entity.Holding;
+import io.hsiaopingkuo.stockholdings.exception.DuplicateCodeException;
+import io.hsiaopingkuo.stockholdings.exception.HoldingNotFoundException;
+import io.hsiaopingkuo.stockholdings.repository.HoldingRepository;
+
+/** Service 搭配真的資料庫（測試用 H2 記憶體模式 + Flyway）測試業務規則。 */
+@DataJpaTest
+@Import({ HoldingService.class, HoldingServiceTest.FixedClockConfig.class })
+class HoldingServiceTest {
+
+	// UTC 06:00 = 台北 14:00；存進去的時間要是 14:00 才代表真的用台北時區
+	private static final Instant FIXED = Instant.parse("2026-11-24T06:00:00Z");
+
+	@TestConfiguration
+	static class FixedClockConfig {
+		@Bean
+		Clock clock() {
+			return Clock.fixed(FIXED, ZoneId.of("Asia/Taipei"));
+		}
+	}
+
+	@Autowired
+	private HoldingService holdingService;
+
+	@Autowired
+	private HoldingRepository holdingRepository;
+
+	@Test
+	void 新增持股_時間用台北時區() {
+		Holding created = holdingService.create("2330", 1, new BigDecimal("1000.00"));
+
+		assertThat(created.getId()).isNotNull();
+		assertThat(created.getCreatedAt()).isEqualTo(LocalDateTime.of(2026, 11, 24, 14, 0));
+		assertThat(created.getUpdatedAt()).isEqualTo(created.getCreatedAt());
+	}
+
+	@Test
+	void 新增時代號去掉前後空白並轉大寫() {
+		Holding created = holdingService.create(" 00631l ", 1, new BigDecimal("20.00"));
+
+		assertThat(created.getCode()).isEqualTo("00631L");
+	}
+
+	@Test
+	void 重複新增同一代號_丟出錯誤且不儲存() {
+		holdingService.create("2330", 1, new BigDecimal("1000.00"));
+
+		assertThatThrownBy(() -> holdingService.create("2330", 5, new BigDecimal("900.00")))
+				.isInstanceOf(DuplicateCodeException.class)
+				.hasMessage("2330 已在持股中");
+		assertThat(holdingRepository.count()).isEqualTo(1);
+		// 原本那筆沒有被第二次新增改掉
+		assertThat(holdingRepository.findAll().get(0).getLots()).isEqualTo(1);
+	}
+
+	@Test
+	void 大小寫不同也算重複代號() {
+		holdingService.create("00631L", 1, new BigDecimal("20.00"));
+
+		assertThatThrownBy(() -> holdingService.create("00631l", 1, new BigDecimal("20.00")))
+				.isInstanceOf(DuplicateCodeException.class)
+				.hasMessage("00631L 已在持股中");
+	}
+
+	@Test
+	void 修改只改張數和買進價() {
+		Holding created = holdingService.create("2330", 1, new BigDecimal("1000.00"));
+
+		holdingService.update(created.getId(), 2, new BigDecimal("980.50"));
+
+		Holding updated = holdingService.findById(created.getId());
+		assertThat(updated.getCode()).isEqualTo("2330");
+		assertThat(updated.getLots()).isEqualTo(2);
+		assertThat(updated.getBuyPrice()).isEqualByComparingTo("980.50");
+	}
+
+	@Test
+	void 刪除後就查不到() {
+		Holding created = holdingService.create("2330", 1, new BigDecimal("1000.00"));
+
+		holdingService.delete(created.getId());
+
+		assertThat(holdingRepository.existsById(created.getId())).isFalse();
+	}
+
+	@Test
+	void 修改或刪除不存在的持股_丟出找不到() {
+		assertThatThrownBy(() -> holdingService.update(999L, 1, BigDecimal.TEN))
+				.isInstanceOf(HoldingNotFoundException.class);
+		assertThatThrownBy(() -> holdingService.delete(999L))
+				.isInstanceOf(HoldingNotFoundException.class);
+	}
+}
