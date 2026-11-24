@@ -141,12 +141,39 @@ public class DividendSyncService {
 				.map(DividendFetchRange::getFetchYear)
 				.collect(Collectors.toSet());
 		List<Integer> years = new ArrayList<>();
-		for (int year = Math.max(FIRST_YEAR, earliestTrade.getYear()); year <= today.getYear(); year++) {
+		for (int year = firstYearToFetch(earliestTrade); year <= today.getYear(); year++) {
 			if (year == today.getYear() || !completedYears.contains(year)) {
 				years.add(year);
 			}
 		}
 		return years;
+	}
+
+	/**
+	 * 補抓排程用（第 4c 階段）：最早交易那一年到今年，有沒有哪一年「完全沒有抓取紀錄」。
+	 * 只讀資料庫、不發請求，所以排程可以每 30 分鐘檢查一次；補登更早的交易、或某一年失敗沒留下紀錄時會回 true。
+	 * 年份範圍和同步一輪共用 firstYearToFetch，規則只寫在這個類別裡。
+	 */
+	public boolean hasMissingYears(Market market) {
+		Optional<LocalDate> earliestTrade = tradeRepository.findEarliestTradeDate();
+		if (earliestTrade.isEmpty()) {
+			return false;
+		}
+		Set<Integer> recordedYears = rangeRepository.findByMarket(market).stream()
+				.map(DividendFetchRange::getFetchYear)
+				.collect(Collectors.toSet());
+		int thisYear = LocalDate.now(clock).getYear();
+		for (int year = firstYearToFetch(earliestTrade.get()); year <= thisYear; year++) {
+			if (!recordedYears.contains(year)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/** 要從哪一年開始抓：最早交易那一年，但不早於 2021。 */
+	private static int firstYearToFetch(LocalDate earliestTrade) {
+		return Math.max(FIRST_YEAR, earliestTrade.getYear());
 	}
 
 	/** @return false 代表被擋，這個市場這一輪要停止 */

@@ -33,8 +33,10 @@ import io.hsiaopingkuo.stockholdings.repository.HoldingRepository;
 import io.hsiaopingkuo.stockholdings.repository.QuoteRepository;
 import io.hsiaopingkuo.stockholdings.repository.TradeRepository;
 import io.hsiaopingkuo.stockholdings.service.DividendEventWriter;
+import io.hsiaopingkuo.stockholdings.service.DividendSyncScheduler;
 import io.hsiaopingkuo.stockholdings.service.DividendSyncService;
 import io.hsiaopingkuo.stockholdings.service.HoldingBackfillService;
+import io.hsiaopingkuo.stockholdings.service.MarketLocks;
 import io.hsiaopingkuo.stockholdings.service.Pause;
 import io.hsiaopingkuo.stockholdings.service.QuoteRefreshScheduler;
 import io.hsiaopingkuo.stockholdings.service.QuoteRefreshService;
@@ -48,7 +50,7 @@ import tools.jackson.databind.json.JsonMapper;
  * 在這裡統一用 @Bean 建立（而不是各自加 @Component），主機網址、逾時從哪裡來一眼就看得到。
  */
 @Configuration
-@EnableConfigurationProperties(QuoteProperties.class)
+@EnableConfigurationProperties({ QuoteProperties.class, DividendSyncProperties.class })
 public class QuoteConfig {
 
 	@Bean
@@ -118,22 +120,21 @@ public class QuoteConfig {
 				backfillService, pause, random, properties.refresh(), clock);
 	}
 
-	/**
-	 * 排程用自己的執行緒池（2 條，上市、上櫃各一條）：證交所在逐檔查詢之間等待時，不會卡住櫃買。
-	 * 這個執行緒池只給行情排程用，不註冊成 bean，避免影響 Spring Boot 其他地方預設的執行緒池；
-	 * 伺服器關閉時由 QuoteRefreshScheduler.close() 停止。
-	 */
+	// 排程用自己的執行緒池（見 backgroundScheduler），伺服器關閉時由 QuoteRefreshScheduler.close() 停止
 	@Bean
 	QuoteRefreshScheduler quoteRefreshScheduler(QuoteRefreshService refreshService, HolidayCalendar holidayCalendar,
-			RandomGenerator random, QuoteProperties properties, Clock clock) {
-		ThreadPoolTaskScheduler taskScheduler = new ThreadPoolTaskScheduler();
-		taskScheduler.setPoolSize(2);
-		taskScheduler.setThreadNamePrefix("quote-refresh-");
-		// daemon：萬一有請求卡住，也不會擋住程式結束
-		taskScheduler.setDaemon(true);
-		taskScheduler.initialize();
+			RandomGenerator random, QuoteProperties properties, Clock clock, MarketLocks marketLocks,
+			DividendSyncScheduler dividendSyncScheduler) {
+		// 行情的啟動輪結束後，才通知除權息開始那個市場的啟動輪（第 6 題）
 		return new QuoteRefreshScheduler(refreshService, holidayCalendar,
-				new RefreshSchedule(properties.refresh(), random), taskScheduler, clock, properties.refresh().enabled());
+				new RefreshSchedule(properties.refresh(), random), backgroundScheduler("quote-refresh-"), clock,
+				properties.refresh().enabled(), marketLocks, dividendSyncScheduler::onQuoteStartupFinished);
+	}
+
+	// 行情排程和除權息同步共用：同一個市場同時只有一邊在對官方發請求（第 6 題）
+	@Bean
+	MarketLocks marketLocks() {
+		return new MarketLocks();
 	}
 
 	// ===== 除權息（第 6 題）=====
@@ -154,7 +155,7 @@ public class QuoteConfig {
 		return new TpexDividendListClient(dividendRestClient(properties.tpex().baseUrl(), properties), jsonMapper);
 	}
 
-	// 同步一輪（第 4b 階段，還沒有排程）。上市列表 = 證交所 TWT49U、上櫃列表 = 櫃買 exDailyQ，只有上市要查明細；
+	// 同步一輪（第 4b 階段；由下面的 DividendSyncScheduler 排程）。上市列表 = 證交所 TWT49U、上櫃列表 = 櫃買 exDailyQ，只有上市要查明細；
 	// 請求之間的等待沿用行情的 Pause 和 3.2～5.8 秒的設定
 	@Bean
 	DividendSyncService dividendSyncService(TwseDividendListClient twseList, TpexDividendListClient tpexList,
@@ -164,6 +165,33 @@ public class QuoteConfig {
 		Map<Market, DividendListClient> listClients = Map.of(Market.TWSE, twseList, Market.TPEX, tpexList);
 		return new DividendSyncService(listClients, twseDetail, writer, eventRepository, rangeRepository,
 				tradeRepository, pause, random, properties.refresh(), clock);
+	}
+
+	/**
+	 * 除權息排程（第 4c 階段）用自己的執行緒池（2 條，上市、上櫃各一條），和行情的分開：
+	 * 除權息一輪要等好幾個請求間隔，不會占住行情的執行緒。冷卻時間沿用 quote.refresh.cooldown；
+	 * 伺服器關閉時由 DividendSyncScheduler.close() 停止。
+	 */
+	@Bean
+	DividendSyncScheduler dividendSyncScheduler(DividendSyncService syncService, QuoteRefreshService refreshService,
+			HolidayCalendar holidayCalendar, MarketLocks marketLocks, DividendSyncProperties dividendProperties,
+			QuoteProperties properties, Clock clock) {
+		return new DividendSyncScheduler(syncService, refreshService, holidayCalendar, marketLocks,
+				backgroundScheduler("dividend-sync-"), dividendProperties, properties.refresh().cooldown(), clock);
+	}
+
+	/**
+	 * 背景排程的執行緒池（2 條，上市、上櫃各一條）：證交所在請求之間等待時，不會卡住櫃買。
+	 * 不註冊成 bean，避免影響 Spring Boot 其他地方預設的執行緒池；由使用它的排程在 close() 時停止。
+	 */
+	private static ThreadPoolTaskScheduler backgroundScheduler(String threadNamePrefix) {
+		ThreadPoolTaskScheduler taskScheduler = new ThreadPoolTaskScheduler();
+		taskScheduler.setPoolSize(2);
+		taskScheduler.setThreadNamePrefix(threadNamePrefix);
+		// daemon：萬一有請求卡住，也不會擋住程式結束
+		taskScheduler.setDaemon(true);
+		taskScheduler.initialize();
+		return taskScheduler;
 	}
 
 	private static RestClient restClient(String baseUrl, QuoteProperties properties) {
