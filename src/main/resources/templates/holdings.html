@@ -94,7 +94,10 @@
 			var pattern = /^[A-Za-z0-9]{4,10}$/;
 			var timer = null;
 			var lastCode = null;
-			var requestSeq = 0; // 只採用最後一次查詢的結果，較早送出但較晚回來的回應要丟掉
+			// 查詢序號：每次查詢或輸入改變都 +1，回應帶回來的序號不是最新的就丟掉
+			var requestSeq = 0;
+			// 目前還在路上的查詢，輸入一改變就取消它（舊瀏覽器沒有 AbortController 時是 null，靠下面的檢查擋）
+			var controller = null;
 
 			function show(text, cssClass) {
 				// 用 textContent 而不是 innerHTML：內容不會被當成 HTML 執行
@@ -102,27 +105,54 @@
 				hint.className = 'hint' + (cssClass ? ' ' + cssClass : '');
 			}
 
+			// 和伺服器相同的正規化：去掉前後空白、轉大寫
+			function currentCode() {
+				return input.value.trim().toUpperCase();
+			}
+
+			// F-04：讓所有還在路上的舊查詢失效。序號 +1 之後，舊查詢回來時一定對不上，結果會被丟掉
+			function invalidate() {
+				requestSeq++;
+				if (controller) {
+					controller.abort();
+					controller = null;
+				}
+			}
+
+			// 採用回應前的兩道檢查：序號仍是最新的，而且輸入框「現在」的代號仍是這次查的代號。
+			// 只靠 abort 不夠：回應可能在 abort 之前就已經到了，所以這兩道檢查一定要保留
+			function isCurrent(seq, code) {
+				return seq === requestSeq && currentCode() === code;
+			}
+
 			function lookup() {
 				clearTimeout(timer);
-				var code = input.value.trim().toUpperCase();
+				var code = currentCode();
 				if (code === lastCode) {
 					return;
 				}
 				lastCode = code;
+				invalidate();
 				if (!pattern.test(code)) {
 					show('');
 					return;
 				}
-				var seq = ++requestSeq;
+				var seq = requestSeq;
+				var myController = typeof AbortController === 'function' ? new AbortController() : null;
+				controller = myController;
 				show('查詢中…', 'muted');
-				fetch(lookupUrl + '?code=' + encodeURIComponent(code), { headers: { 'Accept': 'application/json' } })
+				fetch(lookupUrl + '?code=' + encodeURIComponent(code), {
+					headers: { 'Accept': 'application/json' },
+					signal: myController ? myController.signal : undefined
+				})
 					.then(function (res) {
 						return res.json().then(function (body) { return { status: res.status, body: body }; });
 					})
 					.then(function (result) {
-						if (seq !== requestSeq) {
+						if (!isCurrent(seq, code)) {
 							return;
 						}
+						controller = null;
 						if (result.status === 200) {
 							show((result.body.name || '（名稱未知）') + '（' + result.body.market_label + '）', 'found');
 						} else if (result.status === 404) {
@@ -134,10 +164,13 @@
 							unavailable();
 						}
 					})
-					.catch(function () {
-						if (seq === requestSeq) {
-							unavailable();
+					.catch(function (err) {
+						// 被 abort 的舊查詢也會到這裡（AbortError）：那是我們自己取消的，不是連不上，直接忽略
+						if ((err && err.name === 'AbortError') || !isCurrent(seq, code)) {
+							return;
 						}
+						controller = null;
+						unavailable();
 					});
 			}
 
@@ -148,6 +181,12 @@
 
 			input.addEventListener('input', function () {
 				clearTimeout(timer);
+				// F-04：內容一改變，舊的查詢和提示立刻失效，不等 0.5 秒後的新查詢。
+				// 否則清空或改成不合格的代號時不會發新查詢，舊的結果回來後又會顯示出來
+				invalidate();
+				show('');
+				// 重設 lastCode：清空後再打回同一個代號時，要重新查、重新顯示提示
+				lastCode = null;
 				timer = setTimeout(lookup, 500);
 			});
 			input.addEventListener('blur', lookup);
