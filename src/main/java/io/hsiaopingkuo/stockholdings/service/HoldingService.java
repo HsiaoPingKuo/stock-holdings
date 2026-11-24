@@ -32,7 +32,6 @@ import io.hsiaopingkuo.stockholdings.config.QuoteProperties;
 import io.hsiaopingkuo.stockholdings.dto.HoldingListItem;
 import io.hsiaopingkuo.stockholdings.dto.HoldingQuoteRow;
 import io.hsiaopingkuo.stockholdings.entity.Holding;
-import io.hsiaopingkuo.stockholdings.entity.Market;
 import io.hsiaopingkuo.stockholdings.entity.Quote;
 import io.hsiaopingkuo.stockholdings.entity.Trade;
 import io.hsiaopingkuo.stockholdings.exception.DuplicateCodeException;
@@ -48,6 +47,7 @@ import io.hsiaopingkuo.stockholdings.quote.MarketResolver;
 import io.hsiaopingkuo.stockholdings.quote.StockLookup;
 import io.hsiaopingkuo.stockholdings.repository.HoldingRepository;
 import io.hsiaopingkuo.stockholdings.repository.TradeRepository;
+import io.hsiaopingkuo.stockholdings.service.StockIdentityResolver.StockIdentity;
 
 /**
  * 持股的新增、修改、刪除、查詢。
@@ -72,6 +72,7 @@ public class HoldingService {
 	private final DividendEventProvider dividendEventProvider;
 	private final QuoteService quoteService;
 	private final MarketResolver marketResolver;
+	private final StockIdentityResolver stockIdentityResolver;
 	private final Clock clock;
 	// 新增持股的時間預算（quote.request-budget）
 	private final Duration requestBudget;
@@ -81,12 +82,14 @@ public class HoldingService {
 
 	public HoldingService(HoldingRepository holdingRepository, TradeRepository tradeRepository,
 			DividendEventProvider dividendEventProvider, QuoteService quoteService, MarketResolver marketResolver,
-			Clock clock, QuoteProperties quoteProperties, PlatformTransactionManager transactionManager) {
+			StockIdentityResolver stockIdentityResolver, Clock clock, QuoteProperties quoteProperties,
+			PlatformTransactionManager transactionManager) {
 		this.holdingRepository = holdingRepository;
 		this.tradeRepository = tradeRepository;
 		this.dividendEventProvider = dividendEventProvider;
 		this.quoteService = quoteService;
 		this.marketResolver = marketResolver;
+		this.stockIdentityResolver = stockIdentityResolver;
 		this.clock = clock;
 		this.requestBudget = quoteProperties.requestBudget();
 		this.writeTransaction = new TransactionTemplate(transactionManager);
@@ -175,26 +178,12 @@ public class HoldingService {
 			return existing;
 		}
 
-		// 第 3 題：先查行情快取。排程每天會寫入全市場的行情，大部分代號在這裡就知道市場和名稱，不必打官方；
-		// 快取沒有收盤價時，才只對那個市場補查收盤價
-		Market market;
-		String name;
-		Optional<Quote> cached = quoteService.findByCode(normalizedCode);
-		if (cached.isPresent()) {
-			market = cached.get().getMarket();
-			name = cached.get().getName();
-			if (cached.get().getClosePrice() == null) {
-				backfillCloseQuietly(normalizedCode, market, deadline);
-			}
-		} else {
-			// 快取沒有才問官方（這時沒有任何交易、沒有任何鎖）；查不到或無法確認時直接丟例外，後面的儲存不會執行
-			StockLookup lookup = marketResolver.resolve(normalizedCode, deadline);
-			saveQuoteQuietly(normalizedCode, lookup);
-			market = lookup.market();
-			name = lookup.name();
-		}
+		// 第 3 題：先查行情快取，沒有才問官方（這時沒有任何交易、沒有任何鎖）；
+		// 查不到或無法確認時直接丟例外，後面的儲存不會執行
+		StockIdentity identity = stockIdentityResolver.resolve(normalizedCode, deadline);
 
-		return insertHoldingWithBuy(new Holding(normalizedCode, name, market, now()), shares, buyPrice);
+		return insertHoldingWithBuy(new Holding(normalizedCode, identity.name(), identity.market(), now()), shares,
+				buyPrice);
 	}
 
 	/**
@@ -214,36 +203,6 @@ public class HoldingService {
 		}
 		tradeRepository.save(estimatedBuy(locked.holding().getId(), shares, buyPrice));
 		return locked.holding();
-	}
-
-	/**
-	 * 快取有這一列、但沒有收盤價（例如批次那天剛好沒成交，資料庫又是全新的，Qiao 檢查時發現）：
-	 * 市場已經知道，只查那個市場的逐檔資料，往前找最近一個有成交日的收盤價。
-	 * 時間預算和同時查詢上限照 F-01（由 MarketResolver 負責）。
-	 * 補查失敗、逾時或被擋都不影響新增：持股照常存，收盤價留給背景排程補。
-	 */
-	private void backfillCloseQuietly(String code, Market market, Deadline deadline) {
-		StockLookup lookup = marketResolver.lookupLatestInMarket(code, market, deadline);
-		if (lookup.status() == StockLookup.Status.FOUND) {
-			saveQuoteQuietly(code, lookup);
-		} else {
-			log.warn("新增 {} 時補查收盤價沒有結果（{}），持股照常新增，收盤價由背景排程補上", code, lookup.status());
-		}
-	}
-
-	/**
-	 * 官方已經回了最近交易日和收盤價，順手寫進快取：新增後清單馬上看得到價格。
-	 * 用 QuoteService 自己的短交易，和寫入持股分開：
-	 * 行情是官方公開資料，不論持股有沒有存成功都是正確的；反過來，快取寫入失敗也不該讓使用者的新增失敗，
-	 * 缺的行情由背景排程補上。
-	 */
-	private void saveQuoteQuietly(String code, StockLookup lookup) {
-		try {
-			quoteService.upsert(List.of(lookup.toDailyQuote(code)));
-		} catch (RuntimeException e) {
-			// 最常見的原因：別人同時新增同一代號，搶先寫進了同一列。只記訊息，不印整段 stack trace
-			log.warn("新增 {} 時寫入行情快取失敗，持股照常新增，行情由背景排程補上：{}", code, e.toString());
-		}
 	}
 
 	/** 全新代號：持股和第一筆買進在同一個短交易裡寫入，不會出現「有持股、沒有交易」的半套資料。 */
@@ -351,7 +310,8 @@ public class HoldingService {
 	/**
 	 * 執行 SELECT … FOR UPDATE；等不到鎖時（H2 預設等 2 秒）資料庫丟逾時，轉成「正在被其他裝置修改」，不能變成 500。
 	 */
-	private static Optional<Holding> lock(Supplier<Optional<Holding>> query) {
+	// 套件內共用：TradeService 鎖持股時用同一套轉換，等不到鎖的訊息才會一致
+	static Optional<Holding> lock(Supplier<Optional<Holding>> query) {
 		try {
 			return query.get();
 		} catch (PessimisticLockingFailureException e) {
@@ -400,7 +360,8 @@ public class HoldingService {
 		return LocalDateTime.now(clock);
 	}
 
-	private static boolean isUniqueCodeViolation(DataIntegrityViolationException e) {
+	// 套件內共用：TradeService 新增全新代號時也要辨認同一個約束
+	static boolean isUniqueCodeViolation(DataIntegrityViolationException e) {
 		String message = e.getMostSpecificCause().getMessage();
 		return message != null && message.toUpperCase(Locale.ROOT).contains(UNIQUE_CODE_CONSTRAINT);
 	}

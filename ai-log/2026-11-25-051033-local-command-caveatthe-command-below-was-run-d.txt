@@ -1,0 +1,759 @@
+ ▐▛███▛█   Claude Code v2.1.329
+▝▜██████▀  Opus 5.5 · Claude Pro
+ ▝▝   ▝▝   C:\TKA102_JavaApp\Workspace_for_practice\stock-holdings
+
+
+> /clear                                                                        
+
+> 【規則】先讀 CLAUDE.md，全程遵守。先提方案等「同意」才動手。commit            
+  由我執行。V1～V5 不能改。                                                     
+                                                                                
+  【背景】設計文件「第6題設計決定.md」請讀：第 2 節（決定 1 的推估日期）、第 7  
+  節 B（同時修改）、第 9 節（計算規則，含同一天依 id）、第 10                   
+  節（日期規則）、第 14 節第 5 列。第 1～4 階段和同一天順序的修正都已經合併進   
+  master。                                                                      
+                                                                                
+  【開始前】從最新的 master 開分支 feature/q6-trade-service。                   
+                                                                                
+  【這一階段的目標】第 5a 階段：交易的新增、修改、刪除（只做 service 層，不做   
+  API 和網頁）                                                                  
+  1. 新增交易（買或賣）：                                                       
+     - 代號還沒有持股 → 只能買進；新增持股＋買進。查市場、名稱的流程沿用        
+  HoldingService.create 的做法（官方 API 在交易和鎖之外呼叫，F-01）。           
+     - 持股已存在（含股數 0）→ 加在同一筆持股下。                               
+  2. 修改交易：只能改日期、股數、價格，不能改買或賣。要帶使用者看到的版本號。   
+  3. 刪除交易：要帶版本號。刪掉最後一筆交易時，持股怎麼處理請提出建議。         
+  4. 規則：                                                                     
+     - 日期：不能早於 2021-01-01、不能是未來（Clock、台北時間）、不能是週末。但 
+  「推估」的日期沒有被改動時，不檢查週末。                                      
+     - 推估標記：只有日期真的被改掉時才拿掉。                                   
+     - 股數：正整數；價格：大於 0、最多兩位小數、不超過                         
+  DECIMAL(12, 2)。上限請提出建議。                                              
+     - 超賣：寫入前用新的交易清單重播，每個時間點都不能超賣，修改或刪除以前的買 
+  進造成後面超賣也要擋。                                                        
+  5. 同時操作：                                                                 
+     - 先鎖住持股那一列（findByIdForUpdate／findByCodeForUpdate），再重播、檢查 
+  、寫入；等不到鎖回 HOLDING_BUSY（沿用第 3 階段）。                            
+     - 版本號不一致 →                                                           
+  VERSION_CONFLICT「這筆交易已被其他裝置修改，請重新整理」。                    
+  6. 錯誤訊息要讓使用者看得懂：                                                 
+     - 超賣：說明是哪一天、哪一筆賣出不夠賣；OversellException                  
+  的兩種說明（同一天依輸入順序、配股可能未計入）要帶出來。                      
+     - 如果是被「推估日期」的買進擋住（決定                                     
+  1），要指出那筆推估的買進，提醒先把它改成實際日期。                           
+     - 錯誤代碼和 HTTP 狀態碼請一起提出（第 6 階段的 API                        
+  會用），這一階段只建例外類別，不改 ApiExceptionHandler。                      
+                                                                                
+  【測試：只做必要的】                                                          
+  - 新增：新代號買進、新代號賣出被擋、已有持股加買、股數 0 的持股加買。         
+  - 日期：2020-12-31、明天、週六被擋；推估的週末日期只改價格時不被擋；改了日期  
+  後推估標記拿掉。                                                              
+  - 超賣：賣太多被擋；刪掉以前的買進造成後面超賣被擋；被推估買進擋住時訊息有指  
+  出那一筆。                                                                    
+  - 版本號不一致被擋。                                                          
+    開發途中只跑相關的測試類別，用 ./mvnw -q；全部測試由我自己跑。              
+                                                                                
+  【不要做】不做 /api/v2、網頁、冪等鍵（5b）；不改 /api/v1 的行為。             
+                                                                                
+  【回覆格式】                                                                  
+  - 提案：用表格，控制在 50                                                     
+  行內，只寫做法、錯誤代碼表、會改的檔案、需要我決定的問題。                    
+  - 完成回報：只寫跟提案不一樣的地方、需要我決定的事、commit 訊息。             
+                                                                                
+  【規則再提醒】先提方案等「同意」；官方 API                                    
+  不能在交易或鎖裡呼叫；設計文件和驗收報告不 commit；main 和 test 一起 commit。 
+
+  Ran 6 shell commands (ctrl+o to expand)
+
+● 正在讀重播排序和既有測試的寫法，讀完就提方案。
+
+  Searched for 1 pattern, ran 2 shell commands (ctrl+o to expand)
+
+● 已從最新的 master（827d642）開好分支
+  feature/q6-trade-service。這一步只建了分支，還沒改任何檔案。
+
+  第 5a 階段提案：交易的新增、修改、刪除（只做 service 層）
+
+  項目: 新增 addTrade(code, side, date, shares, price)
+  做法: ① 先檢查輸入 ② 開一個短交易，用 findByCodeForUpdate
+    鎖住持股：有持股（含股數 0）→ 把新交易放進清單重播 →
+    不超賣才寫入。新交易還沒有 id，重播時暫時用
+    Long.MAX_VALUE，確保同一天排在最後，跟實際寫入後的順序一致 ③
+    沒有持股：賣出直接擋；買進就照 create
+    的流程，在交易外查市場和名稱，再用一個短交易寫入持股和買進 ④
+    如果兩個人同時新增同一個新代號，後寫入的會撞到 UNIQUE，這時改走 ②
+    再試一次，加在對方剛建的持股下，不回重複代號
+  ────────────────────────────────────────
+  項目: 修改 updateTrade(id, version, date, shares, price)
+  做法: ① 只查出 holdingId
+    這一個值（不先載入交易本身，避免拿到上鎖前的舊資料）② 鎖住持股 ③
+    讀出全部交易，比對版本號 ④ 檢查輸入 ⑤ 用改過的清單重播 ⑥ 寫入，馬上
+    flush（立刻送進資料庫）讓版本號 +1，回傳的物件才帶新版本號
+  ────────────────────────────────────────
+  項目: 刪除 deleteTrade(id, version)
+  做法: 跟修改一樣：鎖住 → 比對版本號 → 用刪掉之後的清單重播 → 刪除
+  ────────────────────────────────────────
+  項目: 刪掉最後一筆交易
+  做法: 建議連持股一起刪。一筆交易都沒有的持股沒有東西可以顯示，留著只是殘留資料
+  。之後再新增這個代號，會走全新代號的流程
+  ────────────────────────────────────────
+  項目: 日期規則
+  做法: 不能早於 2021-01-01，不能晚於
+    LocalDate.now(clock)（今天），不能是週末。例外：這筆交易是推估的，而且日期沒
+  有改，就不檢查週末
+  ────────────────────────────────────────
+  項目: 推估標記
+  做法: Trade.changeDetails(...) 只在新日期 ≠ 舊日期時才把 dateEstimated 改成
+    false
+  ────────────────────────────────────────
+  項目: 股數、價格
+  做法: 股數要大於 0；價格要大於 0、最多 2 位小數、整數部分最多 10
+    位（DECIMAL(12, 2)）。上限見問題 2
+  ────────────────────────────────────────
+  項目: 超賣訊息
+  做法: 用重播後最終的清單組訊息：哪一天、賣出幾股、當時持有幾股，再接上
+    OversellException
+    的兩種說明。被推估買進擋住時（排在這筆賣出之後，還有一筆推估的買進），補一句
+  「YYYY-MM-DD
+    那筆 N 股的買進日期是推估的，實際可能更早，請先把它改成實際買進日期」
+  ────────────────────────────────────────
+  項目: 原本就異常的資料
+  做法:
+  只重播「修改後」的清單。所以改完能讓資料恢復正常的操作會放行，使用者能自己修好
+
+  錯誤代碼（這一階段只建例外類別，不改 ApiExceptionHandler）
+
+  ┌─────────────────────────────────┬─────────────────────────────────┬──────┐
+  │            例外類別             │              code               │ HTTP │
+  ├─────────────────────────────────┼─────────────────────────────────┼──────┤
+  │ TradeValidationException（日期  │ VALIDATION_ERROR（沿用）        │ 400  │
+  │ 、股數、價格）                  │                                 │      │
+  ├─────────────────────────────────┼─────────────────────────────────┼──────┤
+  │ TradeOversellException（含沒有  │ OVERSELL                        │ 409  │
+  │ 持股就賣出）                    │                                 │      │
+  ├─────────────────────────────────┼─────────────────────────────────┼──────┤
+  │ VersionConflictException        │ VERSION_CONFLICT                │ 409  │
+  ├─────────────────────────────────┼─────────────────────────────────┼──────┤
+  │ TradeNotFoundException          │ NOT_FOUND（沿用）               │ 404  │
+  ├─────────────────────────────────┼─────────────────────────────────┼──────┤
+  │                                 │ 沿用 HOLDING_BUSY、STOCK_NOT_FO │      │
+  │ 等不到鎖、查市場失敗            │ UND、QUOTE_UNAVAILABLE、MARKET_ │ 沿用 │
+  │                                 │ UNDETERMINED                    │      │
+  └─────────────────────────────────┴─────────────────────────────────┴──────┘
+
+  會改的檔案
+
+  ┌────────────────────────────────────┬────────────────────────────────────┐
+  │                檔案                │                內容                │
+  ├────────────────────────────────────┼────────────────────────────────────┤
+  │ service/TradeService.java（新）    │ 新增、修改、刪除                   │
+  ├────────────────────────────────────┼────────────────────────────────────┤
+  │ service/TradeRules.java（新）      │ 日期、股數、價格的檢查，今天的日期 │
+  │                                    │ 由參數傳入，方便測試               │
+  ├────────────────────────────────────┼────────────────────────────────────┤
+  │                                    │ 從 HoldingService.create           │
+  │ service/StockIdentityResolver.java │ 抽出「先查快取 → 沒有才問官方 →    │
+  │ （新）                             │ 寫回快取」，兩邊共用，create       │
+  │                                    │ 的行為不變                         │
+  ├────────────────────────────────────┼────────────────────────────────────┤
+  │ service/HoldingService.java        │ 改成呼叫上面這個類別               │
+  ├────────────────────────────────────┼────────────────────────────────────┤
+  │ entity/Trade.java                  │ 加 changeDetails                   │
+  ├────────────────────────────────────┼────────────────────────────────────┤
+  │ repository/TradeRepository.java    │ 加 findHoldingIdById               │
+  ├────────────────────────────────────┼────────────────────────────────────┤
+  │ exception/ 4 個新類別              │ 上表                               │
+  ├────────────────────────────────────┼────────────────────────────────────┤
+  │                                    │ 我之前寫錯了：註解還寫「同一天買進 │
+  │ calc/TradeSide.java                │ 一律排在賣出前面」，同一天順序修正 │
+  │                                    │ 之後已經不對，要改掉               │
+  ├────────────────────────────────────┼────────────────────────────────────┤
+  │ 測試：TradeServiceTest（新）、Trad │ 你列的那些情境                     │
+  │ eRulesTest（新）                   │                                    │
+  ├────────────────────────────────────┼────────────────────────────────────┤
+  │ 測試：HoldingServiceTest、Dividend │ @Import 要加上                     │
+  │ ReplayIntegrationTest              │ StockIdentityResolver              │
+  └────────────────────────────────────┴────────────────────────────────────┘
+
+  需要你決定的問題
+
+  1. 刪掉最後一筆交易時，持股要一起刪（建議），還是留下一筆股數
+     0、沒有交易的持股？
+  2. 上限：價格建議只用資料表本身的上限
+     9,999,999,999.99，不另外設比較小的合理上限（設了也擋不住多打一個 0
+     這種錯）；股數建議上限 1,000,000,000 股（100
+     萬張），防止計算時數字溢位。可以嗎？
+  3. 超賣建議用 409 OVERSELL：輸入本身沒錯，是跟目前的持股狀態衝突。另一個選擇是
+     422（格式正確但違反業務規則），你偏好哪一個？
+  4. 抽出 StockIdentityResolver 會動到
+     HoldingService（只是搬程式，行為不變）。可以接受嗎？不接受的話，我改成讓
+     TradeService 自己複製這段流程。
+
+  回覆「同意」，或針對上面四題給答案，我就開始實作。
+
+✻ Crunched for 1m 44s · done 上午5:01
+
+> 同意，四點都照你的建議：                                                      
+  1. 刪掉最後一筆交易時連持股一起刪（只有一筆交易都不剩時才刪，賣光但還有交易的 
+  要留著）。                                                                    
+  2. 價格用資料表的上限，股數上限 1,000,000,000 股。                            
+  3. 超賣用 409 OVERSELL。                                                      
+  4. 可以抽出 StockIdentityResolver，HoldingService 的行為不能變。              
+                                                                                
+  你貼的錯誤代碼表被截斷了，完成回報時請附上完整的表（含                        
+  VERSION_CONFLICT、HOLDING_BUSY、NOT_FOUND）。                                 
+  其他照回覆格式：只寫跟提案不一樣的地方、需要我決定的事、commit                
+  訊息。全部測試由我自己跑。                                                    
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● 開始實作。先抽出 StockIdentityResolver。
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\service\StockIdentityResolve
+       r.java)
+  ⎿  Wrote 95 lines to src\main\java\io\hsiaopingkuo\stockholdings\service\
+     StockIdentityResolver.java
+       1 package io.hsiaopingkuo.stockholdings.service;
+       2 
+       3 import java.util.List;
+       4 import java.util.Optional;
+       5 
+       6 import org.slf4j.Logger;
+       7 import org.slf4j.LoggerFactory;
+       8 import org.springframework.stereotype.Component;
+       9 
+      10 import io.hsiaopingkuo.stockholdings.entity.Market;
+     … +85 lines (ctrl+o to expand)
+
+● Now update HoldingService to use it.
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\service\HoldingService.java
+        )
+  ⎿  Added 5 lines, removed 19 lines
+      175        return existing;
+      176      }
+      177 
+      178 -    // 第 3 題：先查行情快取。排程每天會寫入全市場的行情，大部
+          -分代號在這裡就知道市場和名稱，不必打官方；                    
+      179 -    // 快取沒有收盤價時，才只對那個市場補查收盤價             
+      180 -    Market market;                                            
+      181 -    String name;                                              
+      182 -    Optional<Quote> cached = quoteService.findByCode(normalize
+          -dCode);                                                       
+      183 -    if (cached.isPresent()) {                                 
+      184 -      market = cached.get().getMarket();                      
+      185 -      name = cached.get().getName();                          
+      186 -      if (cached.get().getClosePrice() == null) {             
+      187 -        backfillCloseQuietly(normalizedCode, market, deadline)
+          -;                                                             
+      188 -      }                                                       
+      189 -    } else {                                                  
+      190 -      // 快取沒有才問官方（這時沒有任何交易、沒有任何鎖）；查 
+          -不到或無法確認時直接丟例外，後面的儲存不會執行                
+      191 -      StockLookup lookup = marketResolver.resolve(normalizedCo
+          -de, deadline);                                                
+      192 -      saveQuoteQuietly(normalizedCode, lookup);               
+      193 -      market = lookup.market();                               
+      194 -      name = lookup.name();                                   
+      195 -    }                                                         
+      178 +    // 第 3 題：先查行情快取，沒有才問官方（這時沒有任何交易、
+          +沒有任何鎖）；                                                
+      179 +    // 查不到或無法確認時直接丟例外，後面的儲存不會執行       
+      180 +    StockIdentity identity = stockIdentityResolver.resolve(nor
+          +malizedCode, deadline);                                       
+      181 
+      197 -    return insertHoldingWithBuy(new Holding(normalizedCode, na
+          -me, market, now()), shares, buyPrice);                        
+      182 +    return insertHoldingWithBuy(new Holding(normalizedCode, id
+          +entity.name(), identity.market(), now()), shares,             
+      183 +        buyPrice);                                            
+      184    }
+      185 
+      186    /**
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\service\HoldingService.java
+        )
+  ⎿  Removed 30 lines
+      202      return locked.holding();
+      203    }
+      204 
+      205 -  /**                                                         
+      206 -   * 快取有這一列、但沒有收盤價（例如批次那天剛好沒成交，資料 
+          -庫又是全新的，Qiao 檢查時發現）：                             
+      207 -   * 市場已經知道，只查那個市場的逐檔資料，往前找最近一個有成 
+          -交日的收盤價。                                                
+      208 -   * 時間預算和同時查詢上限照 F-01（由 MarketResolver 負責）。
+      209 -   * 補查失敗、逾時或被擋都不影響新增：持股照常存，收盤價留給 
+          -背景排程補。                                                  
+      210 -   */                                                         
+      211 -  private void backfillCloseQuietly(String code, Market market
+          -, Deadline deadline) {                                        
+      212 -    StockLookup lookup = marketResolver.lookupLatestInMarket(c
+          -ode, market, deadline);                                       
+      213 -    if (lookup.status() == StockLookup.Status.FOUND) {        
+      214 -      saveQuoteQuietly(code, lookup);                         
+      215 -    } else {                                                  
+      216 -      log.warn("新增 {} 時補查收盤價沒有結果（{}），持股照常新
+          -增，收盤價由背景排程補上", code, lookup.status());            
+      217 -    }                                                         
+      218 -  }                                                           
+      219 -                                                              
+      220 -  /**                                                         
+      221 -   * 官方已經回了最近交易日和收盤價，順手寫進快取：新增後清單 
+          -馬上看得到價格。                                              
+      222 -   * 用 QuoteService 自己的短交易，和寫入持股分開：           
+      223 -   * 行情是官方公開資料，不論持股有沒有存成功都是正確的；反過 
+          -來，快取寫入失敗也不該讓使用者的新增失敗，                    
+      224 -   * 缺的行情由背景排程補上。                                 
+      225 -   */                                                         
+      226 -  private void saveQuoteQuietly(String code, StockLookup looku
+          -p) {                                                          
+      227 -    try {                                                     
+      228 -      quoteService.upsert(List.of(lookup.toDailyQuote(code)));
+      229 -    } catch (RuntimeException e) {                            
+      230 -      // 最常見的原因：別人同時新增同一代號，搶先寫進了同一列 
+          -。只記訊息，不印整段 stack trace                              
+      231 -      log.warn("新增 {} 時寫入行情快取失敗，持股照常新增，行情
+          -由背景排程補上：{}", code, e.toString());                     
+      232 -    }                                                         
+      233 -  }                                                           
+      234 -                                                              
+      205    /** 全新代號：持股和第一筆買進在同一個短交易裡寫入，不會出現
+           「有持股、沒有交易」的半套資料。 */
+      206    private Holding insertHoldingWithBuy(Holding holding, long s
+           hares, BigDecimal buyPrice) {
+      207      try {
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\service\HoldingService.java
+        )
+  ⎿  Added 1 line
+      72    private final DividendEventProvider dividendEventProvider;
+      73    private final QuoteService quoteService;
+      74    private final MarketResolver marketResolver;
+      75 +  private final StockIdentityResolver stockIdentityResolver;   
+      76    private final Clock clock;
+      77    // 新增持股的時間預算（quote.request-budget）
+      78    private final Duration requestBudget;
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\service\HoldingService.java
+        )
+  ⎿  Added 3 lines, removed 1 line
+      82 
+      83    public HoldingService(HoldingRepository holdingRepository, Tr
+          adeRepository tradeRepository,
+      84        DividendEventProvider dividendEventProvider, QuoteService
+           quoteService, MarketResolver marketResolver,
+      85 -      Clock clock, QuoteProperties quoteProperties, PlatformTra
+         -nsactionManager transactionManager) {                          
+      85 +      StockIdentityResolver stockIdentityResolver, Clock clock,
+         + QuoteProperties quoteProperties,                              
+      86 +      PlatformTransactionManager transactionManager) {         
+      87      this.holdingRepository = holdingRepository;
+      88      this.tradeRepository = tradeRepository;
+      89      this.dividendEventProvider = dividendEventProvider;
+      90      this.quoteService = quoteService;
+      91      this.marketResolver = marketResolver;
+      92 +    this.stockIdentityResolver = stockIdentityResolver;        
+      93      this.clock = clock;
+      94      this.requestBudget = quoteProperties.requestBudget();
+      95      this.writeTransaction = new TransactionTemplate(transaction
+          Manager);
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\service\HoldingService.java
+        )
+  ⎿  Added 2 lines, removed 1 line
+      310    /**
+      311     * 執行 SELECT … FOR UPDATE；等不到鎖時（H2 預設等 2 秒）資
+           料庫丟逾時，轉成「正在被其他裝置修改」，不能變成 500。
+      312     */
+      313 -  private static Optional<Holding> lock(Supplier<Optional<Hold
+          -ing>> query) {                                                
+      313 +  // 套件內共用：TradeService 鎖持股時用同一套轉換，等不到鎖的
+          +訊息才會一致                                                  
+      314 +  static Optional<Holding> lock(Supplier<Optional<Holding>> qu
+          +ery) {                                                        
+      315      try {
+      316        return query.get();
+      317      } catch (PessimisticLockingFailureException e) {
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\service\HoldingService.java
+        )
+  ⎿  Added 2 lines, removed 1 line
+      360      return LocalDateTime.now(clock);
+      361    }
+      362 
+      363 -  private static boolean isUniqueCodeViolation(DataIntegrityVi
+          -olationException e) {                                         
+      363 +  // 套件內共用：TradeService 新增全新代號時也要辨認同一個約束
+      364 +  static boolean isUniqueCodeViolation(DataIntegrityViolationE
+          +xception e) {                                                 
+      365      String message = e.getMostSpecificCause().getMessage();
+      366      return message != null && message.toUpperCase(Locale.ROOT)
+           .contains(UNIQUE_CODE_CONSTRAINT);
+      367    }
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\service\HoldingService.java
+        )
+  ⎿  Added 1 line
+      48  import io.hsiaopingkuo.stockholdings.quote.StockLookup;
+      49  import io.hsiaopingkuo.stockholdings.repository.HoldingReposito
+          ry;
+      50  import io.hsiaopingkuo.stockholdings.repository.TradeRepository
+          ;
+      51 +import io.hsiaopingkuo.stockholdings.service.StockIdentityResol
+         +ver.StockIdentity;                                             
+      52 
+      53  /**
+      54   * 持股的新增、修改、刪除、查詢。
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\service\HoldingService.java
+        )
+  ⎿  Removed 1 line
+      32  import io.hsiaopingkuo.stockholdings.dto.HoldingListItem;
+      33  import io.hsiaopingkuo.stockholdings.dto.HoldingQuoteRow;
+      34  import io.hsiaopingkuo.stockholdings.entity.Holding;
+      35 -import io.hsiaopingkuo.stockholdings.entity.Market;            
+      35  import io.hsiaopingkuo.stockholdings.entity.Quote;
+      36  import io.hsiaopingkuo.stockholdings.entity.Trade;
+      37  import io.hsiaopingkuo.stockholdings.exception.DuplicateCodeExc
+          eption;
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\calc\TradeSide.java)
+  ⎿  Added 1 line, removed 1 line
+      1  package io.hsiaopingkuo.stockholdings.calc;
+      2 
+      3 -/** 交易方向（第 6 題）。同一天重播時，買進一律排在賣出前面。 */
+      3 +/** 交易方向（第 6 題）。同一天重播時不分買賣，依輸入順序（id） 
+        +處理（見 HoldingReplayCalculator）。 */                         
+      4  public enum TradeSide {
+      5    BUY, SELL
+      6  }
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\entity\Trade.java)
+  ⎿  Added 14 lines
+       86      this.updatedAt = now;
+       87    }
+       88 
+       89 +  /**                                                         
+       90 +   * 2.0 修改交易：只改日期、股數、價格，買賣方向不能改。     
+       91 +   * 推估標記只有在日期真的被改掉時才拿掉：只改價格時，日期仍 
+          +然是推估的。                                                  
+       92 +   */                                                         
+       93 +  public void changeDetails(LocalDate tradeDate, long shares, 
+          +BigDecimal price, LocalDateTime now) {                        
+       94 +    if (!this.tradeDate.equals(tradeDate)) {                  
+       95 +      this.tradeDate = tradeDate;                             
+       96 +      this.dateEstimated = false;                             
+       97 +    }                                                         
+       98 +    this.shares = shares;                                     
+       99 +    this.price = price;                                       
+      100 +    this.updatedAt = now;                                     
+      101 +  }                                                           
+      102 +                                                              
+      103    /** 轉成計算核心用的 record（計算核心不依賴 Entity）。 */
+      104    public TradeInput toInput() {
+      105      return new TradeInput(id, tradeDate, side, shares, price);
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\repository\TradeRepository.
+        java)
+  ⎿  Added 7 lines
+      16    // 某檔持股的全部交易，依重播順序（日期，同一天再依 id）；對
+          應索引 idx_trade_holding_date
+      17    List<Trade> findByHoldingIdOrderByTradeDateAscIdAsc(Long hold
+          ingId);
+      18 
+      19 +  /**                                                          
+      20 +   * 修改、刪除交易時，先只查出它屬於哪一檔持股，鎖住持股後才讀
+         +交易本身。                                                     
+      21 +   * 只查一個數字、不載入 Entity：若先載入，鎖住前讀到的舊版本 
+         +會留在 JPA 快取裡，鎖住後再查也拿到舊的。                      
+      22 +   */                                                          
+      23 +  @Query("select t.holdingId from Trade t where t.id = :id")   
+      24 +  Optional<Long> findHoldingIdById(@Param("id") Long id);      
+      25 +                                                               
+      26    // 清單用：一次查出全部交易，在記憶體裡依持股分組，不必每一檔
+          查一次資料庫
+      27    List<Trade> findAllByOrderByHoldingIdAscTradeDateAscIdAsc();
+      28 
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\repository\TradeRepository.
+        java)  ⎿  Added 1 line
+       6 
+       7  import org.springframework.data.jpa.repository.JpaRepository;
+       8  import org.springframework.data.jpa.repository.Query;
+       9 +import org.springframework.data.repository.query.Param;        
+      10 
+      11  import io.hsiaopingkuo.stockholdings.dto.CodeFirstTradeDate;
+      12  import io.hsiaopingkuo.stockholdings.entity.Trade;
+
+● Now the exception classes.
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\exception\TradeValidationExc
+       eption.java)
+  ⎿  Wrote 20 lines to src\main\java\io\hsiaopingkuo\stockholdings\exceptio
+     n\TradeValidationException.java
+       1 package io.hsiaopingkuo.stockholdings.exception;
+       2 
+       3 /**
+       4  * 交易的輸入不符合規則（第 6 題決定 9：日期、股數、價格）。
+       5  * API 回 400 VALIDATION_ERROR；網頁依 field 把訊息顯示在對應的
+         欄位旁邊。
+       6  */
+       7 public class TradeValidationException extends RuntimeException {
+       8 
+       9   // 哪一個欄位有錯：code、date、shares、price（對應表單與 API 
+     … +12 lines (ctrl+o to expand)
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\exception\VersionConflictExc
+       eption.java)
+  ⎿  Wrote 13 lines to src\main\java\io\hsiaopingkuo\stockholdings\exceptio
+     n\VersionConflictException.java
+       1 package io.hsiaopingkuo.stockholdings.exception;
+       2 
+       3 /**
+       4  * 修改、刪除交易時帶來的版本號和資料庫的不一樣（第 6 題決定 6-B
+         ，樂觀鎖）：
+       5  * 使用者看到的是舊資料，別的裝置已經改過。直接蓋掉會讓對方的修
+         改消失，所以拒絕，請使用者重新整理。
+       6  * API 回 409 VERSION_CONFLICT。
+       7  */
+       8 public class VersionConflictException extends RuntimeException {
+     … +5 lines (ctrl+o to expand)
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\exception\TradeNotFoundExcep
+       tion.java)
+  ⎿  Wrote 9 lines to src\main\java\io\hsiaopingkuo\stockholdings\exception
+     \TradeNotFoundException.java
+      1 package io.hsiaopingkuo.stockholdings.exception;
+      2 
+      3 /** 找不到指定 id 的交易（例如已在另一個裝置被刪掉）。API 回 404 
+        NOT_FOUND，和找不到持股同一個代碼。 */
+      4 public class TradeNotFoundException extends RuntimeException {
+      5 
+      6   public TradeNotFoundException(Long id) {
+      7     super("找不到這筆交易（id=" + id + "），可能已被刪除");
+      8   }
+      9 }
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\exception\TradeOversellExcep
+       tion.java)
+  ⎿  Wrote 77 lines to src\main\java\io\hsiaopingkuo\stockholdings\exceptio
+     n\TradeOversellException.java
+       1 package io.hsiaopingkuo.stockholdings.exception;
+       2 
+       3 import java.time.LocalDate;
+       4 import java.util.ArrayList;
+       5 import java.util.List;
+       6 import java.util.Locale;
+       7 
+       8 import io.hsiaopingkuo.stockholdings.calc.OversellException;
+       9 
+      10 /**
+     … +67 lines (ctrl+o to expand)
+
+● Now TradeRules.
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\service\TradeRules.java)
+  ⎿  Wrote 75 lines to
+     src\main\java\io\hsiaopingkuo\stockholdings\service\TradeRules.java
+       1 package io.hsiaopingkuo.stockholdings.service;
+       2 
+       3 import java.math.BigDecimal;
+       4 import java.time.DayOfWeek;
+       5 import java.time.LocalDate;
+       6 
+       7 import io.hsiaopingkuo.stockholdings.exception.TradeValidationEx
+         ception;
+       8 
+       9 /**
+     … +66 lines (ctrl+o to expand)
+
+● Now TradeService.
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\service\TradeService.java)
+  ⎿  Wrote 323 lines to
+     src\main\java\io\hsiaopingkuo\stockholdings\service\TradeService.java
+       1 package io.hsiaopingkuo.stockholdings.service;
+       2 
+       3 import java.math.BigDecimal;
+       4 import java.time.Clock;
+       5 import java.time.Duration;
+       6 import java.time.LocalDate;
+       7 import java.time.LocalDateTime;
+       8 import java.util.ArrayList;
+       9 import java.util.Comparator;
+      10 import java.util.List;
+     … +313 lines (ctrl+o to expand)
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Bash(cd "C:/TKA102_JavaApp/Workspace_for_practice/stock-holdings/src/test/java
+      /io/hsiaopingkuo/stockholdings/service" && sed -i 's/@Import({
+      HoldingService.class, Qu…)
+  ⎿  DividendReplayIntegrationTest.java:58:@Import({ HoldingService.class,
+     QuoteService.class, StockIdentityResolver.class, DatabaseDividendEvent
+     Provider.class,
+     … +11 lines (ctrl+o to expand)
+  ⎿  Updated src\test\java\io\hsiaopingkuo\stockholdings\service\DividendRe
+     playIntegrationTest.java +2 -1
+      55   * 股數、/api/v1 的 buy_price 另外透過 HoldingService（和 /api/
+          v1 同一套組裝）驗證。
+      56   */
+      57  @DataJpaTest
+      58 -@Import({ HoldingService.class, QuoteService.class, DatabaseDiv
+         -idendEventProvider.class, DividendEventWriter.class,           
+      58 +@Import({ HoldingService.class, QuoteService.class, StockIdenti
+         +tyResolver.class, DatabaseDividendEventProvider.class,         
+      59 +                DividendEventWriter.class,                     
+      60                  DividendReplayIntegrationTest.FixedClockConfig.
+          class })
+      61  @Transactional(propagation = Propagation.NOT_SUPPORTED)
+      62  class DividendReplayIntegrationTest {
+  ⎿  Updated src\test\java\io\hsiaopingkuo\stockholdings\service\HoldingSer
+     viceTest.java +1 -1
+      59  /** Service 搭配真的資料庫（測試用 H2 記憶體模式 + Flyway）測試
+          業務規則。 */
+      60  @DataJpaTest
+      61  // 第 6 題：HoldingService 重播交易時要用除權息提供者；這裡的測
+          試不寫入除權息事件，讀出來一律是空的
+      62 -@Import({ HoldingService.class, QuoteService.class, DatabaseDiv
+         -idendEventProvider.class,                                      
+      62 +@Import({ HoldingService.class, QuoteService.class, StockIdenti
+         +tyResolver.class, DatabaseDividendEventProvider.class,         
+      63                  HoldingServiceTest.FixedClockConfig.class })
+      64  // 測試本身不包交易（F-01）：create() 要在「沒有交易」的情況下
+          呼叫官方，
+      65  // 如果測試先開了交易，就測不出 create() 有沒有自己開交易；資料
+          改由「清空資料」負責清掉
+
+● Now the tests.
+
+● Write(src\test\java\io\hsiaopingkuo\stockholdings\service\TradeRulesTest.java)
+  ⎿  Wrote 63 lines to src\test\java\io\hsiaopingkuo\stockholdings\service\
+     TradeRulesTest.java
+      1 package io.hsiaopingkuo.stockholdings.service;
+      2 
+      3 import static org.assertj.core.api.Assertions.assertThatCode;
+      4 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+      5 
+      6 import java.math.BigDecimal;
+      7 import java.time.LocalDate;
+      8 
+      9 import org.junit.jupiter.api.Test;
+     … +54 lines (ctrl+o to expand)
+
+● Write(src\test\java\io\hsiaopingkuo\stockholdings\service\TradeServiceTest.jav
+       a)
+  ⎿  Wrote 272 lines to src\test\java\io\hsiaopingkuo\stockholdings\service
+     \TradeServiceTest.java
+       1 package io.hsiaopingkuo.stockholdings.service;
+       2 
+       3 import static org.assertj.core.api.Assertions.assertThat;
+       4 import static org.assertj.core.api.Assertions.assertThatThrownBy
+         ;
+       5 import static org.mockito.ArgumentMatchers.any;
+       6 import static org.mockito.ArgumentMatchers.anyString;
+       7 import static org.mockito.BDDMockito.given;
+       8 import static org.mockito.Mockito.verifyNoInteractions;
+       9 
+     … +263 lines (ctrl+o to expand)
+
+  Ran 3 shell commands (ctrl+o to expand)
+
+● 第 5a 階段的 service 層做好了。相關的 4 個測試類別都通過：TradeServiceTest 11
+  個、TradeRulesTest 5 個，以及因為抽出 StockIdentityResolver 而改了 @Import 的
+  HoldingServiceTest 24 個、DividendReplayIntegrationTest 5
+  個。全部測試還沒跑，請你執行 ./mvnw test。
+
+  跟提案不一樣的地方
+
+  1. HoldingService 多改了兩處：lock() 和 isUniqueCodeViolation() 從 private
+     改成套件內可用，讓 TradeService 共用同一套「等不到鎖」和「重複代號」的判斷
+     。只改了能不能被呼叫，HoldingService 的行為沒有變。
+  2. 刪除時先刪交易、再刪持股，兩步都寫在程式裡，不靠外鍵的 ON DELETE CASCADE
+     連帶刪除，讀程式就看得出刪了什麼。
+  3. 新增時多檢查兩個欄位：代號空白（field = code）和沒選買或賣（field =
+     side）也會丟 TradeValidationException。
+  4. 測試比你列的多兩組：股數和價格的上限（這次才定下來的數字），以及「刪掉最後
+     一筆交易，持股一起刪」（你在問題 1 決定的行為）。
+  5. 超賣訊息的組成順序：先寫哪一天、賣出幾股、當時持有幾股，再依序接上「推估的
+     買進」「同一天依輸入順序」「配股可能未計入」，用「；」分開。
+
+  需要你決定的事
+
+  全新代號同時被兩個人新增時，後寫入的會被 UNIQUE（不能重複）擋下，這時會改加在
+  對方剛建好的持股下。如果對方在這極短的時間內又把它刪掉，目前會回 DUPLICATE_COD
+  E「代號已在持股中」，訊息不太準確。情況非常罕見，建議先維持這樣，你決定。
+
+  完整錯誤代碼表（第 6 階段的 API 會用）
+
+  例外類別: TradeValidationException（帶
+    field：code、side、date、shares、price）
+  code: VALIDATION_ERROR
+  HTTP: 400
+  訊息: 例如「交易日期不能早於 2021-01-01」「2026-11-21
+    是週末，不是交易日，請確認日期」
+  ────────────────────────────────────────
+  例外類別: TradeOversellException
+  code: OVERSELL
+  HTTP: 409
+  訊息: 例如「2026-11-20 的賣出 500 股不夠賣：當時只持有 0 股；2026-11-23 那筆
+    1,000 股的買進日期是推估的…」；沒有持股就賣出：「2330
+    目前沒有持股，不能賣出」
+  ────────────────────────────────────────
+  例外類別: VersionConflictException
+  code: VERSION_CONFLICT
+  HTTP: 409
+  訊息: 這筆交易已被其他裝置修改，請重新整理
+  ────────────────────────────────────────
+  例外類別: HoldingBusyException（沿用）
+  code: HOLDING_BUSY
+  HTTP: 409
+  訊息: 這筆持股正在被其他裝置修改，請稍後再試
+  ────────────────────────────────────────
+  例外類別: TradeNotFoundException
+  code: NOT_FOUND（沿用）
+  HTTP: 404
+  訊息: 找不到這筆交易（id=…），可能已被刪除
+  ────────────────────────────────────────
+  例外類別: StockCodeNotFoundException（沿用，全新代號）
+  code: STOCK_NOT_FOUND
+  HTTP: 404
+  訊息: 沿用
+  ────────────────────────────────────────
+  例外類別: MarketUnavailableException（沿用，全新代號）
+  code: QUOTE_UNAVAILABLE
+  HTTP: 503
+  訊息: 沿用
+  ────────────────────────────────────────
+  例外類別: MarketAmbiguousException（沿用，全新代號）
+  code: MARKET_UNDETERMINED
+  HTTP: 503
+  訊息: 沿用
+  ────────────────────────────────────────
+  例外類別: DuplicateCodeException（沿用，只在上面那個罕見情況）
+  code: DUPLICATE_CODE
+  HTTP: 409
+  訊息: 沿用
+
+  TradeOversellException 另外帶兩個欄位給第 6
+  階段標示畫面：oversoldTradeId（哪一筆賣出不夠賣；是這次新增、還沒有 id
+  的那一筆時為 null）和 estimatedBuyTradeId（擋住它的推估買進）。
+
+  commit 訊息
+
+  feat: 第6題 交易的新增、修改、刪除（service 
+  層）：日期規則、超賣檢查、悲觀鎖與版本號
+
+  這次改了 src/main 和 src/test 共 15 個檔案，請一起 commit。設計文件沒有出現在
+  git 狀態裡，不會被 commit 到。
+
+  每題結束提醒
+
+  - README：這一階段沒有改變安裝、啟動或使用方式，不用更新。
+  - TESTLOG：沒有你實際操作時發現的問題，不用記。
+  - ai-log：記得把這段對話匯出放進去，commit 前檢查有沒有密碼或 token。
+
+✻ Baked for 5m 56s · done 上午5:07

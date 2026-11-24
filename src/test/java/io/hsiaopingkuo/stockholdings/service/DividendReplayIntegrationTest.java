@@ -55,7 +55,8 @@ import io.hsiaopingkuo.stockholdings.service.RefreshTestSupport.RecordingPause;
  * 股數、/api/v1 的 buy_price 另外透過 HoldingService（和 /api/v1 同一套組裝）驗證。
  */
 @DataJpaTest
-@Import({ HoldingService.class, QuoteService.class, DatabaseDividendEventProvider.class, DividendEventWriter.class,
+@Import({ HoldingService.class, QuoteService.class, StockIdentityResolver.class, DatabaseDividendEventProvider.class,
+		DividendEventWriter.class,
 		DividendReplayIntegrationTest.FixedClockConfig.class })
 @Transactional(propagation = Propagation.NOT_SUPPORTED)
 class DividendReplayIntegrationTest {
