@@ -1,0 +1,1931 @@
+ ▐▛███▛█   Claude Code v2.1.329
+▝▜██████▀  Opus 5.5 · Claude Pro
+ ▝▝   ▝▝   C:\TKA102_JavaApp\Workspace_for_practice\stock-holdings
+
+
+> /clear                                                                        
+
+> 【規則】先讀 CLAUDE.md，全程遵守。時間有限：先用 30                           
+  行內提出方案，等我回「同意」後一次做完。commit 由我執行。V1～V6 不能改。      
+                                                                                
+  【背景】/api/v2、HoldingV2QueryService、TradeService、IdempotencyService      
+  都已合併進 master。設計文件「第6題設計決定.md」請讀第 14 節第 6 列、第 15     
+  節「第 6 階段網頁」那一行。網頁沿用現有的 Thymeleaf 和樣式，不加前端框架。    
+                                                                                
+  【開始前】從最新的 master 開分支 feature/q6-web-v2。                          
+                                                                                
+  【要做的】                                                                    
+  1. 持股清單（/ 和 /holdings 都顯示這頁）：                                    
+     - 每檔：代號、名稱、總股數、平均成本、收盤價和日期、市值、未實現、已實現、 
+  累計現金股利、含息總報酬；下方是總計。                                        
+     - 提示：有零股時「含零股 N 股・App 1.0 只顯示整張，請更新 App              
+  2.0」（沿用第 3 階段的文字）；股利資料 PENDING 時「股利資料更新中」；沒有收盤 
+  價、顯示前一個有成交日的提示、資料異常，沿用現有的做法。                      
+     - 每檔的操作只有「查看交易」，連到明細頁。                                 
+     -                                                                          
+  新增交易的表單：代號、買或賣、日期、股數、價格；沿用現有的代號查詢提示（含    
+  F-04 的處理）。                                                               
+  2. 單筆明細頁（/holdings/{id}）：                                             
+     - 上方是這檔的數字。                                                       
+     - 交易清單：日期（推估的標示「推估」，提醒改成實際日期）、買或賣、股數、價 
+  格、修改、刪除。                                                              
+     - 除權息清單：除權息日、可參與股數、現金股利、配股、來源（官方／估算／無法 
+  取得）。                                                                      
+       - 加一句說明：「除權息日當天或之後才買進的股票，領不到這次的股利」。     
+       - 單次現金股利 ≥ 20,000 元時，標示「入帳時會先扣 2.11%                   
+  二代健保補充保費」。                                                          
+     - 資料異常時，要看得出是哪一筆交易有問題。                                 
+  3. 修改、刪除交易：                                                           
+     - 表單帶隱藏的版本號；新增、修改、刪除的表單都帶一次性編號，當成           
+  Idempotency-Key 共用 IdempotencyService，按兩次送出只會處理一次。             
+     - 錯誤顯示在畫面上，看得懂：VALIDATION_ERROR 標在對應的欄位；OVERSELL      
+  顯示完整訊息，並在交易清單標出是哪一筆（oversold_trade_id、estimated_buy_trad 
+  e_id）；VERSION_CONFLICT、HOLDING_BUSY 提示重新整理或稍後再試。               
+  4. 取代 1.0 網頁：刪掉 1.0 的網頁                                             
+  controller、頁面，和只有它在用的表單類別與測試。/api/v1                       
+  用到的程式（HoldingService.create 等）一律保留，/api/v1 的測試照樣通過。      
+                                                                                
+  【測試：只做必要的】                                                          
+  - 清單頁、明細頁顯示正確（含零股提示、推估標示、股利來源、≥ 20,000            
+  元的提示）。                                                                  
+  - 用表單新增、修改、刪除交易（帶 CSRF）；同一個一次性編號送兩次只處理一次。   
+  - OVERSELL、VERSION_CONFLICT 的訊息顯示在畫面上。                             
+    開發途中只跑相關的測試類別，用 ./mvnw -q；全部測試由我自己跑。              
+                                                                                
+  【commit】一個 feat（程式＋測試，含刪除 1.0 網頁）。                          
+                                                                                
+  【回覆格式】                                                                  
+  - 提案：30 行內，只寫頁面和網址的安排、要刪除的檔案、需要我決定的問題。       
+  - 完成回報：只寫跟提案不一樣的地方、需要我決定的事、commit 訊息。             
+                                                                                
+  【規則再提醒】不改 /api/v1、/api/v2 的行為；表單一律用                        
+  th:action（CSRF）；設計文件和驗收報告不 commit。                              
+
+  Searched for 1 pattern, read 2 files, ran 2 shell commands (ctrl+o to expand)
+
+● 先簡短回報：我正在讀現有的網頁 controller、v2 的 service 和設計文件，準備寫 30
+  行內的提案。
+
+  Searched for 1 pattern, ran 4 shell commands (ctrl+o to expand)
+
+● 用量上限已經到了，所以這一輪只交提案，沒有改任何檔案，也還沒開分支。相關程式和
+  設計文件第 14、15 節都讀過了，提案如下：
+
+  提案（第 6 階段網頁）
+
+  頁面和網址（全部放在新的 HoldingWebController）：
+  - GET /、GET /holdings →
+    holdings.html（改寫）。每檔顯示：代號、名稱、總股數、平均成本、收盤價和日期
+    、市值、未實現、已實現、累計現金股利、含息總報酬；下方是總計，用
+    ApiV2SummaryResponse.from，跟 API 的數字一致。零股、PENDING、未取得、前一個
+    有成交日、資料異常的提示都沿用現有文字。每檔的操作只有「查看交易」。
+  - 新增交易表單（代號、買或賣、日期、股數、價格，加上隱藏的一次性編號）：POST 
+    /holdings/trades，代號查詢提示的 JS（含 F-04）和 GET /holdings/lookup
+    原樣搬過來。
+  - GET /holdings/{id} → holding-detail.html。上方是這檔的數字，下面是交易清單（
+    標「推估」）和除權息清單（來源、說明句、≥ 20,000
+    元的補充保費提示）。按「修改」時用 ?edit={tradeId}，讓那一列變成輸入框。
+  - POST /holdings/{id}/trades/{tradeId}（修改）、POST 
+    /holdings/{id}/trades/{tradeId}/delete（刪除）：都帶隱藏的 version
+    和一次性編號。
+  - 一次性編號交給 IdempotencyService.execute，api 名稱用 WEB POST 
+    /holdings/trades 這類字串，和 v2 分開。存的內容是要轉回去的網址（PRG）。同一
+    個編號第二次送出時，直接轉到同一頁，不會再處理一次。
+  - 錯誤：欄位錯誤標在對應欄位上；OVERSELL 時重畫明細頁，顯示完整訊息，並把對應
+    的兩列標紅；VERSION_CONFLICT、HOLDING_BUSY、REQUEST_IN_PROGRESS
+    提示重新整理或稍後再試。
+  - 資料異常要看得出是哪一筆：HoldingV2View 加一個可以是 null 的欄位
+    dataErrorTradeId，由 replayOrNull 時抓到的 OversellException 填入。只有
+    HoldingV2QueryService 會建立這個物件，JSON 不會變，所以不影響 v2 API。
+
+  要刪除的檔案：
+  - controller/HoldingController.java、templates/holding-edit.html、dto/HoldingC
+    reateForm.java、dto/HoldingUpdateForm.java
+  - controller/HoldingControllerTest.java
+  - CsrfProtectionTest 改成測新的表單；HoldingListItem、HoldingService.create 等
+    /api/v1 在用的程式都保留。
+
+  需要你決定：
+  1. 第 1 題的「首頁顯示台北時間」：/
+     改成清單之後，我建議把標題和台北時間搬到清單頁頂端，刪掉 HomeController 和
+     index.html，HomeControllerTest 改成測清單頁。你同意嗎？
+  2. 已經賣光（0 股）的持股：v2
+     會列出來，因為還有已實現損益和股利。網頁也列出來嗎？我建議列出來。
+  3. 新增的代號還沒有持股、第一筆又是賣出時：我打算顯示「目前沒有持股，不能賣出
+     」，標在代號欄位上。你同意嗎？
+
+  目前進度：已完成閱讀和這份提案。實作、測試和 commit
+  訊息都還沒開始，要等額度恢復、你回「同意」（並回答上面三題）之後再做。
+
+● Usage limit reached · continuing automatically at 8:20am · esc to 
+  cancel
+
+✻ Sautéed for 1m 7s · done 上午6:59
+
+> 同意，三題的決定：                                                            
+  1. 同意：標題和台北時間搬到清單頁頂端，刪掉 HomeController 和                 
+  index.html。測試要確認 / 和 /holdings 頂端都顯示台北時間（第 1 題的要求）。   
+  2. 同意列出已賣光的持股，但跟持有中的分開：排在最後、用灰色字（或另一個小標題 
+  「已賣光」）。總計照 ApiV2SummaryResponse，跟 API 一致。                      
+  3. 同意，標在代號欄位。                                                       
+                                                                                
+  一次做完。完成後只回報：跟提案不一樣的地方、需要我決定的事、commit            
+  訊息。全部測試由我自己跑。                                                    
+
+  Ran 5 shell commands (ctrl+o to expand)
+
+● 先回報進度：分支 feature/q6-web-v2
+  已經開好，正在確認錯誤處理的範圍，接著開始寫 controller 和頁面。
+
+  Ran 3 shell commands (ctrl+o to expand)
+
+● Now editing HoldingV2View and the query service.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● No Python; using the Edit tool instead.
+
+  Read 2 files (ctrl+o to expand)
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\dto\HoldingV2View.java)
+  ⎿  Added 4 lines, removed 2 lines
+      12   *
+      13   * @param trades         這檔的全部交易（重播順序）
+      14   * @param replay         重播結果；重播時超賣（資料被手動改過）
+          是 null，代表「資料異常」
+      15 - * @param dividendStatus 股利資料狀態                          
+      15 + * @param dividendStatus   股利資料狀態                        
+      16 + * @param dataErrorTradeId 資料異常時，重播到哪一筆賣出不夠賣（
+         +網頁明細要標出這一筆）；正常時是 null。                        
+      17 + *                         只給網頁用，/api/v2 的 JSON 不含這個
+         +欄位                                                           
+      18   */
+      19  public record HoldingV2View(HoldingQuoteRow row, List<Trade> tr
+          ades, HoldingReplayResult replay,
+      18 -    DividendDataStatus dividendStatus) {                       
+      20 +    DividendDataStatus dividendStatus, Long dataErrorTradeId) {
+      21 
+      22    public HoldingV2View {
+      23      trades = List.copyOf(trades);
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\service\HoldingV2QueryServi
+        ce.java)
+  ⎿  Added 9 lines, removed 11 lines
+      102          .toList());
+      103 
+      104      return withTrades.stream()
+      105 -        .map(row -> {                                         
+      106 -          List<Trade> trades = tradesByHolding.get(row.id()); 
+      107 -          return new HoldingV2View(row, trades,               
+      108 -              replayOrNull(row, trades, eventsByCode.getOrDefa
+          -ult(row.code(), List.of())),                                  
+      109 -              statusByCode.get(row.code()));                  
+      110 -        })                                                    
+      105 +        .map(row -> toView(row, tradesByHolding.get(row.id()),
+      106 +            eventsByCode.getOrDefault(row.code(), List.of()), 
+          +statusByCode.get(row.code())))                                
+      107          .toList();
+      108    }
+      109 
+      110    /**
+      111     * 重播時超賣不往外丟（同 HoldingAssembler）：寫入前都檢查過
+           超賣，讀取時還發生代表資料被手動改過。
+      116 -   * 記 log、回 null 標成「資料異常」，其他持股照常顯示。     
+      112 +   * 記 log、replay 是 null 標成「資料異常」，並記下是哪一筆賣
+          +出（網頁明細要標出來），其他持股照常顯示。                    
+      113     */
+      118 -  private static HoldingReplayResult replayOrNull(HoldingQuote
+          -Row row, List<Trade> trades,                                  
+      119 -      List<DividendEventInput> events) {                      
+      114 +  private static HoldingV2View toView(HoldingQuoteRow row, Lis
+          +t<Trade> trades, List<DividendEventInput> events,             
+      115 +      DividendDataStatus status) {                            
+      116      try {
+      121 -      return HoldingReplayCalculator.replay(row.code(), trades
+          -.stream().map(Trade::toInput).toList(), events,               
+      117 +      HoldingReplayResult replay = HoldingReplayCalculator.rep
+          +lay(row.code(),                                               
+      118 +          trades.stream().map(Trade::toInput).toList(), events
+          +,                                                             
+      119            row.hasClosePrice() ? row.closePrice() : null);
+      120 +      return new HoldingV2View(row, trades, replay, status, nu
+          +ll);                                                          
+      121      } catch (OversellException e) {
+      122        log.warn("持股 {}（id={}）重播交易失敗，資料可能被手動修
+           改：{}", row.code(), row.id(), e.getMessage());
+      125 -      return null;                                            
+      123 +      return new HoldingV2View(row, trades, null, status, e.ge
+          +tTradeId());                                                  
+      124      }
+      125    }
+      126  }
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\dto\TradeCreateForm.java)
+  ⎿  Wrote 95 lines to
+     src\main\java\io\hsiaopingkuo\stockholdings\dto\TradeCreateForm.java
+       1 package io.hsiaopingkuo.stockholdings.dto;
+       2 
+       3 import java.math.BigDecimal;
+       4 import java.time.LocalDate;
+       5 
+       6 import org.springframework.format.annotation.DateTimeFormat;
+       7 
+       8 import io.hsiaopingkuo.stockholdings.calc.TradeSide;
+       9 import jakarta.validation.constraints.NotBlank;
+      10 import jakarta.validation.constraints.NotNull;
+     … +85 lines (ctrl+o to expand)
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\dto\TradeUpdateForm.java)
+  ⎿  Wrote 88 lines to
+     src\main\java\io\hsiaopingkuo\stockholdings\dto\TradeUpdateForm.java
+      1 package io.hsiaopingkuo.stockholdings.dto;
+      2 
+      3 import java.math.BigDecimal;
+      4 import java.time.LocalDate;
+      5 
+      6 import org.springframework.format.annotation.DateTimeFormat;
+      7 
+      8 import io.hsiaopingkuo.stockholdings.entity.Trade;
+      9 import jakarta.validation.constraints.NotNull;
+     … +79 lines (ctrl+o to expand)
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\dto\HoldingPageRow.java)
+  ⎿  Wrote 64 lines to
+     src\main\java\io\hsiaopingkuo\stockholdings\dto\HoldingPageRow.java
+       1 package io.hsiaopingkuo.stockholdings.dto;
+       2 
+       3 import java.time.LocalDate;
+       4 
+       5 import io.hsiaopingkuo.stockholdings.calc.DividendDataStatus;
+       6 import io.hsiaopingkuo.stockholdings.calc.V1Compatibility;
+       7 
+       8 /**
+       9  * 網頁清單、明細頁的一檔持股（第 6 題）。
+      10  * 數字直接用 /api/v2 的 ApiV2HoldingResponse（已捨入到元、價格
+     … +55 lines (~1 KB) (ctrl+o to expand)
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\dto\DividendRow.java)
+  ⎿  Wrote 38 lines to
+     src\main\java\io\hsiaopingkuo\stockholdings\dto\DividendRow.java
+       1 package io.hsiaopingkuo.stockholdings.dto;
+       2 
+       3 import io.hsiaopingkuo.stockholdings.calc.DividendDetail;
+       4 
+       5 /**
+       6  * 網頁明細頁的一次除權息（第 6 題）。現金股利用和 /api/v2 相同
+         的整數元。
+       7  */
+       8 public record DividendRow(DividendDetail detail) {
+       9 
+     … +29 lines (ctrl+o to expand)
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\controller\StockLookupContro
+       ller.java)
+  ⎿  Wrote 62 lines to src\main\java\io\hsiaopingkuo\stockholdings\controll
+     er\StockLookupController.java
+       1 package io.hsiaopingkuo.stockholdings.controller;
+       2 
+       3 import java.util.regex.Pattern;
+       4 
+       5 import org.springframework.http.HttpStatus;
+       6 import org.springframework.http.MediaType;
+       7 import org.springframework.http.ResponseEntity;
+       8 import org.springframework.web.bind.annotation.GetMapping;
+       9 import org.springframework.web.bind.annotation.RequestParam;
+      10 import org.springframework.web.bind.annotation.RestController;
+     … +52 lines (ctrl+o to expand)
+
+● 進度：資料模型和代號查詢的 controller 寫好了，現在寫主要的網頁 controller。
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\controller\HoldingWebControl
+       ler.java)
+  ⎿  Wrote 348 lines to src\main\java\io\hsiaopingkuo\stockholdings\control
+     ler\HoldingWebController.java
+       1 package io.hsiaopingkuo.stockholdings.controller;
+       2 
+       3 import java.time.Clock;
+       4 import java.time.LocalDateTime;
+       5 import java.time.format.DateTimeFormatter;
+       6 import java.util.ArrayList;
+       7 import java.util.List;
+       8 import java.util.Locale;
+       9 import java.util.Objects;
+      10 import java.util.UUID;
+     … +338 lines (ctrl+o to expand)
+
+● Now the list template.
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\controller\HoldingWebContro
+        ller.java)  ⎿  Added 7 lines, removed 3 lines
+      156      // 只讀資料庫（行情快取、交易、除權息），不呼叫官方：官方
+           連不上時清單照常顯示
+      157      List<HoldingV2View> views = queryService.findAll();
+      158      List<HoldingPageRow> rows = views.stream().map(HoldingPage
+           Row::of).toList();
+      159 -    // 使用者決定：已賣光的排在最後、另外一個小標題；查詢已依 
+          -代號排序，兩組各自保持代號順序                                
+      160 -    model.addAttribute("holdings", rows.stream().filter(r -> !
+          -r.soldOut()).toList());                                       
+      161 -    model.addAttribute("soldOut", rows.stream().filter(Holding
+          -PageRow::soldOut).toList());                                  
+      159 +    // 使用者決定：已賣光的排在最後，前面加一列小標題「已賣光 
+          +」、灰字；查詢已依代號排序，兩組各自保持代號順序              
+      160 +    List<HoldingPageRow> ordered = new ArrayList<>(rows.stream
+          +().filter(r -> !r.soldOut()).toList());                       
+      161 +    List<HoldingPageRow> soldOut = rows.stream().filter(Holdin
+          +gPageRow::soldOut).toList();                                  
+      162 +    ordered.addAll(soldOut);                                  
+      163 +    model.addAttribute("holdings", ordered);                  
+      164 +    // 第一筆已賣光的位置：畫面在這一列前面插入小標題         
+      165 +    model.addAttribute("soldOutStart", ordered.size() - soldOu
+          +t.size());                                                    
+      166      // 總計和 /api/v2/summary 同一份算法，網頁和 App 2.0 的總
+           計一定相同
+      167      model.addAttribute("summary", ApiV2SummaryResponse.from(vi
+           ews));
+      168      Object oversellCode = model.getAttribute("oversellCode");
+
+● Write(src\main\resources\templates\holdings.html)
+  ⎿  Added 116 lines, removed 68 lines
+      3  <head>
+      4    <meta charset="UTF-8">
+      5    <meta name="viewport" content="width=device-width, initial-sca
+         le=1">
+      6 -  <title>持股清單 - 持股記帳</title>                            
+      6 +  <title>持股記帳</title>                                       
+      7    <style>
+      8      table { border-collapse: collapse; }
+      9      th, td { border: 1px solid #999; padding: 4px 10px; }
+     ...
+      15      .hint.found { color: #036; font-weight: bold; }
+      16      .hint.muted { color: #888; }
+      17      .hint.error { color: #c00; }
+      18 -    form.inline { display: inline; }                           
+      19 -    /* 第 4 題：台股慣例紅色是賺、綠色是虧；不沿用 .error，那是
+         -「錯誤」的意思 */                                              
+      18 +    /* 台股慣例紅色是賺、綠色是虧；不沿用 .error，那是「錯誤」 
+         +的意思 */                                                      
+      19      .gain { color: #d00; }
+      20      .loss { color: #080; }
+      21 +    /* 使用者決定：已賣光的持股排在最後、灰字 */               
+      22 +    tr.sold-out td { color: #999; }                            
+      23 +    tr.section th { text-align: left; background: #eee; }      
+      24    </style>
+      25  </head>
+      26  <body>
+      27    <h1>持股記帳</h1>
+      26 -  <p><a th:href="@{/}">回首頁</a></p>                          
+      28 +  <!-- 第 1 題：標題和台北時間（第 6 題首頁改成清單頁，從 index
+         +.html 搬過來） -->                                             
+      29 +  <p>目前時間：<span id="now" th:data-epoch-millis="${nowEpochM
+         +illis}" th:text="${now}">2026-01-01 00:00:00</span>（台北時間）
+         +</p>                                                           
+      30 
+      28 -  <p class="message" th:if="${message}" th:text="${message}">已
+         -新增 2330</p>                                                  
+      31 +  <p class="message" th:if="${message}" th:text="${message}">已
+         +新增 2330 買進 1,000 股</p>                                    
+      32    <p class="error" th:if="${errorMessage}" th:text="${errorMess
+          age}">找不到這筆持股</p>
+      33 
+      31 -  <!-- 第 4 題：總計。數字由 SummaryCalculator 算好，這裡只負責
+         -格式和顏色。                                                   
+      32 -       trend：盈虧 > 0 是 gain（紅）、< 0 是 loss（綠）、= 0 不
+         -上色；收益率跟著盈虧的顏色。                                   
+      33 -       全部持股都沒有收盤價時，市值、盈虧、收益率還算不出來，顯
+         -示「—」不上色（計算類別照規格仍是 0） -->                      
+      34 +  <!-- 總計：和 /api/v2/summary 同一份數字（每一檔已捨入到元再 
+         +加總），資料異常的不計入 -->                                   
+      35    <h2>總計</h2>
+      35 -  <table id="summary"                                          
+      36 -      th:with="s=${summary}, unknown=${summary.allMissingClose(
+         -)},                                                            
+      37 -        trend=${summary.allMissingClose() ? '' : (summary.profi
+         -t.signum() > 0 ? 'gain' : (summary.profit.signum() < 0 ? 'loss'
+         - : ''))}">                                                     
+      36 +  <table id="summary" th:with="s=${summary}">                  
+      37      <thead>
+      39 -      <tr><th>總成本</th><th>市值</th><th>盈虧</th><th>收益率</
+         -th></tr>                                                       
+      38 +      <tr><th>總成本</th><th>市值</th><th>未實現損益</th><th>已
+         +實現損益</th><th>累計現金股利</th><th>含息總報酬</th></tr>     
+      39      </thead>
+      40      <tbody>
+      41        <tr>
+      43 -        <td id="summary-total-cost" class="num" th:text="${#num
+         -bers.formatInteger(s.totalCost, 1, 'COMMA')}">1,301,852</td>   
+      44 -        <td id="summary-market-value" class="num"              
+      45 -            th:text="${unknown} ? '—' : ${#numbers.formatIntege
+         -r(s.marketValue, 1, 'COMMA')}">1,391,000</td>                  
+      46 -        <td id="summary-profit" class="num" th:classappend="${t
+         -rend}"                                                         
+      47 -            th:text="${unknown} ? '—' : ${#numbers.formatIntege
+         -r(s.profit, 1, 'COMMA')}">83,576</td>                          
+      48 -        <td id="summary-return-rate" class="num" th:classappend
+         -="${trend}"                                                    
+      49 -            th:text="${unknown} ? '—' : |${#numbers.formatDecim
+         -al(s.returnRate, 1, 'COMMA', 2, 'POINT')}%|">6.42%</td>        
+      42 +        <td id="summary-total-cost" class="num" th:text="${#num
+         +bers.formatInteger(s.totalCost, 1, 'COMMA')}">1,001,425</td>   
+      43 +        <td id="summary-market-value" class="num" th:text="${#n
+         +umbers.formatInteger(s.marketValue, 1, 'COMMA')}">1,100,000</td
+         +>                                                              
+      44 +        <td id="summary-unrealized" class="num"                
+      45 +            th:classappend="${s.unrealizedPnl > 0 ? 'gain' : (s
+         +.unrealizedPnl < 0 ? 'loss' : '')}"                            
+      46 +            th:text="${#numbers.formatInteger(s.unrealizedPnl, 
+         +1, 'COMMA')}">93,708</td>                                      
+      47 +        <td id="summary-realized" class="num"                  
+      48 +            th:classappend="${s.realizedPnl > 0 ? 'gain' : (s.r
+         +ealizedPnl < 0 ? 'loss' : '')}"                                
+      49 +            th:text="${#numbers.formatInteger(s.realizedPnl, 1,
+         + 'COMMA')}">93,708</td>                                        
+      50 +        <td id="summary-cash-dividends" class="num" th:text="${
+         +#numbers.formatInteger(s.cashDividends, 1, 'COMMA')}">10,000</t
+         +d>                                                             
+      51 +        <td id="summary-total-return" class="num"              
+      52 +            th:classappend="${s.totalReturn > 0 ? 'gain' : (s.t
+         +otalReturn < 0 ? 'loss' : '')}"                                
+      53 +            th:text="${#numbers.formatInteger(s.totalReturn, 1,
+         + 'COMMA')}">197,416</td>                                       
+      54        </tr>
+      55      </tbody>
+      56    </table>
+      53 -  <p class="note" id="summary-note" th:if="${summary.allMissing
+         -Close()}">所有持股都還沒取得收盤價</p>                         
+      54 -  <p class="note" id="summary-note" th:if="${!summary.allMissin
+         -gClose() and summary.missingCloseCount > 0}"                   
+      55 -      th:text="|${summary.missingCloseCount} 筆未取得收盤價，不
+         -計入市值與盈虧|">1 筆未取得收盤價，不計入市值與盈虧</p>        
+      57 +  <p class="note" id="summary-quote-missing" th:if="${summary.q
+         +uoteMissing > 0}"                                              
+      58 +      th:text="|${summary.quoteMissing} 檔未取得收盤價，市值、 
+         +未實現損益、含息總報酬不含這幾檔|">1 檔未取得收盤價</p>        
+      59 +  <p class="note" id="summary-dividend-pending" th:if="${summar
+         +y.dividendPending > 0}"                                        
+      60 +      th:text="|${summary.dividendPending} 檔股利資料更新中，稍
+         +後重新整理|">1 檔股利資料更新中</p>                            
+      61 +  <p class="error" id="summary-data-error" th:if="${summary.dat
+         +aError > 0}"                                                   
+      62 +      th:text="|${summary.dataError} 檔資料異常，不計入總計|">1
+         + 檔資料異常，不計入總計</p>                                    
+      63 
+      57 -  <h2>新增持股</h2>                                            
+      64 +  <h2>新增交易</h2>                                            
+      65    <!-- 欄位用 text 而不是 number：檢查規則以伺服器為準，錯誤訊
+          息統一顯示在表單上 -->
+      59 -  <form th:action="@{/holdings}" th:object="${createForm}" meth
+         -od="post">                                                     
+      66 +  <form id="create-form" th:action="@{/holdings/trades}" th:obj
+         +ect="${createForm}" method="post">                             
+      67 +    <!-- 一次性編號：連按兩下送出只會新增一次 -->              
+      68 +    <input type="hidden" th:field="*{requestId}">              
+      69 +    <p class="error" th:if="${#fields.hasGlobalErrors()}">     
+      70 +      <th:block th:each="err : ${#fields.globalErrors()}" th:te
+         +xt="${err}">錯誤</th:block>                                    
+      71 +      <!-- 新增時超賣：清單頁沒有交易清單，連到明細頁標出是哪幾
+         +筆 -->                                                         
+      72 +      <a th:if="${oversellHoldingId != null}"                  
+      73 +          th:href="@{/holdings/{id}(id=${oversellHoldingId}, ma
+         +rk=${oversellMarks})}">查看交易</a>                            
+      74 +    </p>                                                       
+      75      <p>
+      76        <label>股票代號 <input type="text" th:field="*{code}" max
+          length="20" placeholder="例：2330" autocomplete="off"></label>
+      77        <!-- 輸入代號時即時顯示名稱與市場（下方 script 填入）；只
+          是提示，按下新增時伺服器仍會重新檢查 -->
+     ...
+       79        <span class="error" th:if="${#fields.hasErrors('code')}"
+            th:errors="*{code}">錯誤</span>
+       80      </p>
+       81      <p>
+       67 -      <label>張數 <input type="text" th:field="*{lots}" inputm
+          -ode="numeric" placeholder="1～999"></label>                   
+       68 -      <span class="error" th:if="${#fields.hasErrors('lots')}"
+          - th:errors="*{lots}">錯誤</span>                              
+       82 +      <label><input type="radio" th:field="*{side}" value="BUY
+          +"> 買進</label>                                               
+       83 +      <label><input type="radio" th:field="*{side}" value="SEL
+          +L"> 賣出</label>                                              
+       84 +      <span class="error" th:if="${#fields.hasErrors('side')}"
+          + th:errors="*{side}">錯誤</span>                              
+       85      </p>
+       86      <p>
+       71 -      <label>買進價 <input type="text" th:field="*{buyPrice}" 
+          -inputmode="decimal" placeholder="每股價格"></label>           
+       72 -      <span class="error" th:if="${#fields.hasErrors('buyPrice
+          -')}" th:errors="*{buyPrice}">錯誤</span>                      
+       87 +      <label>日期 <input type="date" th:field="*{date}"></labe
+          +l>                                                            
+       88 +      <span class="error" th:if="${#fields.hasErrors('date')}"
+          + th:errors="*{date}">錯誤</span>                              
+       89      </p>
+       90 +    <p>                                                       
+       91 +      <label>股數 <input type="text" th:field="*{shares}" inpu
+          +tmode="numeric" placeholder="例：1000（零股也可以）"></label> 
+       92 +      <span class="error" th:if="${#fields.hasErrors('shares')
+          +}" th:errors="*{shares}">錯誤</span>                          
+       93 +    </p>                                                      
+       94 +    <p>                                                       
+       95 +      <label>價格 <input type="text" th:field="*{price}" input
+          +mode="decimal" placeholder="每股成交價"></label>              
+       96 +      <span class="error" th:if="${#fields.hasErrors('price')}
+          +" th:errors="*{price}">錯誤</span>                            
+       97 +    </p>                                                      
+       98      <button type="submit">新增</button>
+       99    </form>
+      100 
+      101    <h2>持股清單</h2>
+      102    <p th:if="${#lists.isEmpty(holdings)}">目前沒有持股。</p>
+       79 -  <table th:unless="${#lists.isEmpty(holdings)}">             
+      103 +  <table id="holdings" th:unless="${#lists.isEmpty(holdings)}"
+          +>                                                             
+      104      <thead>
+       81 -      <tr><th>股票代號</th><th>名稱</th><th>市場</th><th>張數<
+          -/th><th>買進價</th><th>收盤價</th><th>收盤價日期</th><th>盈虧<
+          -/th><th>收益率</th><th>操作</th></tr>                         
+      105 +      <tr><th>股票代號</th><th>名稱</th><th>總股數</th><th>平 
+          +均成本</th><th>收盤價</th><th>收盤價日期</th>                 
+      106 +        <th>市值</th><th>未實現損益</th><th>已實現損益</th><th
+          +>累計現金股利</th><th>含息總報酬</th><th>操作</th></tr>       
+      107      </thead>
+      108      <tbody>
+       84 -      <!-- th:block 只負責重複，本身不輸出標籤：每檔依狀態輸出
+          -「資料異常」或一般的那一列 -->                                
+       85 -      <th:block th:each="h : ${holdings}">                    
+       86 -      <!-- 第 6 題：重播交易失敗（資料被手動改過）的持股：數字
+          -都算不出來，只顯示代號、名稱和「資料異常」，不計入總計 -->    
+       87 -      <tr th:if="${h.dataError}" class="data-error">          
+       88 -        <td th:text="${h.code}">2330</td>                     
+       89 -        <td><th:block th:text="${h.name} ?: '—'">台積電</th:bl
+          -ock> <strong class="error">資料異常</strong></td>             
+       90 -        <td th:text="${h.market} != null ? ${h.market.label} :
+          - '—'">上市</td>                                               
+       91 -        <td>—</td><td>—</td><td>—</td><td></td><td>—</td><td>—
+          -</td><td></td>                                                
+      109 +      <th:block th:each="h, iter : ${holdings}" th:with="n=${h
+          +.numbers}">                                                   
+      110 +      <!-- 已賣光的排在最後，前面加一列小標題 -->             
+      111 +      <tr class="section" th:if="${iter.index == soldOutStart}
+          +"><th colspan="12">已賣光</th></tr>                           
+      112 +      <!-- 資料異常（重播交易時超賣，資料被手動改過）：數字都 
+          +算不出來，只顯示代號、名稱和「資料異常」，不計入總計 -->      
+      113 +      <tr th:if="${h.dataError()}" class="data-error">        
+      114 +        <td th:text="${n.code}">2330</td>                     
+      115 +        <td><th:block th:text="${n.name} ?: '—'">台積電</th:bl
+          +ock> <strong class="error">資料異常</strong></td>             
+      116 +        <td>—</td><td>—</td><td>—</td><td></td><td>—</td><td>—
+          +</td><td>—</td><td>—</td><td>—</td>                           
+      117 +        <td><a th:href="@{/holdings/{id}(id=${n.id})}">查看交 
+          +易</a></td>                                                   
+      118        </tr>
+       93 -      <!-- trend：這一列盈虧的顏色（同總計的規則）；沒有收盤價
+          -時沒有盈虧，不上色。                                          
+       94 -           th:unless 比 th:with 先執行，資料異常的列（profit  
+          -是 null）不會走到這裡 -->                                     
+       95 -      <tr th:unless="${h.dataError}"                          
+       96 -          th:with="p=${h.profit},                             
+       97 -            trend=${!h.profit.hasClosePrice() ? '' : (h.profit
+          -.profit.signum() > 0 ? 'gain' : (h.profit.profit.signum() < 0 
+          -? 'loss' : ''))}">                                            
+       98 -        <td th:text="${h.code}">2330</td>                     
+       99 -        <!-- 第 2 題時存的舊資料沒有名稱和市場（NULL），顯示「
+          -—」。                                                         
+      100 -             第 6 題：有零股時名稱旁加小字，張數欄只顯示整張，
+          -提醒還在用 App 1.0 的使用者更新 -->                           
+      101 -        <td><th:block th:text="${h.name} ?: '—'">台積電</th:bl
+          -ock><small class="note odd-lot" th:if="${h.oddLotNote() != nul
+          -l}" th:text="| ${h.oddLotNote()}|">含零股 500 股・App 1.0 只顯
+          -示整張，請更新 App 2.0</small></td>                           
+      102 -        <td th:text="${h.market} != null ? ${h.market.label} :
+          - '—'">上市</td>                                               
+      103 -        <td class="num" th:text="${h.lots}">1</td>            
+      104 -        <!-- 買進價固定顯示兩位小數、加千分位 -->             
+      105 -        <td class="num" th:text="${#numbers.formatDecimal(h.bu
+          -yPrice, 1, 'COMMA', 2, 'POINT')}">1,000.00</td>               
+      119 +      <tr th:unless="${h.dataError()}" th:classappend="${h.sol
+          +dOut()} ? 'sold-out'">                                        
+      120 +        <td th:text="${n.code}">2330</td>                     
+      121 +        <td>                                                  
+      122 +          <th:block th:text="${n.name} ?: '—'">台積電</th:bloc
+          +k>                                                            
+      123 +          <!-- 第 3 階段的零股提示：還在用 App 1.0 的使用者只 
+          +看得到整張 -->                                                
+      124 +          <br th:if="${h.oddLotNote() != null}">              
+      125 +          <small class="note odd-lot" th:if="${h.oddLotNote() 
+          +!= null}" th:text="${h.oddLotNote()}">含零股 500 股・App 1.0  
+          +只顯示整張，請更新 App 2.0</small>                            
+      126 +          <br th:if="${h.dividendPending()}">                 
+      127 +          <small class="note dividend-pending" th:if="${h.divi
+          +dendPending()}">股利資料更新中</small>                        
+      128 +        </td>                                                 
+      129 +        <td class="num" th:text="${#numbers.formatInteger(n.sh
+          +ares, 1, 'COMMA')}">1,000</td>                                
+      130 +        <!-- 已賣光沒有平均成本 -->                           
+      131 +        <td class="num" th:text="${n.averageCost} != null ? ${
+          +#numbers.formatDecimal(n.averageCost, 1, 'COMMA', 2, 'POINT')}
+          + : '—'">1,001.43</td>                                         
+      132          <!-- 收盤價：沒有行情或從沒成交過顯示「未取得」，日期
+           留空 -->
+      133          <td class="num" th:if="${h.hasClosePrice()}"
+      108 -            th:text="${#numbers.formatDecimal(h.closePrice, 1,
+          - 'COMMA', 2, 'POINT')}">2,030.00</td>                         
+      134 +            th:text="${#numbers.formatDecimal(n.currentPrice, 
+          +1, 'COMMA', 2, 'POINT')}">1,100.00</td>                       
+      135          <td th:unless="${h.hasClosePrice()}">未取得</td>
+      136          <td>
+      111 -          <span th:if="${h.hasClosePrice()}" th:text="${h.clos
+          -eDate}">2026-11-23</span>                                     
+      137 +          <span th:if="${h.hasClosePrice()}" th:text="${n.pric
+          +eDate}">2026-11-23</span>                                     
+      138            <!-- 最近交易日沒成交：顯示的是更早一天的收盤價，提
+           示使用者 -->
+      139            <br th:if="${h.showsEarlierClose()}">
+      140            <small class="note" th:if="${h.showsEarlierClose()}"
+      115 -              th:text="|${h.latestTradeDate} 無成交，顯示 ${h.
+          -closeDate} 收盤價|">2026-11-24 無成交，顯示 2026-11-23 收盤價<
+          -/small>                                                       
+      141 +              th:text="|${h.latestTradeDate()} 無成交，顯示 ${
+          +h.closeDate()} 收盤價|">2026-11-24 無成交，顯示 2026-11-23 收 
+          +盤價</small>                                                  
+      142          </td>
+      117 -        <!-- 第 4 題：盈虧加千分位、收益率加 %；沒有收盤價時兩
+          -格都顯示「—」 -->                                             
+      118 -        <td class="num profit" th:classappend="${trend}"      
+      119 -            th:text="${p.hasClosePrice()} ? ${#numbers.formatI
+          -nteger(p.profit, 1, 'COMMA')} : '—'">93,708</td>              
+      120 -        <td class="num rate" th:classappend="${trend}"        
+      121 -            th:text="${p.hasClosePrice()} ? |${#numbers.format
+          -Decimal(p.returnRate, 1, 'COMMA', 2, 'POINT')}%| : '—'">9.36%<
+          -/td>                                                          
+      122 -        <td>                                                  
+      123 -          <a th:href="@{/holdings/{id}/edit(id=${h.id})}">修改
+          -</a>                                                          
+      124 -          <form class="inline" th:action="@{/holdings/{id}/del
+          -ete(id=${h.id})}" method="post"                               
+      125 -              th:attr="data-code=${h.code}"                   
+      126 -              onsubmit="return confirm('確定要刪除 ' + this.da
+          -taset.code + ' 嗎？');">                                      
+      127 -            <button type="submit">刪除</button>               
+      128 -          </form>                                             
+      129 -        </td>                                                 
+      143 +        <!-- 市值、未實現：沒有收盤價時算不出來，顯示「—」；已
+          +賣光是 0 -->                                                  
+      144 +        <td class="num" th:text="${n.marketValue} != null ? ${
+          +#numbers.formatInteger(n.marketValue, 1, 'COMMA')} : '—'">1,10
+          +0,000</td>                                                    
+      145 +        <td class="num" th:classappend="${n.unrealizedPnl != n
+          +ull and n.unrealizedPnl > 0 ? 'gain' : (n.unrealizedPnl != nul
+          +l and n.unrealizedPnl < 0 ? 'loss' : '')}"                    
+      146 +            th:text="${n.unrealizedPnl} != null ? ${#numbers.f
+          +ormatInteger(n.unrealizedPnl, 1, 'COMMA')} : '—'">93,708</td> 
+      147 +        <td class="num" th:classappend="${n.realizedPnl > 0 ? 
+          +'gain' : (n.realizedPnl < 0 ? 'loss' : '')}"                  
+      148 +            th:text="${#numbers.formatInteger(n.realizedPnl, 1
+          +, 'COMMA')}">93,708</td>                                      
+      149 +        <td class="num" th:text="${#numbers.formatInteger(n.ca
+          +shDividends, 1, 'COMMA')}">10,000</td>                        
+      150 +        <td class="num" th:classappend="${n.totalReturn != nul
+          +l and n.totalReturn > 0 ? 'gain' : (n.totalReturn != null and 
+          +n.totalReturn < 0 ? 'loss' : '')}"                            
+      151 +            th:text="${n.totalReturn} != null ? ${#numbers.for
+          +matInteger(n.totalReturn, 1, 'COMMA')} : '—'">197,416</td>    
+      152 +        <td><a th:href="@{/holdings/{id}(id=${n.id})}">查看交 
+          +易</a></td>                                                   
+      153        </tr>
+      154        </th:block>
+      155      </tbody>
+      156    </table>
+      157 
+      158    <script>
+      136 -    // 輸入股票代號時，在欄位旁顯示名稱與市場。               
+      159 +    // 第 1 題：伺服器先算好台北時間顯示出來（關掉 JS 也看得到
+          +）；JS 只負責讓它每秒往前走                                   
+      160 +    (function () {                                            
+      161 +      var el = document.getElementById('now');                
+      162 +      // 伺服器時間和瀏覽器時鐘的差距：使用者電腦時間不準時， 
+          +仍以伺服器時間為準                                            
+      163 +      var offset = Number(el.dataset.epochMillis) - Date.now()
+          +;                                                             
+      164 +      // 固定用台北時區格式化，使用者人在國外、電腦時區不同也 
+          +一樣顯示台北時間                                              
+      165 +      var formatter = new Intl.DateTimeFormat('zh-TW', {      
+      166 +        timeZone: 'Asia/Taipei', hourCycle: 'h23',            
+      167 +        year: 'numeric', month: '2-digit', day: '2-digit',    
+      168 +        hour: '2-digit', minute: '2-digit', second: '2-digit' 
+      169 +      });                                                     
+      170 +                                                              
+      171 +      function render() {                                     
+      172 +        var p = {};                                           
+      173 +        formatter.formatToParts(new Date(Date.now() + offset))
+          +.forEach(function (part) {                                    
+      174 +          p[part.type] = part.value;                          
+      175 +        });                                                   
+      176 +        // 組成跟伺服器一樣的 yyyy-MM-dd HH:mm:ss 格式        
+      177 +        el.textContent = p.year + '-' + p.month + '-' + p.day 
+          ++ ' '                                                         
+      178 +            + p.hour + ':' + p.minute + ':' + p.second;       
+      179 +      }                                                       
+      180 +                                                              
+      181 +      setInterval(render, 1000);                              
+      182 +    })();                                                     
+      183 +                                                              
+      184 +    // 輸入股票代號時，在欄位旁顯示名稱與市場（第 3 題，原樣沿
+          +用，含 F-04 的處理）。                                        
+      185      // 觸發時機：停止輸入 0.5 秒後，或游標離開欄位時；同一個代
+           號不重複查（伺服器端另有 10 分鐘快取）。
+      186      (function () {
+      187        var input = document.getElementById('code');
+
+● Now the detail page template.
+
+● Write(src\main\resources\templates\holding-detail.html)
+  ⎿  Wrote 168 lines to src\main\resources\templates\holding-detail.html
+       1 <!DOCTYPE html>
+       2 <html lang="zh-Hant" xmlns:th="http://www.thymeleaf.org">
+       3 <head>
+       4   <meta charset="UTF-8">
+       5   <meta name="viewport" content="width=device-width, initial-sca
+         le=1">
+       6   <title th:text="|${h.numbers.code} 交易明細 - 持股記帳|">2330
+         交易明細 - 持股記帳</title>
+       7   <style>
+       8     table { border-collapse: collapse; }
+     … +160 lines (ctrl+o to expand)
+
+● Write(src\main\resources\messages.properties)
+  ⎿  Added 7 lines, removed 3 lines
+      1 -# 表單欄位型別轉換失敗時（例如張數填 1.5、買進價填 abc）顯示的訊
+        -息                                                              
+      1 +# 表單欄位型別轉換失敗時（例如股數填 1.5、價格填 abc）顯示的訊息
+      2  # 沒有這個檔案的話，畫面會出現 Spring 內建的英文技術訊息
+      3 -typeMismatch.lots=張數必須是 1～999 的整數                      
+      4 -typeMismatch.buyPrice=買進價必須是數字                          
+      3 +# 第 6 題：新增、修改交易表單共用同樣的欄位名稱（1.0 的 lots、bu
+        +yPrice 已隨 1.0 網頁刪除）                                      
+      4 +typeMismatch.shares=股數必須是大於 0 的整數                     
+      5 +typeMismatch.price=價格必須是數字                               
+      6 +typeMismatch.date=日期格式不對，請用 yyyy-MM-dd                 
+      7 +typeMismatch.side=請選擇買進或賣出                              
+      8 +typeMismatch.version=表單已過期，請重新整理後再送出             
+
+● Bash(git rm -q src/main/java/io/hsiaopingkuo/stockholdings/controller/HoldingC
+      ontroller.java
+      src/main/java/io/hsiaopingkuo/stockholdings/controller/HomeController.ja…)
+  ⎿  src/main/java/io/hsiaopingkuo/stockholdings/controller/HoldingWebContr
+     oller.java:55: * 2.0 網頁（第 6 題）：持股清單、單筆明細、交易的新增、
+     修改、刪除。取代 1.0 的 HoldingController。
+     … +14 lines (ctrl+o to expand)
+  ⎿  Deleted src\main\java\io\hsiaopingkuo\stockholdings\controller\Holding
+     Controller.java -224
+        1 -package io.hsiaopingkuo.stockholdings.controller;             
+        2 -                                                              
+        3 -import java.util.List;                                        
+        4 -import java.util.regex.Pattern;                               
+        5 -                                                              
+        6 -import org.springframework.beans.propertyeditors.StringTrimmer
+          -Editor;                                                       
+        7 -import org.springframework.http.HttpStatus;                   
+        8 -import org.springframework.http.MediaType;                    
+        9 -import org.springframework.http.ResponseEntity;               
+       10 -import org.springframework.stereotype.Controller;             
+       11 -import org.springframework.ui.Model;                          
+       12 -import org.springframework.validation.BindingResult;          
+       13 -import org.springframework.web.bind.WebDataBinder;            
+       14 -import org.springframework.web.bind.annotation.ExceptionHandle
+          -r;                                                            
+       15 -import org.springframework.web.bind.annotation.GetMapping;    
+       16 -import org.springframework.web.bind.annotation.InitBinder;    
+       17 -import org.springframework.web.bind.annotation.ModelAttribute;
+       18 -import org.springframework.web.bind.annotation.PathVariable;  
+       19 -import org.springframework.web.bind.annotation.PostMapping;   
+       20 -import org.springframework.web.bind.annotation.RequestMapping;
+       21 -import org.springframework.web.bind.annotation.RequestParam;  
+       22 -import org.springframework.web.bind.annotation.ResponseBody;  
+       23 -import org.springframework.web.servlet.mvc.support.RedirectAtt
+          -ributes;                                                      
+       24 -                                                              
+       25 -import io.hsiaopingkuo.stockholdings.dto.ErrorResponse;       
+       26 -import io.hsiaopingkuo.stockholdings.dto.HoldingCreateForm;   
+       27 -import io.hsiaopingkuo.stockholdings.dto.HoldingListItem;     
+       28 -import io.hsiaopingkuo.stockholdings.dto.StockLookupResponse; 
+       29 -import io.hsiaopingkuo.stockholdings.dto.HoldingUpdateForm;   
+       30 -import io.hsiaopingkuo.stockholdings.entity.Holding;          
+       31 -import io.hsiaopingkuo.stockholdings.exception.DuplicateCodeEx
+          -ception;                                                      
+       32 -import io.hsiaopingkuo.stockholdings.exception.HoldingBusyExce
+          -ption;                                                        
+       33 -import io.hsiaopingkuo.stockholdings.exception.HoldingDataExce
+          -ption;                                                        
+       34 -import io.hsiaopingkuo.stockholdings.exception.HoldingNotFound
+          -Exception;                                                    
+       35 -import io.hsiaopingkuo.stockholdings.exception.MarketAmbiguous
+          -Exception;                                                    
+       36 -import io.hsiaopingkuo.stockholdings.exception.MarketUnavailab
+          -leException;                                                  
+       37 -import io.hsiaopingkuo.stockholdings.exception.StockCodeNotFou
+          -ndException;                                                  
+       38 -import io.hsiaopingkuo.stockholdings.exception.UpgradeRequired
+          -Exception;                                                    
+       39 -import io.hsiaopingkuo.stockholdings.quote.StockLookup;       
+       40 -import io.hsiaopingkuo.stockholdings.service.HoldingService;  
+     … +184 lines (ctrl+o to expand)
+  ⎿  Deleted src\main\java\io\hsiaopingkuo\stockholdings\controller\HomeCon
+     troller.java -32
+       1 -package io.hsiaopingkuo.stockholdings.controller;              
+       2 -                                                               
+       3 -import java.time.Clock;                                        
+       4 -import java.time.LocalDateTime;                                
+       5 -import java.time.format.DateTimeFormatter;                     
+       6 -                                                               
+       7 -import org.springframework.stereotype.Controller;              
+       8 -import org.springframework.ui.Model;                           
+       9 -import org.springframework.web.bind.annotation.GetMapping;     
+      10 -                                                               
+      11 -/** 首頁：顯示標題與目前的台北時間。 */                        
+      12 -@Controller                                                    
+      13 -public class HomeController {                                  
+      14 -                                                               
+      15 -        private static final DateTimeFormatter FORMAT = DateTim
+         -eFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");                   
+      16 -                                                               
+      17 -        private final Clock clock;                             
+      18 -                                                               
+      19 -        // 用建構子注入 Clock，測試時可以塞固定時間進來        
+      20 -        public HomeController(Clock clock) {                   
+      21 -                this.clock = clock;                            
+      22 -        }                                                      
+      23 -                                                               
+      24 -        @GetMapping("/")                                       
+      25 -        public String home(Model model) {                      
+      26 -                // 一定要傳 clock，不能用沒參數的 now()，否則會
+         -拿到主機時區（海外）的時間                                     
+      27 -                model.addAttribute("now", LocalDateTime.now(clo
+         -ck).format(FORMAT));                                           
+      28 -                // 給頁面上的 JS 當基準，讓時間以「伺服器時間」
+         -為準每秒往前走，不依賴使用者電腦的時鐘                         
+      29 -                model.addAttribute("nowEpochMillis", clock.mill
+         -is());                                                         
+      30 -                return "index";                                
+      31 -        }                                                      
+      32 -}                                                              
+  ⎿  Deleted
+     src\main\java\io\hsiaopingkuo\stockholdings\dto\HoldingCreateForm.java
+     -61
+       1 -package io.hsiaopingkuo.stockholdings.dto;                     
+       2 -                                                               
+       3 -import java.math.BigDecimal;                                   
+       4 -                                                               
+       5 -import jakarta.validation.constraints.DecimalMin;              
+       6 -import jakarta.validation.constraints.Digits;                  
+       7 -import jakarta.validation.constraints.Max;                     
+       8 -import jakarta.validation.constraints.Min;                     
+       9 -import jakarta.validation.constraints.NotBlank;                
+      10 -import jakarta.validation.constraints.NotNull;                 
+      11 -import jakarta.validation.constraints.Pattern;                 
+      12 -import jakarta.validation.constraints.Size;                    
+      13 -                                                               
+      14 -/**                                                            
+      15 - * 網頁「新增持股」表單。                                      
+      16 - * 檢查規則對應題目第 2 題，上限也對齊資料表欄位長度，太長的輸 
+         -入在這裡就擋掉，不會到資料庫才出錯。                           
+      17 - * 前後空白由 controller 的 StringTrimmerEditor 先去掉，所以這 
+         -裡看到的已經是修剪過的值。                                     
+      18 - */                                                            
+      19 -public class HoldingCreateForm {                               
+      20 -                                                               
+      21 -        @NotBlank(message = "請輸入股票代號")                  
+      22 -        @Size(max = 10, message = "股票代號最多 10 個字")      
+      23 -        @Pattern(regexp = "^[A-Za-z0-9]+$", message = "股票代號
+         -只能是英文字母或數字")                                         
+      24 -        private String code;                                   
+      25 -                                                               
+      26 -        // 用 Integer 而不是 int：沒填時是 null，才能顯示「請輸
+         -入張數」而不是被當成 0                                         
+      27 -        @NotNull(message = "請輸入張數")                       
+      28 -        @Min(value = 1, message = "張數必須是 1～999 的整數")  
+      29 -        @Max(value = 999, message = "張數必須是 1～999 的整數")
+      30 -        private Integer lots;                                  
+      31 -                                                               
+      32 -        @NotNull(message = "請輸入買進價")                     
+      33 -        @DecimalMin(value = "0", inclusive = false, message = "
+         -買進價必須大於 0")                                             
+      34 -        // integer = 10 對應 DECIMAL(12,2) 的整數位數；Digits  
+         -不會去掉尾端的 0，所以 10.100 算三位小數，會被拒絕             
+      35 -        @Digits(integer = 10, fraction = 2, message = "買進價最
+         -多兩位小數（整數部分最多 10 位）")                             
+      36 -        private BigDecimal buyPrice;                           
+      37 -                                                               
+      38 -        public String getCode() {                              
+      39 -                return code;                                   
+      40 -        }                                                      
+     … +21 lines (ctrl+o to expand)
+  ⎿  Deleted
+     src\main\java\io\hsiaopingkuo\stockholdings\dto\HoldingUpdateForm.java
+     -43
+       1 -package io.hsiaopingkuo.stockholdings.dto;                     
+       2 -                                                               
+       3 -import java.math.BigDecimal;                                   
+       4 -                                                               
+       5 -import jakarta.validation.constraints.DecimalMin;              
+       6 -import jakarta.validation.constraints.Digits;                  
+       7 -import jakarta.validation.constraints.Max;                     
+       8 -import jakarta.validation.constraints.Min;                     
+       9 -import jakarta.validation.constraints.NotNull;                 
+      10 -                                                               
+      11 -/**                                                            
+      12 - * 網頁「修改持股」表單。                                      
+      13 - * 刻意沒有代號欄位：代號建立後不能改（和 App API 的 PUT 規格一
+         -致），就算有人偷送 code 也不會被收下。                         
+      14 - * 張數、買進價的規則和新增表單相同。                          
+      15 - */                                                            
+      16 -public class HoldingUpdateForm {                               
+      17 -                                                               
+      18 -        @NotNull(message = "請輸入張數")                       
+      19 -        @Min(value = 1, message = "張數必須是 1～999 的整數")  
+      20 -        @Max(value = 999, message = "張數必須是 1～999 的整數")
+      21 -        private Integer lots;                                  
+      22 -                                                               
+      23 -        @NotNull(message = "請輸入買進價")                     
+      24 -        @DecimalMin(value = "0", inclusive = false, message = "
+         -買進價必須大於 0")                                             
+      25 -        @Digits(integer = 10, fraction = 2, message = "買進價最
+         -多兩位小數（整數部分最多 10 位）")                             
+      26 -        private BigDecimal buyPrice;                           
+      27 -                                                               
+      28 -        public Integer getLots() {                             
+      29 -                return lots;                                   
+      30 -        }                                                      
+      31 -                                                               
+      32 -        public void setLots(Integer lots) {                    
+      33 -                this.lots = lots;                              
+      34 -        }                                                      
+      35 -                                                               
+      36 -        public BigDecimal getBuyPrice() {                      
+      37 -                return buyPrice;                               
+      38 -        }                                                      
+      39 -                                                               
+      40 -        public void setBuyPrice(BigDecimal buyPrice) {         
+     … +3 lines (ctrl+o to expand)
+  ⎿  Deleted src\main\resources\templates\holding-edit.html -33
+       1 -<!DOCTYPE html>                                                
+       2 -<html lang="zh-Hant" xmlns:th="http://www.thymeleaf.org">      
+       3 -<head>                                                         
+       4 -        <meta charset="UTF-8">                                 
+       5 -        <meta name="viewport" content="width=device-width, init
+         -ial-scale=1">                                                  
+       6 -        <title>修改持股 - 持股記帳</title>                     
+       7 -        <style>                                                
+       8 -                .error { color: #c00; }                        
+       9 -        </style>                                               
+      10 -</head>                                                        
+      11 -<body>                                                         
+      12 -        <h1>修改持股</h1>                                      
+      13 -                                                               
+      14 -        <form th:action="@{/holdings/{id}(id=${holding.id})}" t
+         -h:object="${updateForm}" method="post">                        
+      15 -                <!-- 代號只顯示、不能改（和 App API 的 PUT 規格
+         -一致），所以不是輸入框 -->                                     
+      16 -                <p>股票代號：<strong id="code" th:text="${holdi
+         -ng.code}">2330</strong>                                        
+      17 -                        <!-- 名稱、市場在新增時由官方判斷，這裡
+         -也只顯示；舊資料沒有時顯示「—」 -->                            
+      18 -                        <span id="name" th:text="${holding.name
+         -} ?: '—'">台積電</span>                                        
+      19 -                        （<span id="market" th:text="${holding.
+         -market} != null ? ${holding.market.label} : '—'">上市</span>） 
+      20 -                </p>                                           
+      21 -                <p>                                            
+      22 -                        <label>張數 <input type="text" th:field
+         -="*{lots}" inputmode="numeric" placeholder="1～999"></label>   
+      23 -                        <span class="error" th:if="${#fields.ha
+         -sErrors('lots')}" th:errors="*{lots}">錯誤</span>              
+      24 -                </p>                                           
+      25 -                <p>                                            
+      26 -                        <label>買進價 <input type="text" th:fie
+         -ld="*{buyPrice}" inputmode="decimal" placeholder="每股價格"></l
+         -abel>                                                          
+      27 -                        <span class="error" th:if="${#fields.ha
+         -sErrors('buyPrice')}" th:errors="*{buyPrice}">錯誤</span>      
+      28 -                </p>                                           
+      29 -                <button type="submit">儲存</button>            
+      30 -                <a th:href="@{/holdings}">取消</a>             
+      31 -        </form>                                                
+      32 -</body>                                                        
+      33 -</html>                                                        
+  ⎿  … +3 files changed
+     src\main\resources\templates\index.html
+     src\test\java\io\hsiaopingkuo\stockholdings\controller\HoldingControll
+     erTest.java
+     src\test\java\io\hsiaopingkuo\stockholdings\controller\HomeControllerT
+     est.java
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Bash(sed -i 's/ \* 檢查規則和網頁的 HoldingCreateForm 相同。型別不對/ *
+      檢查規則和 1.0 網頁的新增表單相同（1.0 網頁已在第 6 題刪除）。型別不對/'
+      dto/ApiHoldingCreateRequest.java && sed -i 's/訊息是 \/api\/v1 的 40…)
+  ⎿   .../stockholdings/dto/ApiHoldingCreateRequest.java |   2 +-
+      .../stockholdings/dto/HoldingV2View.java           |   6 +-
+      .../exception/HoldingDataException.java            |   2 +-
+     … +6 lines (ctrl+o to expand)
+  ⎿  Updated src\main\java\io\hsiaopingkuo\stockholdings\dto\ApiHoldingCrea
+     teRequest.java +47 -47
+       1 -package io.hsiaopingkuo.stockholdings.dto;                     
+       2 -                                                               
+       3 -import java.math.BigDecimal;                                   
+       4 -                                                               
+       5 -import com.fasterxml.jackson.annotation.JsonIgnoreProperties;  
+       6 -import com.fasterxml.jackson.annotation.JsonProperty;          
+       7 -                                                               
+       8 -import jakarta.validation.constraints.DecimalMin;              
+       9 -import jakarta.validation.constraints.Digits;                  
+      10 -import jakarta.validation.constraints.Max;                     
+      11 -import jakarta.validation.constraints.Min;                     
+      12 -import jakarta.validation.constraints.NotBlank;                
+      13 -import jakarta.validation.constraints.NotNull;                 
+      14 -import jakarta.validation.constraints.Pattern;                 
+      15 -import jakarta.validation.constraints.Size;                    
+      16 -                                                               
+      17 -/**                                                            
+      18 - * App API 新增持股的請求：{ "code": "2330", "lots": 1, "buy_pr
+         -ice": 1000 }（第 5 題）。                                      
+      19 - * 檢查規則和網頁的 HoldingCreateForm 相同。型別不對（張數 1.5 
+         -、字串數字）在讀 JSON 時就失敗（見 JacksonConfig）。           
+      20 - *                                                             
+      21 - * 用 Integer、BigDecimal 而不是 int：欄位缺少或是 null 時才會 
+         -是 null，交給 @NotNull 回「請輸入…」，不會被當成 0。           
+      22 - */                                                            
+      23 -// App 會忽略它不認得的欄位，反過來伺服器也一樣：多送的欄位不回
+         -錯誤                                                           
+      24 -@JsonIgnoreProperties(ignoreUnknown = true)                    
+      25 -public record ApiHoldingCreateRequest(                         
+      26 -                @NotBlank(message = "請輸入股票代號")          
+      27 -                @Size(max = 10, message = "股票代號最多 10 個字
+         -")                                                             
+      28 -                // 用 * 而不是 +：空字串只由 @NotBlank 回「請輸
+         -入股票代號」，不會同時出現兩個訊息                             
+      29 -                @Pattern(regexp = "^[A-Za-z0-9]*$", message = "
+         -股票代號只能是英文字母或數字")                                 
+      30 -                String code,                                   
+      31 -                                                               
+      32 -                @NotNull(message = "請輸入張數")               
+      33 -                @Min(value = 1, message = "張數必須是 1～999 的
+         -整數")                                                         
+      34 -                @Max(value = 999, message = "張數必須是 1～999 
+         -的整數")                                                       
+      35 -                Integer lots,                                  
+      36 -                                                               
+      37 -                @JsonProperty("buy_price")                     
+      38 -                @NotNull(message = "請輸入買進價")             
+      39 -                @DecimalMin(value = "0", inclusive = false, mes
+         -sage = "買進價必須大於 0")                                     
+      40 -                @Digits(integer = 10, fraction = 2, message = "
+         -買進價最多兩位小數（整數部分最多 10 位）")                     
+     … +54 lines (ctrl+o to expand)
+  ⎿  Updated src\main\java\io\hsiaopingkuo\stockholdings\exception\HoldingD
+     ataException.java +1 -1
+      3  /**
+      4   * 重播這筆持股的交易時發生超賣（第 6 題）。正常操作不會發生（寫
+         入前都會檢查），
+      5   * 只有資料被手動改過才會出現；股數、損益都算不出來，所以不讓 Ap
+         p 1.0 讀取或修改。
+      6 - * 訊息是 /api/v1 的 409 DATA_ERROR；網頁另外顯示自己的訊息（見 
+        -HoldingController）。                                           
+      6 + * 訊息是 /api/v1 的 409 DATA_ERROR；2.0 網頁不經過這裡，明細頁 
+        +直接標出有問題的交易（見 HoldingWebController）。               
+      7   */
+      8  public class HoldingDataException extends RuntimeException {
+      9 
+  ⎿  Updated src\main\java\io\hsiaopingkuo\stockholdings\exception\UpgradeR
+     equiredException.java +1 -1
+      2 
+      3  /**
+      4   * 這筆持股不能用 App 1.0 的方式修改、刪除（第 6 題決定 3）：有
+         多筆交易、有零股，或配過股。
+      5 - * 訊息是 /api/v1 的 409 UPGRADE_REQUIRED；網頁另外顯示自己的訊 
+        -息（見 HoldingController）。                                    
+      5 + * 訊息是 /api/v1 的 409 UPGRADE_REQUIRED；2.0 網頁改用交易的新 
+        +增、修改、刪除，不會遇到。                                      
+      6   */
+      7  public class UpgradeRequiredException extends RuntimeException {
+      8 
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● 進度：網頁 controller、兩個頁面都寫好了，1.0 的檔案也刪了。現在寫測試。
+
+● Write(src\test\java\io\hsiaopingkuo\stockholdings\controller\StockLookupContro
+       llerTest.java)
+  ⎿  Wrote 124 lines to src\test\java\io\hsiaopingkuo\stockholdings\control
+     ler\StockLookupControllerTest.java
+       1 package io.hsiaopingkuo.stockholdings.controller;
+       2 
+       3 import static org.hamcrest.Matchers.containsString;
+       4 import static org.mockito.ArgumentMatchers.anyString;
+       5 import static org.mockito.BDDMockito.given;
+       6 import static org.mockito.Mockito.never;
+       7 import static org.mockito.Mockito.verify;
+       8 import static org.springframework.test.web.servlet.request.MockM
+         vcRequestBuilders.get;
+       9 import static org.springframework.test.web.servlet.result.MockMv
+     … +116 lines (~5 KB) (ctrl+o to expand)
+
+● Write(src\test\java\io\hsiaopingkuo\stockholdings\controller\HoldingWebControl
+       lerTest.java)
+  ⎿  Wrote 357 lines to src\test\java\io\hsiaopingkuo\stockholdings\control
+     ler\HoldingWebControllerTest.java
+       1 package io.hsiaopingkuo.stockholdings.controller;
+       2 
+       3 import static org.assertj.core.api.Assertions.assertThat;
+       4 import static org.mockito.ArgumentMatchers.any;
+       5 import static org.mockito.BDDMockito.given;
+       6 import static org.springframework.security.test.web.servlet.requ
+         est.SecurityMockMvcRequestPostProcessors.csrf;
+       7 import static org.springframework.test.web.servlet.request.MockM
+         vcRequestBuilders.get;
+       8 import static org.springframework.test.web.servlet.request.MockM
+     … +350 lines (~15 KB) (ctrl+o to expand)
+
+● Updating the CSRF test for the new forms.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Bash(sed -n '114p;166p' CsrfProtectionTest.java && { head -n 113
+      CsrfProtectionTest.java; cat
+      /c/Users/Ping/AppData/Local/Temp/claude/d50855ca92fd132e/bfef2d7a-5db2-…)
+  ⎿          @Test
+             }
+
+     assertThat(result.getResponse().getRedirectedUrl()).isEqualTo("/holdin
+     … +20 lines (ctrl+o to expand)
+  ⎿  Updated src\test\java\io\hsiaopingkuo\stockholdings\controller\CsrfPro
+     tectionTest.java +30 -15
+      37  import io.hsiaopingkuo.stockholdings.config.CsrfDeniedHandler;
+      38  import io.hsiaopingkuo.stockholdings.entity.Holding;
+      39  import io.hsiaopingkuo.stockholdings.entity.Market;
+      40 +import io.hsiaopingkuo.stockholdings.entity.Trade;             
+      41  import io.hsiaopingkuo.stockholdings.quote.Deadline;
+      42  import io.hsiaopingkuo.stockholdings.quote.MarketResolver;
+      43  import io.hsiaopingkuo.stockholdings.quote.StockLookup;
+     ...
+      113          }
+      114 
+      115          @Test
+      115 -        void 現有三個表單_畫面上都帶有_csrf隱藏欄位() throws E
+          -xception {                                                    
+      116 +        void 網頁表單_畫面上都帶有_csrf隱藏欄位() throws Excep
+          +tion {                                                        
+      117                  Holding h = save2330();
+      118 +                Long tradeId = tradeRepository.findAll().get(0
+          +).getId();                                                    
+      119 
+      118 -                // 清單頁：新增表單＋這筆持股的刪除表單       
+      120 +                // 清單頁：新增交易表單                       
+      121                  String list = mockMvc.perform(get("/holdings")
+           ).andReturn().getResponse().getContentAsString();
+      120 -                assertThat(StringUtils.countOccurrencesOf(list
+          -, "name=\"_csrf\"")).isEqualTo(2);                            
+      121 -                // 修改頁：修改表單                           
+      122 -                String edit = mockMvc.perform(get("/holdings/{
+          -id}/edit", h.getId())).andReturn().getResponse().getContentAsS
+          -tring();                                                      
+      123 -                assertThat(StringUtils.countOccurrencesOf(edit
+          -, "name=\"_csrf\"")).isEqualTo(1);                            
+      122 +                assertThat(StringUtils.countOccurrencesOf(list
+          +, "name=\"_csrf\"")).isEqualTo(1);                            
+      123 +                // 明細頁：這筆交易的刪除表單                 
+      124 +                String detail = mockMvc.perform(get("/holdings
+          +/{id}", h.getId())).andReturn().getResponse().getContentAsStri
+          +ng();                                                         
+      125 +                assertThat(StringUtils.countOccurrencesOf(deta
+          +il, "name=\"_csrf\"")).isEqualTo(1);                          
+      126 +                // 修改中：再加上修改表單                     
+      127 +                String editing = mockMvc.perform(get("/holding
+          +s/{id}", h.getId()).param("edit", tradeId.toString()))        
+      128 +                                .andReturn().getResponse().get
+          +ContentAsString();                                            
+      129 +                assertThat(StringUtils.countOccurrencesOf(edit
+          +ing, "name=\"_csrf\"")).isEqualTo(2);                         
+      130          }
+      131 
+      132          @Test
+      133          void 新增_沒帶token_被擋並顯示表單已過期_資料沒變() th
+           rows Exception {
+      128 -                MvcResult result = mockMvc.perform(post("/hold
+          -ings").param("code", "2330").param("lots", "1").param("buyPric
+          -e", "1000"))                                                  
+      134 +                MvcResult result = mockMvc.perform(post("/hold
+          +ings/trades").param("code", "2330").param("side", "BUY")      
+      135 +                                .param("date", "2026-11-24").p
+          +aram("shares", "1000").param("price", "1000")                 
+      136 +                                .param("requestId", "csrf-1"))
+      137                                  .andReturn();
+      138 
+     … +48 lines (ctrl+o to expand)
+
+● Running the related test classes now.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● 代號查詢的失敗是因為我漏掉了舊 controller 的 trim
+  InitBinder，原因已確定可直接修；CSRF
+  測試則是我寫錯預期值，修改中的那一列會取代原列，所以應為 1 個
+  token。清單順序的原因尚不確定，我接著印出實際的 HTML 來檢查。 · summary
+
+● Bash(sed -i 's/                     StockLookup lookup =
+      holdingService.lookupStock(code);/                 \/\/
+      前後空白先去掉（同新增表單的 StringTrimmerEditor），「 2330
+      」和「2330」查的是同一檔\n                     StockLookup lookup = h…)
+  ⎿  122:            assertThat(StringUtils.countOccurrencesOf(list,
+     "name=\"_csrf\""))
+     .isEqualTo(1);
+     125:            assertThat(StringUtils.countOccurrencesOf(detail,
+     "name=\"_csrf\""
+     … +6 lines (ctrl+o to expand)
+  ⎿  Updated src\main\java\io\hsiaopingkuo\stockholdings\controller\StockLo
+     okupController.java +2 -1
+      43                                          .body(ErrorResponse.of(
+          "INVALID_CODE", "股票代號只能是英文字母或數字，最多 10 個字"));
+      44                  }
+      45                  try {
+      46 -                        StockLookup lookup = holdingService.loo
+         -kupStock(code);                                                
+      46 +                        // 前後空白先去掉（同新增表單的 StringT
+         +rimmerEditor），「 2330 」和「2330」查的是同一檔               
+      47 +                        StockLookup lookup = holdingService.loo
+         +kupStock(code.trim());                                         
+      48                          // 回傳正規化後的代號（例如輸入 00631l 
+          回 00631L），畫面顯示和實際儲存的一致
+      49                          return ResponseEntity.ok(StockLookupRes
+          ponse.of(HoldingService.normalizeCode(code), lookup));
+      50                  } catch (StockCodeNotFoundException e) {
+  ⎿  Updated src\test\java\io\hsiaopingkuo\stockholdings\controller\CsrfPro
+     tectionTest.java +3 -2
+      123                  // 明細頁：這筆交易的刪除表單
+      124                  String detail = mockMvc.perform(get("/holdings
+           /{id}", h.getId())).andReturn().getResponse().getContentAsStri
+           ng();
+      125                  assertThat(StringUtils.countOccurrencesOf(deta
+           il, "name=\"_csrf\"")).isEqualTo(1);
+      126 -                // 修改中：再加上修改表單                     
+      126 +                // 修改中：那一列換成修改表單（取代原本那一列 
+          +的刪除表單），數量不變                                        
+      127                  String editing = mockMvc.perform(get("/holding
+           s/{id}", h.getId()).param("edit", tradeId.toString()))
+      128                                  .andReturn().getResponse().get
+           ContentAsString();
+      129 -                assertThat(StringUtils.countOccurrencesOf(edit
+          -ing, "name=\"_csrf\"")).isEqualTo(2);                         
+      129 +                assertThat(StringUtils.countOccurrencesOf(edit
+          +ing, "name=\"_csrf\"")).isEqualTo(1);                         
+      130 +                assertThat(editing).contains("id=\"edit-form\"
+          +");                                                           
+      131          }
+      132 
+      133          @Test
+  ⎿  Updated src\test\java\io\hsiaopingkuo\stockholdings\controller\Holding
+     WebControllerTest.java +2
+      199                  assertThat(body).contains("href=\"/holdings/"
+           + tsmc.getId() + "\">查看交易</a>").doesNotContain(">修改<");
+      200                  // 持有中依代號 2330、2454，最後才是「已賣光」
+           的 2317（灰字）
+      201                  String table = body.substring(body.indexOf("id
+           =\"holdings\""));
+      202 +                System.out.println("DEBUG-TABLE               
+      203 +" + table.substring(0, Math.min(table.length(), 2500)));      
+      204                  assertThat(table.indexOf(">2330<")).isLessThan
+           (table.indexOf(">2454<"));
+      205                  assertThat(table.indexOf(">2454<")).isLessThan
+           (table.indexOf("已賣光"));
+      206                  assertThat(table.indexOf("已賣光")).isLessThan
+           (table.indexOf(">2317<"));
+  ⎿  (timeout 10m)
+
+  Read 1 file, listed 1 directory (ctrl+o to expand)
+
+● Update(src\test\java\io\hsiaopingkuo\stockholdings\controller\HoldingWebContro
+        llerTest.java)
+  ⎿  Added 1 line, removed 2 lines
+      199      assertThat(body).contains("href=\"/holdings/" + tsmc.getId
+           () + "\">查看交易</a>").doesNotContain(">修改<");
+      200      // 持有中依代號 2330、2454，最後才是「已賣光」的 2317（灰
+           字）
+      201      String table = body.substring(body.indexOf("id=\"holdings\
+           ""));
+      202 -    System.out.println("DEBUG-TABLE                           
+      203 -" + table.substring(0, Math.min(table.length(), 2500)));      
+      202 +    java.nio.file.Files.writeString(java.nio.file.Path.of("tar
+          +get", "debug-table.html"), table);                            
+      203      assertThat(table.indexOf(">2330<")).isLessThan(table.index
+           Of(">2454<"));
+      204      assertThat(table.indexOf(">2454<")).isLessThan(table.index
+           Of("已賣光"));
+      205      assertThat(table.indexOf("已賣光")).isLessThan(table.index
+           Of(">2317<"));
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● 原因找到了：HTML 註解裡也有「已賣光」三個字，indexOf
+  抓到的是註解，順序本身是對的。改成比對小標題那一格，並拿掉除錯用的那一行。
+
+● Update(src\test\java\io\hsiaopingkuo\stockholdings\controller\HoldingWebContro
+        llerTest.java)
+  ⎿  Added 4 lines, removed 3 lines
+      199      assertThat(body).contains("href=\"/holdings/" + tsmc.getId
+           () + "\">查看交易</a>").doesNotContain(">修改<");
+      200      // 持有中依代號 2330、2454，最後才是「已賣光」的 2317（灰
+           字）
+      201      String table = body.substring(body.indexOf("id=\"holdings\
+           ""));
+      202 -    java.nio.file.Files.writeString(java.nio.file.Path.of("tar
+          -get", "debug-table.html"), table);                            
+      202 +    // 比對小標題那一格（頁面的 HTML 註解裡也有「已賣光」三個 
+          +字）                                                          
+      203 +    String soldOutHeading = "<th colspan=\"12\">已賣光</th>"; 
+      204      assertThat(table.indexOf(">2330<")).isLessThan(table.index
+           Of(">2454<"));
+      204 -    assertThat(table.indexOf(">2454<")).isLessThan(table.index
+          -Of("已賣光"));                                                
+      205 -    assertThat(table.indexOf("已賣光")).isLessThan(table.index
+          -Of(">2317<"));                                                
+      205 +    assertThat(table.indexOf(">2454<")).isLessThan(table.index
+          +Of(soldOutHeading));                                          
+      206 +    assertThat(table.indexOf(soldOutHeading)).isLessThan(table
+          +.indexOf(">2317<"));                                          
+      207      assertThat(table).contains("class=\"sold-out\"");
+      208      // 總計同 /api/v2/summary：含息總報酬 = 已實現 (9,372 + 93
+           ,708) + 未實現 93,708 + 股利 10,000 = 206,788
+      209      String apiSummary = mockMvc.perform(get("/api/v2/summary")
+           ).andReturn().getResponse()
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● 相關測試全部通過。最後清掉一個沒用到的常數，再確認變更範圍。
+
+● Bash(grep -rn "DATA_ERROR_MESSAGE" src/; sed -i '/  static final String
+      DATA_ERROR_MESSAGE =
+      "這筆持股的交易資料異常，請到明細修正標示的那一筆交易";/d'
+      src/main/java/io/hsiaopingkuo/stockholdi…)
+  ⎿  src/main/java/io/hsiaopingkuo/stockholdings/controller/HoldingWebContr
+     oller.java:67:  static final String DATA_ERROR_MESSAGE =
+     "這筆持股的交易
+     資料異常，請到明細修正標示的那一筆交易";
+     … +26 lines (ctrl+o to expand)
+  ⎿  Updated src\main\java\io\hsiaopingkuo\stockholdings\controller\Holding
+     WebController.java -1
+      64  @Controller
+      65  public class HoldingWebController {
+      66 
+      67 -        static final String DATA_ERROR_MESSAGE = "這筆持股的交 
+         -易資料異常，請到明細修正標示的那一筆交易";                     
+      67          static final String ALREADY_SUBMITTED_MESSAGE = "這個表
+          單已經送出過，畫面已重新整理，請確認後再操作";
+      68 
+      69          private static final DateTimeFormatter TIME_FORMAT = Da
+          teTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+  ⎿  (timeout 10m)
+
+● 做完了。相關的 6 個測試類別都通過（HoldingWebControllerTest、StockLookupContro
+  llerTest、CsrfProtectionTest、ApiV2ReadTest、ApiV2TradeWriteTest、ApiErrorResp
+  onseTest），全部測試還沒跑。改動已經 git add，但還沒
+  commit；設計文件沒有加進去。
+
+  跟提案不一樣的地方
+  1. 代號查詢 /holdings/lookup 另外放一個 StockLookupController，沒有放進
+     HoldingWebController。它原本的 7 個測試從 HoldingControllerTest 原樣搬到
+     StockLookupControllerTest。搬的時候發現舊 controller
+     會先去掉代號前後的空白，所以補上 code.trim()。
+  2. 在清單頁新增時超賣：清單頁沒有交易清單，所以完整訊息顯示在表單上，旁邊加一
+     個「查看交易」連結，連到 /holdings/{id}?mark=…，明細頁會標出是哪幾筆。
+  3. 錯誤分兩種處理：
+     - VERSION_CONFLICT、交易已被刪除、一次性編號被拿去送別的內容：轉回明細頁並
+       顯示訊息，畫面直接是最新資料。
+     - HOLDING_BUSY、REQUEST_IN_PROGRESS：留在原頁，保留剛輸入的內容，稍後再按一
+       次就好。
+  4. 按「修改」時，那一列會整列換成輸入框，所以那一列的刪除按鈕會暫時消失。
+  5. 同一頁的刪除表單共用一個一次性編號，每次重新載入頁面都換新的。刪不同筆時內
+     容不同，不會互相影響。
+  6. messages.properties：拿掉 1.0 的 lots、buyPrice，換成新欄位
+     shares、price、date、side、version 的錯誤訊息。
+  7. 另外 3 個檔案的註解（ApiHoldingCreateRequest、HoldingDataException、Upgrade
+     RequiredException）原本寫「見 HoldingController」，跟著改掉，程式沒有動。
+  8. 台北時間只放在清單頁（/、/holdings），明細頁沒有。
+
+  要注意的一點：./mvnw test 不會刪掉 target/ 裡已經刪除的頁面檔。我已經手動刪了
+  target/classes/templates/index.html 和
+  holding-edit.html。如果你在別的資料夾也跑過舊版，建議用 ./mvnw clean test。
+
+  需要你決定的事
+  - 沒有一定要現在決定的。
+  - 建議（未實作）：HoldingService.findById 和 HoldingListItem.oddLotNote()
+    現在只剩舊測試或 v1 的註解在用。我先保留沒刪，要不要清掉由你決定。
+
+  commit 訊息
+  feat: 第6題 2.0 
+  網頁：持股清單、交易明細、交易新增修改刪除（一次性編號、錯誤顯示），移除 1.0 
+  網頁
+
+  這題結束的提醒
+  - README：首頁從「時間＋連結」改成清單頁。等你實際操作過，我再判斷要不要改、提
+    出草稿。
+  - TESTLOG：操作時發現問題請告訴我。
+  - ai-log：記得放這一題的紀錄，commit 前檢查有沒有密碼或 token。
+✻ Worked for 12m 34s · done 上午7:25
+
+> 選擇日期的部分，在新增修改的時候都不能選到未來時間                            
+
+● 這個可以做：伺服器本來就會擋未來日期（TradeRules.checkDate），只是日期選擇器沒
+  有限制，使用者要按下送出後才看到錯誤。
+
+  提案
+  - 做法：新增和修改的日期欄位都加上 max（今天）。
+    - 「今天」由伺服器用注入的
+      Clock（台北時區）算，不看使用者電腦的時區，否則人在國外時會差一天。
+    - 選擇器裡的未來日期會變成不能點。用手打的未來日期，瀏覽器在送出時就會擋下來
+      。
+    - 伺服器的檢查照樣保留，以伺服器為準。
+  - 會改的檔案：
+    - HoldingWebController：清單頁和明細頁都多放一個 maxDate。
+    - holdings.html、holding-detail.html：日期欄位加 th:max="${maxDate}"。
+    - HoldingWebControllerTest：加一個測試，確認新增表單和修改中的那一列都有
+      max="2026-11-25"（測試用固定時鐘）。
+
+  需要你決定
+  1. 要不要順便加 min="2021-01-01"？ 伺服器本來就擋 2021-01-01
+     以前的日期，加上後選擇器也不能選更早的日期。我建議一起加，兩邊規則一致。
+  2. 另外開一個 fix commit，還是併進剛才的 feat？
+     我建議分開。這是你實際操作時發現的，要記進 TESTLOG，而 TESTLOG 需要寫修好的
+     commit 編號。
+     - 建議訊息：fix: 第6題 日期欄位不能選未來日期
+
+  做不到的部分：瀏覽器內建的日期選擇器沒辦法把週末變成不能選，週末還是要送出後由
+  伺服器擋，錯誤訊息會顯示在日期欄位旁。
+
+  你回「同意」，再告訴我上面兩題的決定，我就開始改。
+
+✻ Churned for 13s · done 上午7:31
+
+> 好，同意                                                                      
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● feat 的 commit 還沒提交（目前是 staged），所以這次修改只動工作區、不 git 
+  add；等你先 commit 已 staged 的部分，再 add 並 commit 這次的 fix。 · summary
+
+  Read 1 file (ctrl+o to expand)
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\controller\HoldingWebContro
+        ller.java)
+  ⎿  Added 1 line
+      172      model.addAttribute("now", LocalDateTime.now(clock).format(
+           TIME_FORMAT));
+      173      // 給頁面上的 JS 當基準，讓時間以「伺服器時間」為準每秒往
+           前走（同第 1 題）
+      174      model.addAttribute("nowEpochMillis", clock.millis());
+      175 +    addDateRange(model);                                      
+      176      return "holdings";
+      177    }
+      178 
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\controller\HoldingWebContro
+        ller.java)
+  ⎿  Added 11 lines
+      280      model.addAttribute("marks", marks == null ? List.of() : ma
+           rks);
+      281      // 刪除表單共用一個一次性編號：每次畫面重新產生都換新的；
+           刪不同筆時內容不同，不會互相影響
+      282      model.addAttribute("deleteRequestId", newRequestId());
+      283 +    addDateRange(model);                                      
+      284      return "holding-detail";
+      285    }
+      286 
+      287 +  /**                                                         
+      288 +   * 日期欄位可以選的範圍（和 TradeRules 相同）：2021-01-01 到
+          +今天。                                                        
+      289 +   * 只是讓選擇器不能選到範圍外的日期，送出後伺服器仍會檢查（ 
+          +週末選擇器擋不了，也是由伺服器擋）。                          
+      290 +   * 「今天」用注入的台北時區 Clock 算，不看使用者電腦的時區，
+          +人在國外也不會差一天。                                        
+      291 +   */                                                         
+      292 +  private void addDateRange(Model model) {                    
+      293 +    model.addAttribute("minDate", TradeRules.EARLIEST_DATE);  
+      294 +    model.addAttribute("maxDate", LocalDate.now(clock));      
+      295 +  }                                                           
+      296 +                                                              
+      297    // 例如在另一個分頁已經刪掉最後一筆交易，這裡又打開明細：回
+           清單並顯示訊息，不出現錯誤頁
+      298    @ExceptionHandler(HoldingNotFoundException.class)
+      299    public String handleNotFound(HoldingNotFoundException e, Red
+           irectAttributes redirectAttributes) {
+
+● Bash(f=src/main/java/io/hsiaopingkuo/stockholdings/controller/HoldingWebContro
+      ller.java && sed -i 's/^import java.time.Clock;/import
+      java.time.Clock;\nimport java.ti…)
+  ⎿  src/main/resources/templates/holding-detail.html:85:
+                      <input type="date"
+      th:field="*{date}" th:min="${minDate}" th:max="${maxDate}" form="edit
+     -form">
+     … +8 lines (ctrl+o to expand)
+  ⎿  Updated src\main\java\io\hsiaopingkuo\stockholdings\controller\Holding
+     WebController.java +2
+      1  package io.hsiaopingkuo.stockholdings.controller;
+      2 
+      3  import java.time.Clock;
+      4 +import java.time.LocalDate;                                     
+      5  import java.time.LocalDateTime;
+      6  import java.time.format.DateTimeFormatter;
+      7  import java.util.ArrayList;
+     ...
+      49  import io.hsiaopingkuo.stockholdings.service.HoldingService;
+      50  import io.hsiaopingkuo.stockholdings.service.HoldingV2QueryServ
+          ice;
+      51  import io.hsiaopingkuo.stockholdings.service.IdempotencyService
+          ;
+      52 +import io.hsiaopingkuo.stockholdings.service.TradeRules;       
+      53  import io.hsiaopingkuo.stockholdings.service.TradeService;
+      54  import jakarta.validation.Valid;
+      55 
+  ⎿  Updated src\main\resources\templates\holding-detail.html +1 -1
+      82                          <tr th:if="${t.id == editTradeId}" th:o
+          bject="${updateForm}" th:id="|trade-${t.id}|" class="editing"
+      83                                          th:classappend="${marke
+          d} ? 'marked'">
+      84                                  <td>
+      85 -                                        <input type="date" th:f
+         -ield="*{date}" form="edit-form">                               
+      85 +                                        <input type="date" th:f
+         +ield="*{date}" th:min="${minDate}" th:max="${maxDate}" form="ed
+         +it-form">                                                      
+      86                                          <br th:if="${#fields.ha
+          sErrors('date')}">
+      87                                          <span class="error" th:
+          if="${#fields.hasErrors('date')}" th:errors="*{date}">錯誤</spa
+          n>
+      88                                  </td>
+  ⎿  Updated src\main\resources\templates\holdings.html +1 -1
+      84                          <span class="error" th:if="${#fields.ha
+          sErrors('side')}" th:errors="*{side}">錯誤</span>
+      85                  </p>
+      86                  <p>
+      87 -                        <label>日期 <input type="date" th:field
+         -="*{date}"></label>                                            
+      87 +                        <label>日期 <input type="date" th:field
+         +="*{date}" th:min="${minDate}" th:max="${maxDate}"></label>    
+      88                          <span class="error" th:if="${#fields.ha
+          sErrors('date')}" th:errors="*{date}">錯誤</span>
+      89                  </p>
+      90                  <p>
+
+● Now the test.
+
+● Update(src\test\java\io\hsiaopingkuo\stockholdings\controller\HoldingWebContro
+        llerTest.java)
+  ⎿  Added 15 lines
+      212      assertThat(body).contains("id=\"summary-total-return\" cla
+           ss=\"num gain\">206,788<");
+      213    }
+      214 
+      215 +  @Test                                                       
+      216 +  void 新增和修改的日期欄位_只能選2021年1月1日到今天() throws 
+          +Exception {                                                   
+      217 +    Holding tsmc = holding("2330", "台積電");                 
+      218 +    Trade buy = trade(tsmc, TradeSide.BUY, NOV_02, 1000, "1000
+          +.00");                                                        
+      219 +    given(dividendEventProvider.eventsByCode(any())).willRetur
+          +n(Map.of());                                                  
+      220 +                                                              
+      221 +    String list = html(get("/holdings"));                     
+      222 +    String editing = html(get("/holdings/{id}", tsmc.getId()).
+          +param("edit", buy.getId().toString()));                       
+      223 +                                                              
+      224 +    // 「今天」是台北時間的 11/25（固定時鐘 UTC 06:00）       
+      225 +    for (String body : new String[] { list, editing }) {      
+      226 +      assertThat(body).containsPattern("type=\"date\"[^>]*min=
+          +\"2021-01-01\" max=\"2026-11-25\"");                          
+      227 +    }                                                         
+      228 +  }                                                           
+      229 +                                                              
+      230    // ===== 明細 =====
+      231 
+      232    @Test
+
+  Searched for 1 pattern, ran 1 shell command (ctrl+o to expand)
+
+● 改好了：新增表單和明細頁修改中的那一列，日期選擇器都只能選 2021-01-01
+  到今天（台北時間）。HoldingWebControllerTest
+  全部通過，含新加的日期範圍測試；全部測試還沒跑。
+
+  改了哪些檔案
+  - HoldingWebController：清單頁和明細頁都多放 minDate（就是
+    TradeRules.EARLIEST_DATE）和 maxDate（用注入的 Clock 算的今天）。
+  - holdings.html、holding-detail.html：日期欄位加 th:min、th:max。
+  - HoldingWebControllerTest：新增一個測試，確認兩個日期欄位都輸出
+    min="2021-01-01" max="2026-11-25"。
+
+  怎麼驗證
+  啟動後打開 http://localhost:8080/：
+  1. 點新增表單的日期，明天以後的日期都是灰色、點不了。
+  2. 到任一檔的「查看交易」，按「修改」，那一列的日期欄位也一樣。
+  3. 用手打一個未來日期再按送出，瀏覽器會直接提示日期超出範圍。
+
+  週末還是選得到，送出後錯誤訊息會顯示在日期欄位旁。
+
+  commit 順序
+  這次的修改我沒有 git add，staged 的仍然只有 feat 的內容：
+  1. git commit：只提交已 staged 的 feat，訊息用上一輪那句。
+  2. git add -A src，再 git commit -m "fix: 第6題 日期欄位不能選未來日期"。
+
+  TESTLOG 草稿（commit 編號等你 commit 後補上，你同意後我才寫進檔案）
+  ## T-12 新增、修改交易時，日期選擇器可以選到未來的日期
+  - 怎麼發現：在清單頁新增交易、在明細頁修改交易時，點日期欄位
+  - 怎麼重現：1. 啟動 2. 打開 / 的新增交易表單 3. 點日期欄位，選明天以後的日期
+  - 預期／實際：預期未來的日期不能選；實際可以選，要按下送出後才由伺服器顯示「交
+  易日期不能是未來的日期」
+  - 修好的 commit：`（commit 後補上）`（fix: 第6題 日期欄位不能選未來日期）
+
+✻ Worked for 1m 4s · done 上午7:33
+
+> 按照順序，替我commit，包含前面沒有commit的部分，commit後給我TESTLOG草稿       
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● 兩個 commit 都在分支 feature/q6-web-v2 上完成了，順序如下，沒有
+  push。訊息照你的慣例，沒有加 AI 尾行。
+
+  ┌─────────┬────────────────────────────────────────────────────────────────┐
+  │ commit  │                              訊息                              │
+  ├─────────┼────────────────────────────────────────────────────────────────┤
+  │ 7656d1c │ feat: 第6題 2.0 網頁：持股清單、交易明細、交易新增修改刪除（一 │
+  │         │ 次性編號、錯誤顯示），移除 1.0 網頁                            │
+  ├─────────┼────────────────────────────────────────────────────────────────┤
+  │ d6ea659 │ fix: 第6題 日期欄位不能選未來日期                              │
+  └─────────┴────────────────────────────────────────────────────────────────┘
+
+  第6題設計決定.md 沒有加進去。
+
+  TESTLOG 草稿（你回「同意」後我才寫進 TESTLOG.md）
+  ## T-12 新增、修改交易時，日期選擇器可以選到未來的日期
+  - 怎麼發現：在清單頁新增交易、在明細頁修改交易時，點日期欄位
+  - 怎麼重現：1. 啟動 2. 打開 / 的新增交易表單 3. 點日期欄位，選明天以後的日期
+  - 預期／實際：預期未來的日期不能選；實際可以選，要按下送出後才由伺服器顯示「交
+  易日期不能是未來的日期」
+  - 修好的 commit：`d6ea659`（fix: 第6題 日期欄位不能選未來日期）
+
+  接下來還沒做的
+  - 全部測試請你跑 ./mvnw test。如果之前在別的資料夾跑過舊版，建議用 ./mvnw 
+    clean test，避免 target/ 裡留著已刪除的舊頁面。
+  - 合併回 master 之前，照慣例另外 clone 一份，照 README 從頭啟動一次。
+  - README 要等你實際操作過，我再判斷要不要改、提出草稿。
+  - ai-log 記得放這一題的紀錄，commit 前檢查有沒有密碼或 token。
+
+✻ Crunched for 13s · done 上午7:35
+
+> TESTLOG 草稿同意，生成後替我commit                                            
+
+  Read 1 file (ctrl+o to expand)
+
+● Bash(cat >> TESTLOG.md <<'EOF'…)
+  ⎿  - 原因：網頁表單沒有 CSRF
+     token，伺服器分不出請求是本站表單送的，還是其
+     他網站送的
+     - 修好的 commit：`327b6cd`（fix: 第2題 網頁表單加上 CSRF 防護，/api 不
+     … +14 lines (ctrl+o to expand)
+  ⎿  Updated TESTLOG.md +6
+      78  - 預期／實際：預期被擋下、資料不變；實際回 302 導回清單，持股被
+          刪除或修改
+      79  - 原因：網頁表單沒有 CSRF token，伺服器分不出請求是本站表單送的
+          ，還是其他網站送的
+      80  - 修好的 commit：`327b6cd`（fix: 第2題 網頁表單加上 CSRF 防護，
+          /api 不檢查且錯誤格式維持 JSON）
+      81 +                                                               
+      82 +## T-12 新增、修改交易時，日期選擇器可以選到未來的日期         
+      83 +- 怎麼發現：在清單頁新增交易、在明細頁修改交易時，點日期欄位   
+      84 +- 怎麼重現：1. 啟動 2. 打開 / 的新增交易表單 3. 點日期欄位，選 
+         +明天以後的日期                                                 
+      85 +- 預期／實際：預期未來的日期不能選；實際可以選，要按下送出後才 
+         +由伺服器顯示「交易日期不能是未來的日期」                       
+      86 +- 修好的 commit：`d6ea659`（fix: 第6題 日期欄位不能選未來日期）
+
+● T-12 已經照你同意的草稿加到 TESTLOG.md 最後面，也 commit 了。這次只提交了
+  TESTLOG.md，沒有 push。
+
+  feature/q6-web-v2 上目前有三個 commit：
+  - b58978b docs: TESTLOG 新增 T-12 日期選擇器可以選到未來日期
+  - d6ea659 fix: 第6題 日期欄位不能選未來日期
+  - 7656d1c feat: 第6題 2.0
+    網頁：持股清單、交易明細、交易新增修改刪除（一次性編號、錯誤顯示），移除 1.0
+    網頁
+
+  有一點跟之前的紀錄格式不同：T-11 多寫了一行「原因」，T-12
+  照草稿沒有這一行。需要的話我再補一句草稿給你確認。
+
+  合併回 master 之前，還有這幾件要做：
+  - 跑全部測試 ./mvnw clean test。
+  - 另外 clone 一份，照 README 從頭啟動一次。
+  - 告訴我 README 要不要更新，我再提出草稿。
+  - 放入 ai-log，commit 前檢查有沒有密碼或 token。
+
+✻ Brewed for 11s · done 上午7:37
+
+> 測試有fail                                                                    
+  Tests run: 531, Failures: 4, Errors: 0, Skipped: 0                            
+
+  Listed 1 directory, ran 1 shell command (ctrl+o to expand)
+
+● 4 個失敗都是我漏改的舊測試，其他測試類別還有幾個在操作 1.0 網頁；我先前用 head
+  截斷搜尋結果才漏掉，這是我的錯，可以記進 REVIEW.md。接下來先看這 4
+  個測試的內容。 · summary
+
+  Ran 3 shell commands (ctrl+o to expand)
+
+● 原因已確定：4 個舊測試仍在測 1.0
+  網頁，我接下來會依表格逐一改寫並先確認測試輔助方法。 · summary
+
+  Searched for 1 pattern, ran 1 shell command (ctrl+o to expand)
+
+● 所有改動都只在測試，正式程式不用改。開始改：
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Update(src\test\java\io\hsiaopingkuo\stockholdings\api\HoldingApiV1TradeTest.j
+        ava)
+  ⎿  Added 2 lines, removed 2 lines
+      470      expectError(perform(delete("/api/v1/holdings/{id}", broken
+           .getId())), 409, "DATA_ERROR");
+      471      assertThat(holdingRepository.existsById(broken.getId())).i
+           sTrue();
+      472 
+      473 -    // 網頁：照樣列出、標示資料異常，總計只算正常的那一檔     
+      473 +    // 網頁（第 6 題改成 2.0 的總計）：照樣列出、標示資料異常 
+          +，總計只算正常的那一檔                                        
+      474      perform(get("/holdings"))
+      475          .andExpect(status().isOk())
+      476          .andExpect(content().string(containsString("資料異常")
+           ))
+      477 -        .andExpect(content().string(containsString("<td id=\"s
+          -ummary-profit\" class=\"num gain\">93,708</td>")));           
+      477 +        .andExpect(content().string(containsString("<td id=\"s
+          +ummary-unrealized\" class=\"num gain\">93,708</td>")));       
+      478    }
+      479 
+      480    // ===== 等不到鎖 =====
+● Update(src\test\java\io\hsiaopingkuo\stockholdings\api\HoldingApiV1TradeTest.j
+        ava)
+  ⎿  Added 6 lines, removed 3 lines
+      507        assertThat(Duration.ofNanos(System.nanoTime() - start)).
+           isGreaterThanOrEqualTo(Duration.ofMillis(1500));
+      508        expectError(perform(delete("/api/v1/holdings/{id}", h.ge
+           tId())), 409, "HOLDING_BUSY");
+      509        expectError(perform(postJson("{\"code\":\"2330\",\"lots\
+           ":1,\"buy_price\":900}")), 409, "HOLDING_BUSY");
+      510 -      perform(post("/holdings/{id}/delete", h.getId()).with(cs
+          -rf()))                                                        
+      511 -          .andExpect(redirectedUrl("/holdings"))              
+      512 -          .andExpect(flash().attribute("errorMessage", "這筆持
+          -股正在被其他裝置修改，請稍後再試"));                          
+      510 +      // 網頁（第 6 題改成 2.0 的刪除交易）：留在明細頁顯示同 
+          +一句，不出現錯誤頁                                            
+      511 +      Trade only = tradesOf(h).get(0);                        
+      512 +      perform(post("/holdings/{id}/trades/{tradeId}/delete", h
+          +.getId(), only.getId()).with(csrf())                          
+      513 +          .param("version", String.valueOf(only.getVersion()))
+          +.param("requestId", "busy-web-delete"))                       
+      514 +          .andExpect(status().isOk())                         
+      515 +          .andExpect(content().string(containsString("這筆持股
+          +正在被其他裝置修改，請稍後再試")));                           
+      516 
+      517        release.countDown();
+      518        holder.get(10, TimeUnit.SECONDS);
+
+● Update(src\test\java\io\hsiaopingkuo\stockholdings\api\HoldingApiControllerTes
+        t.java)
+  ⎿  Added 5 lines, removed 3 lines
+      291 
+      292    @Test
+      293    void 網頁清單也用行情快取補上舊持股的市場() throws Exception
+            {
+      294 -    saveHolding("1101", null, null, 1, "40.00");              
+      294 +    Holding old = saveHolding("1101", null, null, 1, "40.00");
+      295      saveQuote("1101", "台泥", Market.TWSE, NOV_23, "41.00");
+      296 
+      297 -    mockMvc.perform(get("/holdings"))                         
+      297 +    // 第 6 題：2.0 清單沒有「市場」欄，市場顯示在明細頁的標題
+      298 +    mockMvc.perform(get("/holdings/{id}", old.getId()))       
+      299          .andExpect(status().isOk())
+      299 -        .andExpect(content().string(containsString("<td>上市</
+          -td>")));                                                      
+      300 +        .andExpect(content().string(containsString("台泥")))  
+      301 +        .andExpect(content().string(containsString("（上市）")
+          +));                                                           
+      302    }
+      303  }
+
+● Update(src\test\java\io\hsiaopingkuo\stockholdings\NoOfficialCallTest.java)
+  ⎿  Added 4 lines, removed 1 line
+      135          .andExpect(status().isOk())
+      136          .andExpect(jsonPath("$.name").value("環球晶"))
+      137          .andExpect(jsonPath("$.market").value("TPEX"));
+      138 -    mockMvc.perform(post("/holdings").with(csrf()).param("code
+          -", "6488").param("lots", "1").param("buyPrice", "450"))       
+      138 +    // 第 6 題：網頁改成 2.0 的新增交易表單                   
+      139 +    mockMvc.perform(post("/holdings/trades").with(csrf()).para
+          +m("code", "6488").param("side", "BUY")                        
+      140 +        .param("date", "2026-11-23").param("shares", "1000").p
+          +aram("price", "450")                                          
+      141 +        .param("requestId", "no-official-call-1"))            
+      142          .andExpect(redirectedUrl("/holdings"));
+      143 
+      144      assertThat(holdingRepository.findAll()).singleElement()
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Bash(cd /c/TKA102_JavaApp/Workspace_for_practice/stock-holdings && sed -i
+      '/^import static org.springframework.test.web.servlet.result.MockMvcResult
+      Matchers.redirect…)
+  ⎿  exit=0
+  ⎿  Updated src\test\java\io\hsiaopingkuo\stockholdings\api\HoldingApiV1Tr
+     adeTest.java -2
+      11  import static org.springframework.test.web.servlet.request.Mock
+          MvcRequestBuilders.post;
+      12  import static org.springframework.test.web.servlet.request.Mock
+          MvcRequestBuilders.put;
+      13  import static org.springframework.test.web.servlet.result.MockM
+          vcResultMatchers.content;
+      14 -import static org.springframework.test.web.servlet.result.MockM
+         -vcResultMatchers.flash;                                        
+      14  import static org.springframework.test.web.servlet.result.MockM
+          vcResultMatchers.jsonPath;
+      16 -import static org.springframework.test.web.servlet.result.MockM
+         -vcResultMatchers.redirectedUrl;                                
+      15  import static org.springframework.test.web.servlet.result.MockM
+          vcResultMatchers.status;
+      16 
+      17  import java.math.BigDecimal;
+  ⎿  (timeout 10m)
+
+● 4 個失敗都修好了，失敗的那 3 個測試類別（NoOfficialCallTest、HoldingApiControl
+  lerTest、HoldingApiV1TradeTest）都已通過。只改了測試，正式程式沒動。全部的 531
+  個測試請你再跑一次確認。
+
+  原因：這是我的錯
+  刪掉 1.0 網頁時，我沒找齊所有在測 1.0 網頁的測試。我當時的搜尋結果被 head
+  截掉了，只看到前 10 行，就以為沒有別的了，所以漏了這 4
+  個。這次改用完整搜尋重查過，沒有其他漏掉的。這可以記進 REVIEW.md 的「AI
+  犯過的錯」。
+
+  改了哪些測試
+
+  ┌────────────────────────────────────┬────────────────────────────────────┐
+  │                測試                │                改成                │
+  ├────────────────────────────────────┼────────────────────────────────────┤
+  │ NoOfficialCallTest 行情快取有這個  │ 改用 2.0 的新增交易表單 POST       │
+  │ 代號時，新增不呼叫官方             │ /holdings/trades；驗證的事不變：市 │
+  │                                    │ 場是上櫃、沒有呼叫任何官方 client  │
+  ├────────────────────────────────────┼────────────────────────────────────┤
+  │ HoldingApiV1TradeTest 資料異常     │ 網頁總計改看 2.0 的未實現損益      │
+  │                                    │ summary-unrealized 是 93,708       │
+  ├────────────────────────────────────┼────────────────────────────────────┤
+  │ HoldingApiV1TradeTest              │ 改用 2.0                           │
+  │ 等不到鎖（HOLDING_BUSY）           │ 的刪除交易；等不到鎖時留在明細頁， │
+  │                                    │ 顯示同一句訊息，不出現錯誤頁       │
+  ├────────────────────────────────────┼────────────────────────────────────┤
+  │ HoldingApiControllerTest           │ 改看明細頁標題有「台泥（上市）」   │
+  │ 用行情快取補上舊持股的市場         │                                    │
+  └────────────────────────────────────┴────────────────────────────────────┘
+
+  另一件我之前沒說的
+  2.0 清單我拿掉了「市場」欄，只在明細頁標題顯示（例如「台積電（上市）」）。你給
+  的清單欄位裡本來就沒有市場，但 1.0
+  清單有，上次回報時我應該要說明，卻漏了。如果你想把市場欄加回清單，我再提方案。
+
+  建議的 commit 訊息（照規則由你執行；要我代為 commit 也可以）
+  test: 第6題 舊測試改測 2.0 網頁（1.0 網頁已移除）
+
+  這次是 ./mvnw test 抓到的，照規則不用記進 TESTLOG。
+
+✻ Crunched for 1m 56s · done 上午7:40
+
+> 你替我commit，測試檔都通過了                                                  
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Commit 好了：6c248db test: 第6題 舊測試改測 2.0 網頁（1.0 
+  網頁已移除）。這次只提交了那 3 個測試檔，還沒 push。
+
+  feature/q6-web-v2 上現在有 4 個 commit：feat → fix → docs（TESTLOG T-12）→
+  test。
+
+  合併回 master 之前還剩這幾件：
+  - 另外 clone 一份，照 README 從頭啟動一次。
+  - README：首頁改成了清單頁。你實際操作過後告訴我，我再判斷要不要改、提出草稿。
+  - ai-log：放入這一題的紀錄，commit 前檢查有沒有密碼或 token。
+  - REVIEW.md：漏改舊測試那件事，要記進「AI
+    犯過的錯」的話，請提供要記的內容，我再整理成草稿給你確認。
+  - 清單要不要加回「市場」欄，等你決定。
+
+✻ Crunched for 8s · done 上午7:43
