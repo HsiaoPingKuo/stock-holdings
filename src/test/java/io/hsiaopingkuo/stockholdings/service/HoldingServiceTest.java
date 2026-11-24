@@ -8,6 +8,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.BDDMockito.willThrow;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -142,6 +143,61 @@ class HoldingServiceTest {
 				.isInstanceOf(MarketUnavailableException.class);
 		assertThat(holdingRepository.count()).isZero();
 		assertThat(quoteRepository.count()).isZero();
+	}
+
+	// ===== 快取有這一列、但沒有收盤價（巧馨檢查時發現） =====
+
+	/** 批次那天（11/23）2363 沒有成交，全新資料庫裡只有最近交易日，沒有收盤價。 */
+	private void cacheWithoutClose(String code, String name, Market market) {
+		quoteRepository.saveAndFlush(new Quote(DailyQuote.ofDay(code, name, market, LocalDate.of(2026, 11, 23), null),
+				LocalDateTime.of(2026, 11, 23, 14, 0)));
+	}
+
+	@Test
+	void 快取有這一列但沒有收盤價_只查該市場補收盤價_新增成功並顯示收盤價() {
+		cacheWithoutClose("2363", "矽統", Market.TWSE);
+		given(marketResolver.lookupLatestInMarket(eq("2363"), eq(Market.TWSE), any(Deadline.class)))
+				.willReturn(StockLookup.found(Market.TWSE, "矽統", LocalDate.of(2026, 11, 23),
+						new BigDecimal("10.00"), LocalDate.of(2026, 11, 20)));
+
+		Holding created = holdingService.create("2363", 1, new BigDecimal("10.00"));
+
+		// 市場、名稱照樣用快取的，不用兩個市場都查
+		assertThat(created.getMarket()).isEqualTo(Market.TWSE);
+		assertThat(created.getName()).isEqualTo("矽統");
+		verify(marketResolver, never()).resolve(anyString(), any(Deadline.class));
+		verify(marketResolver, never()).lookupLatestInMarket(anyString(), eq(Market.TPEX), any(Deadline.class));
+		assertThat(holdingRepository.findAllForList()).singleElement().satisfies(item -> {
+			assertThat(item.closePrice()).isEqualByComparingTo("10.00");
+			assertThat(item.closeDate()).isEqualTo(LocalDate.of(2026, 11, 20));
+			assertThat(item.showsEarlierClose()).isTrue();
+		});
+	}
+
+	@Test
+	void 快取有這一列但沒有收盤價_補查失敗_持股仍然新增成功_收盤價顯示未取得() {
+		cacheWithoutClose("2363", "矽統", Market.TWSE);
+		given(marketResolver.lookupLatestInMarket(eq("2363"), eq(Market.TWSE), any(Deadline.class)))
+				.willReturn(StockLookup.unavailable(Market.TWSE));
+
+		holdingService.create("2363", 1, new BigDecimal("10.00"));
+
+		assertThat(holdingRepository.findAllForList()).singleElement().satisfies(item -> {
+			assertThat(item.market()).isEqualTo(Market.TWSE);
+			assertThat(item.hasClosePrice()).isFalse();
+		});
+	}
+
+	@Test
+	void 快取有這一列但沒有收盤價_補查被擋_持股仍然新增成功() {
+		cacheWithoutClose("2363", "矽統", Market.TWSE);
+		given(marketResolver.lookupLatestInMarket(eq("2363"), eq(Market.TWSE), any(Deadline.class)))
+				.willReturn(StockLookup.blocked(Market.TWSE));
+
+		holdingService.create("2363", 1, new BigDecimal("10.00"));
+
+		assertThat(holdingRepository.count()).isEqualTo(1);
+		assertThat(quoteRepository.findById("2363").orElseThrow().getClosePrice()).isNull();
 	}
 
 	@Test

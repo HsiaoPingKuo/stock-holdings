@@ -725,4 +725,95 @@ class MarketResolverTest {
 			callers.shutdownNow();
 		}
 	}
+
+	// ===== 只查一個市場：新增持股時快取有這一列、但沒有收盤價（巧馨檢查時發現） =====
+
+	@Test
+	void 只查一個市場_只呼叫那個市場的client_回傳往前找到的收盤價() {
+		AtomicInteger tpexCalls = new AtomicInteger();
+		resolver = new MarketResolver(
+				// 這個月最後一個交易日 11/23 沒成交，收盤價是 11/20 的
+				fakeClient(Market.TWSE, (code, day) -> StockLookup.found(Market.TWSE, "矽統", LocalDate.of(2026, 11, 23),
+						new BigDecimal("10.00"), LocalDate.of(2026, 11, 20))),
+				countingClient(Market.TPEX, tpexCalls, StockLookup.notFound(Market.TPEX)),
+				clockAt(LocalDate.of(2026, 11, 24)), LOOKUP_TIMEOUT, CACHE_TTL);
+
+		StockLookup result = resolver.lookupLatestInMarket("2363", Market.TWSE, Deadline.after(Duration.ofSeconds(5)));
+
+		assertThat(result.status()).isEqualTo(Status.FOUND);
+		assertThat(result.closePrice()).isEqualByComparingTo("10.00");
+		assertThat(result.closeDate()).isEqualTo(LocalDate.of(2026, 11, 20));
+		assertThat(tpexCalls.get()).isZero();
+	}
+
+	@Test
+	void 只查一個市場_被擋時回BLOCKED_不丟例外() {
+		resolver = new MarketResolver(
+				fakeClient(Market.TWSE, (code, day) -> StockLookup.notFound(Market.TWSE)),
+				fakeClient(Market.TPEX, (code, day) -> StockLookup.blocked(Market.TPEX)),
+				clockAt(LocalDate.of(2026, 11, 24)), LOOKUP_TIMEOUT, CACHE_TTL);
+
+		StockLookup result = resolver.lookupLatestInMarket("6488", Market.TPEX, Deadline.after(Duration.ofSeconds(5)));
+
+		assertThat(result.status()).isEqualTo(Status.BLOCKED);
+	}
+
+	@Test
+	void 只查一個市場_官方一直不回應_在時間內回UNAVAILABLE_不丟例外() {
+		CountDownLatch never = new CountDownLatch(1);
+		resolver = new MarketResolver(
+				fakeClient(Market.TWSE, (code, day) -> {
+					awaitQuietly(never); // 模擬官方很久都不回應（awaitQuietly 最多等 5 秒）
+					return found(Market.TWSE);
+				}),
+				fakeClient(Market.TPEX, (code, day) -> StockLookup.notFound(Market.TPEX)),
+				clockAt(LocalDate.of(2026, 11, 24)), Duration.ofMillis(200), CACHE_TTL);
+
+		long start = System.nanoTime();
+		StockLookup result = resolver.lookupLatestInMarket("2363", Market.TWSE, Deadline.after(Duration.ofSeconds(5)));
+
+		assertThat(result.status()).isEqualTo(Status.UNAVAILABLE);
+		assertThat(Duration.ofNanos(System.nanoTime() - start)).isLessThan(Duration.ofSeconds(2));
+		never.countDown();
+	}
+
+	@Test
+	void 只查一個市場_和新增共用名額_名額已滿時快速回UNAVAILABLE而且不打官方() throws Exception {
+		CountDownLatch started = new CountDownLatch(1);
+		CountDownLatch gate = new CountDownLatch(1);
+		AtomicInteger otherCalls = new AtomicInteger();
+		// 同時查官方最多 1 個；至少要保留 0.5 秒
+		resolver = new MarketResolver(
+				fakeClient(Market.TWSE, (code, day) -> {
+					if (code.equals("2330")) {
+						started.countDown();
+						awaitQuietly(gate);
+					} else {
+						otherCalls.incrementAndGet();
+					}
+					return found(Market.TWSE);
+				}),
+				fakeClient(Market.TPEX, (code, day) -> StockLookup.notFound(Market.TPEX)),
+				clockAt(LocalDate.of(2026, 11, 24)), LOOKUP_TIMEOUT, CACHE_TTL,
+				Duration.ofSeconds(1), 1, Duration.ofMillis(500));
+		ExecutorService callers = Executors.newSingleThreadExecutor();
+		try {
+			// 另一個新增先占走唯一的名額
+			Future<StockLookup> first = callers.submit(() -> resolver.resolve("2330", Deadline.after(Duration.ofSeconds(5))));
+			assertThat(started.await(2, TimeUnit.SECONDS)).isTrue();
+
+			long start = System.nanoTime();
+			StockLookup result = resolver.lookupLatestInMarket("2363", Market.TWSE, Deadline.after(Duration.ofSeconds(1)));
+			Duration elapsed = Duration.ofNanos(System.nanoTime() - start);
+
+			assertThat(result.status()).isEqualTo(Status.UNAVAILABLE);
+			// 最多等 1 − 0.5 = 0.5 秒就放棄，沒有超過預算
+			assertThat(elapsed).isLessThan(Duration.ofSeconds(1));
+			assertThat(otherCalls.get()).isZero();
+			gate.countDown();
+			assertThat(first.get(5, TimeUnit.SECONDS).market()).isEqualTo(Market.TWSE);
+		} finally {
+			callers.shutdownNow();
+		}
+	}
 }

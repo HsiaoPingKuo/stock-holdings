@@ -103,13 +103,17 @@ public class HoldingService {
 			throw new DuplicateCodeException(normalizedCode);
 		}
 
-		// 第 3 題：先查行情快取。排程每天會寫入全市場的行情，大部分代號在這裡就知道市場和名稱，不必打官方
+		// 第 3 題：先查行情快取。排程每天會寫入全市場的行情，大部分代號在這裡就知道市場和名稱，不必打官方；
+		// 快取沒有收盤價時，才只對那個市場補查收盤價
 		Market market;
 		String name;
 		Optional<Quote> cached = quoteService.findByCode(normalizedCode);
 		if (cached.isPresent()) {
 			market = cached.get().getMarket();
 			name = cached.get().getName();
+			if (cached.get().getClosePrice() == null) {
+				backfillCloseQuietly(normalizedCode, market, deadline);
+			}
 		} else {
 			// 快取沒有才問官方（這時沒有任何交易）；查不到或無法確認時直接丟例外，後面的儲存不會執行
 			StockLookup lookup = marketResolver.resolve(normalizedCode, deadline);
@@ -119,6 +123,21 @@ public class HoldingService {
 		}
 
 		return insertHolding(new Holding(normalizedCode, name, market, lots, buyPrice, now()));
+	}
+
+	/**
+	 * 快取有這一列、但沒有收盤價（例如批次那天剛好沒成交，資料庫又是全新的，巧馨檢查時發現）：
+	 * 市場已經知道，只查那個市場的逐檔資料，往前找最近一個有成交日的收盤價。
+	 * 時間預算和同時查詢上限照 F-01（由 MarketResolver 負責）。
+	 * 補查失敗、逾時或被擋都不影響新增：持股照常存，收盤價留給背景排程補。
+	 */
+	private void backfillCloseQuietly(String code, Market market, Deadline deadline) {
+		StockLookup lookup = marketResolver.lookupLatestInMarket(code, market, deadline);
+		if (lookup.status() == StockLookup.Status.FOUND) {
+			saveQuoteQuietly(code, lookup);
+		} else {
+			log.warn("新增 {} 時補查收盤價沒有結果（{}），持股照常新增，收盤價由背景排程補上", code, lookup.status());
+		}
 	}
 
 	/**
