@@ -25,8 +25,13 @@ public record StockLookup(Status status, Market market, String name, LocalDate t
 		FOUND,
 		/** 回應正常，但沒有資料（代號在這個市場不存在，或這個月還沒有交易日）。 */
 		NOT_FOUND,
-		/** 逾時、HTTP 錯誤、回傳 HTML、JSON 解析失敗、格式和預期不同。 */
-		UNAVAILABLE
+		/** 逾時、HTTP 錯誤、JSON 解析失敗、格式和預期不同。 */
+		UNAVAILABLE,
+		/**
+		 * 被官方擋下（HTTP 403、429，或回傳 HTML）。對新增持股來說和 UNAVAILABLE 一樣是「無法確認」；
+		 * 排程看到它要停止這一輪並冷卻，所以要分開。
+		 */
+		BLOCKED
 	}
 
 	/** 最後一個交易日就有成交：收盤日就是交易日。 */
@@ -45,6 +50,15 @@ public record StockLookup(Status status, Market market, String name, LocalDate t
 
 	public static StockLookup unavailable(Market market) {
 		return new StockLookup(Status.UNAVAILABLE, market, null, null, null, null);
+	}
+
+	public static StockLookup blocked(Market market) {
+		return new StockLookup(Status.BLOCKED, market, null, null, null, null);
+	}
+
+	/** 把 HTTP 失敗轉成查詢結果：被擋 → BLOCKED，其他 → UNAVAILABLE。 */
+	static StockLookup failure(Market market, QuoteHttp.Outcome outcome) {
+		return outcome == QuoteHttp.Outcome.BLOCKED ? blocked(market) : unavailable(market);
 	}
 
 	/** 轉成要寫進 quote 表的資料；只有 FOUND 時才有意義。 */

@@ -88,21 +88,22 @@ class TwseStockDayClientTest {
 	}
 
 	@Test
-	void 回傳HTML_UNAVAILABLE() {
+	void 回傳HTML_當成被擋_BLOCKED() {
+		// 第 3 題第二階段：被擋要和一般失敗分開（排程要冷卻），原本預期 UNAVAILABLE
 		TwseStockDayClient client = clientFor(BASE_URL);
 		server.expect(requestTo(url(BASE_URL, "20261123", "2330")))
 				.andRespond(withSuccess("<!DOCTYPE html><html><body>請稍後再試</body></html>", MediaType.TEXT_HTML));
 
-		assertThat(client.lookupMonth("2330", NOV_23).status()).isEqualTo(Status.UNAVAILABLE);
+		assertThat(client.lookupMonth("2330", NOV_23).status()).isEqualTo(Status.BLOCKED);
 	}
 
 	@Test
-	void ContentType寫JSON但內容是HTML_仍然UNAVAILABLE() {
+	void ContentType寫JSON但內容是HTML_仍然當成被擋() {
 		TwseStockDayClient client = clientFor(BASE_URL);
 		server.expect(requestTo(url(BASE_URL, "20261123", "2330")))
 				.andRespond(withSuccess("  <html><body>blocked</body></html>", MediaType.APPLICATION_JSON));
 
-		assertThat(client.lookupMonth("2330", NOV_23).status()).isEqualTo(Status.UNAVAILABLE);
+		assertThat(client.lookupMonth("2330", NOV_23).status()).isEqualTo(Status.BLOCKED);
 	}
 
 	@Test
@@ -114,9 +115,25 @@ class TwseStockDayClientTest {
 	}
 
 	@Test
-	void 被擋403_UNAVAILABLE() {
+	void 被擋403_BLOCKED() {
 		TwseStockDayClient client = clientFor(BASE_URL);
 		server.expect(requestTo(url(BASE_URL, "20261123", "2330"))).andRespond(withStatus(HttpStatus.FORBIDDEN));
+
+		assertThat(client.lookupMonth("2330", NOV_23).status()).isEqualTo(Status.BLOCKED);
+	}
+
+	@Test
+	void 請求太頻繁429_BLOCKED() {
+		TwseStockDayClient client = clientFor(BASE_URL);
+		server.expect(requestTo(url(BASE_URL, "20261123", "2330"))).andRespond(withStatus(HttpStatus.TOO_MANY_REQUESTS));
+
+		assertThat(client.lookupMonth("2330", NOV_23).status()).isEqualTo(Status.BLOCKED);
+	}
+
+	@Test
+	void 找不到網址404_UNAVAILABLE而不是被擋() {
+		TwseStockDayClient client = clientFor(BASE_URL);
+		server.expect(requestTo(url(BASE_URL, "20261123", "2330"))).andRespond(withStatus(HttpStatus.NOT_FOUND));
 
 		assertThat(client.lookupMonth("2330", NOV_23).status()).isEqualTo(Status.UNAVAILABLE);
 	}

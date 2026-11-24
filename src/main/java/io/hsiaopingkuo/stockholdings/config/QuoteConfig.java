@@ -9,12 +9,14 @@ import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.web.client.RestClient;
 
 import io.hsiaopingkuo.stockholdings.quote.MarketResolver;
+import io.hsiaopingkuo.stockholdings.quote.TpexOtcClient;
 import io.hsiaopingkuo.stockholdings.quote.TpexTradingStockClient;
+import io.hsiaopingkuo.stockholdings.quote.TwseMiIndexClient;
 import io.hsiaopingkuo.stockholdings.quote.TwseStockDayClient;
 import tools.jackson.databind.json.JsonMapper;
 
 /**
- * 組裝外部行情相關的物件：兩個市場的逐檔 client，以及合併兩邊結果的 MarketResolver。
+ * 組裝外部行情相關的物件：兩個市場的逐檔 client、批次 client，以及合併兩邊結果的 MarketResolver。
  * 在這裡統一用 @Bean 建立（而不是各自加 @Component），主機網址、逾時從哪裡來一眼就看得到。
  */
 @Configuration
@@ -29,6 +31,17 @@ public class QuoteConfig {
 	@Bean
 	TpexTradingStockClient tpexTradingStockClient(QuoteProperties properties, JsonMapper jsonMapper) {
 		return new TpexTradingStockClient(restClient(properties.tpex().baseUrl(), properties), jsonMapper);
+	}
+
+	// 批次 client 和逐檔 client 用同一個主機設定：主考官換掉 TWSE_BASE_URL／TPEX_BASE_URL 時兩種都跟著換
+	@Bean
+	TwseMiIndexClient twseMiIndexClient(QuoteProperties properties, JsonMapper jsonMapper) {
+		return new TwseMiIndexClient(restClient(properties.twse().baseUrl(), properties), jsonMapper);
+	}
+
+	@Bean
+	TpexOtcClient tpexOtcClient(QuoteProperties properties, JsonMapper jsonMapper) {
+		return new TpexOtcClient(restClient(properties.tpex().baseUrl(), properties), jsonMapper);
 	}
 
 	// MarketResolver 有 close()，容器關閉時 Spring 會自動呼叫，把查詢用的執行緒收掉

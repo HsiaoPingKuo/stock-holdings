@@ -2,7 +2,6 @@ package io.hsiaopingkuo.stockholdings.quote;
 
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
-import java.util.Optional;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -45,17 +44,17 @@ public class TwseStockDayClient implements StockLookupClient {
 	@Override
 	public StockLookup lookupMonth(String code, LocalDate dayInMonth) {
 		String description = "證交所 STOCK_DAY " + code + " " + dayInMonth;
-		Optional<JsonNode> json = QuoteHttp.getJson(restClient, jsonMapper, uriBuilder -> uriBuilder
+		QuoteHttp.Response response = QuoteHttp.getJson(restClient, jsonMapper, uriBuilder -> uriBuilder
 				.path(PATH)
 				.queryParam("date", dayInMonth.format(DATE_PARAM))
 				.queryParam("stockNo", code)
 				.queryParam("response", "json")
 				.build(), description);
-		if (json.isEmpty()) {
-			return StockLookup.unavailable(Market.TWSE);
+		if (response.outcome() != QuoteHttp.Outcome.OK) {
+			return StockLookup.failure(Market.TWSE, response.outcome());
 		}
 		try {
-			return parse(code, json.get());
+			return parse(code, response.json());
 		} catch (RuntimeException e) {
 			// 欄位缺漏、日期或價格格式不對：官方格式可能改了，這份資料不可信
 			log.warn("{}：格式和預期不同：{}", description, e.toString());

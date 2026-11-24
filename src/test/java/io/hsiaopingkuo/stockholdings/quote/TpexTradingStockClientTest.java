@@ -76,12 +76,13 @@ class TpexTradingStockClientTest {
 	}
 
 	@Test
-	void 回傳HTML_UNAVAILABLE() {
+	void 回傳HTML_當成被擋_BLOCKED() {
+		// 第 3 題第二階段：被擋要和一般失敗分開（排程要冷卻），原本預期 UNAVAILABLE
 		TpexTradingStockClient client = clientFor(BASE_URL);
 		server.expect(requestTo(BASE_URL + "/www/zh-tw/afterTrading/tradingStock?code=6488&date=2026/11/23&response=json"))
 				.andRespond(withSuccess("<html><body>維護中</body></html>", MediaType.TEXT_HTML));
 
-		assertThat(client.lookupMonth("6488", NOV_23).status()).isEqualTo(Status.UNAVAILABLE);
+		assertThat(client.lookupMonth("6488", NOV_23).status()).isEqualTo(Status.BLOCKED);
 	}
 
 	@Test

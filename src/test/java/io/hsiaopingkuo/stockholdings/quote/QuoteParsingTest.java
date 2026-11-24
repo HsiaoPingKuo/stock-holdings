@@ -34,6 +34,8 @@ class QuoteParsingTest {
 	@Test
 	void 沒有成交的價格是null而不是0() {
 		assertThat(QuoteParsing.parsePrice("--")).isNull();
+		// 櫃買 otc 批次實測用四個減號
+		assertThat(QuoteParsing.parsePrice("----")).isNull();
 		assertThat(QuoteParsing.parsePrice(" ")).isNull();
 		assertThat(QuoteParsing.parsePrice(null)).isNull();
 	}

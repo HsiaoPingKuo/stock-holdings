@@ -2,7 +2,6 @@ package io.hsiaopingkuo.stockholdings.quote;
 
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
-import java.util.Optional;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -43,17 +42,17 @@ public class TpexTradingStockClient implements StockLookupClient {
 	public StockLookup lookupMonth(String code, LocalDate dayInMonth) {
 		String description = "櫃買 tradingStock " + code + " " + dayInMonth;
 		// 用 queryParam 組網址（而不是 "?date={date}" 範本變數）：範本變數裡的 / 會被編碼成 %2F，跟官方範例不同
-		Optional<JsonNode> json = QuoteHttp.getJson(restClient, jsonMapper, uriBuilder -> uriBuilder
+		QuoteHttp.Response response = QuoteHttp.getJson(restClient, jsonMapper, uriBuilder -> uriBuilder
 				.path(PATH)
 				.queryParam("code", code)
 				.queryParam("date", dayInMonth.format(DATE_PARAM))
 				.queryParam("response", "json")
 				.build(), description);
-		if (json.isEmpty()) {
-			return StockLookup.unavailable(Market.TPEX);
+		if (response.outcome() != QuoteHttp.Outcome.OK) {
+			return StockLookup.failure(Market.TPEX, response.outcome());
 		}
 		try {
-			return parse(code, json.get());
+			return parse(code, response.json());
 		} catch (RuntimeException e) {
 			log.warn("{}：格式和預期不同：{}", description, e.toString());
 			return StockLookup.unavailable(Market.TPEX);
