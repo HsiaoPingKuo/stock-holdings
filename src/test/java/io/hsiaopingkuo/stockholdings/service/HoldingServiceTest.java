@@ -58,8 +58,8 @@ import io.hsiaopingkuo.stockholdings.support.TestHoldings;
 
 /** Service 搭配真的資料庫（測試用 H2 記憶體模式 + Flyway）測試業務規則。 */
 @DataJpaTest
-// 第 6 題：HoldingService 重播交易時要用除權息提供者；這一階段的實作一律回傳空的
-@Import({ HoldingService.class, QuoteService.class, NoDividendEventProvider.class,
+// 第 6 題：HoldingService 重播交易時要用除權息提供者；這裡的測試不寫入除權息事件，讀出來一律是空的
+@Import({ HoldingService.class, QuoteService.class, DatabaseDividendEventProvider.class,
 		HoldingServiceTest.FixedClockConfig.class })
 // 測試本身不包交易（F-01）：create() 要在「沒有交易」的情況下呼叫官方，
 // 如果測試先開了交易，就測不出 create() 有沒有自己開交易；資料改由「清空資料」負責清掉

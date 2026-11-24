@@ -8,7 +8,7 @@ import io.hsiaopingkuo.stockholdings.calc.DividendEventInput;
 
 /**
  * 重播交易時要用的除權息事件（第 6 題）。
- * 第 3 階段的實作一律回傳空的（NoDividendEventProvider）；第 4 階段改成讀 dividend_event 表。
+ * 實作是 DatabaseDividendEventProvider（讀 dividend_event 表，資料由背景的 DividendSyncService 寫入）。
  *
  * 規則（實作都要遵守）：
  * - 只讀資料庫，不可以呼叫官方 API：寫入時會在鎖住持股的交易裡呼叫，等官方會讓其他裝置一直等不到鎖（F-01）。
