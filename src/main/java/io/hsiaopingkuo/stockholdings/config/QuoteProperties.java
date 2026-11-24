@@ -1,0 +1,26 @@
+package io.hsiaopingkuo.stockholdings.config;
+
+import java.time.Duration;
+
+import org.springframework.boot.context.properties.ConfigurationProperties;
+
+/**
+ * 外部行情 API 的設定（application.properties 的 quote.*）。
+ * 主機網址可以用環境變數 TWSE_BASE_URL、TPEX_BASE_URL 換掉，主考官才能指到自己的測試伺服器；
+ * 逾時一定要設，官方網站卡住時，使用者才不會一直等下去。
+ *
+ * @param twse           證交所主機
+ * @param tpex           櫃買中心主機
+ * @param connectTimeout 建立連線的上限
+ * @param readTimeout    等待回應的上限
+ * @param lookupTimeout  新增持股時「同時查兩個市場」的整體上限（題目要求 10 秒內看到結果）
+ * @param lookupCacheTtl 代號查詢結果記住多久；輸入代號時的即時提示和按下新增共用，避免重複打官方
+ */
+@ConfigurationProperties("quote")
+public record QuoteProperties(Host twse, Host tpex, Duration connectTimeout, Duration readTimeout,
+		Duration lookupTimeout, Duration lookupCacheTtl) {
+
+	/** @param baseUrl 主機網址，例如 https://www.twse.com.tw；路徑和參數寫在 client 裡，不能改 */
+	public record Host(String baseUrl) {
+	}
+}
