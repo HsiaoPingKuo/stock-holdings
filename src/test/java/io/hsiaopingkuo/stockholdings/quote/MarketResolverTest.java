@@ -14,7 +14,13 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BiFunction;
 
@@ -422,5 +428,174 @@ class MarketResolverTest {
 		resolver.resolve("2317");
 
 		assertThat(twseCalls.get()).isEqualTo(2);
+	}
+
+	// ===== 同一代號同時查詢只打一次官方（F-02） =====
+
+	/**
+	 * 每次「查最新資料」算一輪，而且要等 gate 打開才回答：用來讓多個請求確實「同時」在等官方。
+	 * started 在第一輪開始時倒數，測試用它確認官方已經「收到請求、還沒回應」。
+	 */
+	private static StockLookupClient gatedClient(Market market, AtomicInteger rounds, CountDownLatch started,
+			CountDownLatch gate, StockLookup answer) {
+		return new StockLookupClient() {
+			@Override
+			public Market market() {
+				return market;
+			}
+
+			@Override
+			public StockLookup lookupMonth(String code, LocalDate dayInMonth) {
+				return answer;
+			}
+
+			@Override
+			public StockLookup lookupLatest(String code, LocalDate today) {
+				rounds.incrementAndGet();
+				started.countDown();
+				try {
+					// 最多等 5 秒，測試寫錯時不會整個卡住
+					gate.await(5, TimeUnit.SECONDS);
+				} catch (InterruptedException e) {
+					Thread.currentThread().interrupt();
+				}
+				return answer;
+			}
+		};
+	}
+
+	/** 同時送出 count 個 resolve(code)。 */
+	private static List<Future<StockLookup>> resolveConcurrently(ExecutorService callers, MarketResolver resolver,
+			String code, int count) {
+		List<Future<StockLookup>> results = new ArrayList<>();
+		for (int i = 0; i < count; i++) {
+			results.add(callers.submit(() -> resolver.resolve(code)));
+		}
+		return results;
+	}
+
+	@Test
+	void 同一代號8個請求同時查_官方只收到一輪請求_大家拿到同一個結果() throws Exception {
+		AtomicInteger twseRounds = new AtomicInteger();
+		AtomicInteger tpexRounds = new AtomicInteger();
+		CountDownLatch twseStarted = new CountDownLatch(1);
+		CountDownLatch gate = new CountDownLatch(1);
+		resolver = new MarketResolver(
+				gatedClient(Market.TWSE, twseRounds, twseStarted, gate, found(Market.TWSE)),
+				gatedClient(Market.TPEX, tpexRounds, new CountDownLatch(1), gate, StockLookup.notFound(Market.TPEX)),
+				clockAt(LocalDate.of(2026, 11, 24)), LOOKUP_TIMEOUT, CACHE_TTL);
+		ExecutorService callers = Executors.newFixedThreadPool(8);
+		try {
+			List<Future<StockLookup>> results = resolveConcurrently(callers, resolver, "2330", 8);
+			assertThat(twseStarted.await(2, TimeUnit.SECONDS)).isTrue();
+			// 官方還沒回應：給其他 7 個請求一點時間進到 resolve，確定大家是「同時」在等
+			Thread.sleep(300);
+			gate.countDown();
+
+			for (Future<StockLookup> result : results) {
+				assertThat(result.get(5, TimeUnit.SECONDS).market()).isEqualTo(Market.TWSE);
+			}
+		} finally {
+			callers.shutdownNow();
+		}
+		assertThat(twseRounds.get()).isEqualTo(1);
+		assertThat(tpexRounds.get()).isEqualTo(1);
+	}
+
+	@Test
+	void 某個代號的官方查詢卡住時_不同代號不受影響() throws Exception {
+		CountDownLatch slowStarted = new CountDownLatch(1);
+		CountDownLatch gate = new CountDownLatch(1);
+		resolver = new MarketResolver(
+				fakeClient(Market.TWSE, (code, day) -> {
+					if (code.equals("2330")) {
+						slowStarted.countDown();
+						try {
+							gate.await(5, TimeUnit.SECONDS);
+						} catch (InterruptedException e) {
+							Thread.currentThread().interrupt();
+						}
+					}
+					return found(Market.TWSE);
+				}),
+				fakeClient(Market.TPEX, (code, day) -> StockLookup.notFound(Market.TPEX)),
+				clockAt(LocalDate.of(2026, 11, 24)), LOOKUP_TIMEOUT, CACHE_TTL);
+		ExecutorService callers = Executors.newSingleThreadExecutor();
+		try {
+			Future<StockLookup> slow = callers.submit(() -> resolver.resolve("2330"));
+			assertThat(slowStarted.await(2, TimeUnit.SECONDS)).isTrue();
+
+			long start = System.nanoTime();
+			StockLookup other = resolver.resolve("6488");
+
+			assertThat(other.market()).isEqualTo(Market.TWSE);
+			assertThat(Duration.ofNanos(System.nanoTime() - start)).isLessThan(Duration.ofSeconds(1));
+			// 2330 還在等官方，沒有被 6488 的結果影響
+			assertThat(slow.isDone()).isFalse();
+			gate.countDown();
+			assertThat(slow.get(5, TimeUnit.SECONDS).market()).isEqualTo(Market.TWSE);
+		} finally {
+			callers.shutdownNow();
+		}
+	}
+
+	@Test
+	void 共用的查詢失敗_等待的請求都收到無法確認_下一次會重新查官方() throws Exception {
+		AtomicInteger twseRounds = new AtomicInteger();
+		AtomicInteger tpexRounds = new AtomicInteger();
+		CountDownLatch twseStarted = new CountDownLatch(1);
+		CountDownLatch gate = new CountDownLatch(1);
+		resolver = new MarketResolver(
+				gatedClient(Market.TWSE, twseRounds, twseStarted, gate, StockLookup.unavailable(Market.TWSE)),
+				gatedClient(Market.TPEX, tpexRounds, new CountDownLatch(1), gate, StockLookup.notFound(Market.TPEX)),
+				clockAt(LocalDate.of(2026, 11, 24)), LOOKUP_TIMEOUT, CACHE_TTL);
+		ExecutorService callers = Executors.newFixedThreadPool(3);
+		try {
+			List<Future<StockLookup>> results = resolveConcurrently(callers, resolver, "2330", 3);
+			assertThat(twseStarted.await(2, TimeUnit.SECONDS)).isTrue();
+			Thread.sleep(300);
+			gate.countDown();
+
+			for (Future<StockLookup> result : results) {
+				assertThatThrownBy(() -> result.get(5, TimeUnit.SECONDS))
+						.hasCauseInstanceOf(MarketUnavailableException.class);
+			}
+		} finally {
+			callers.shutdownNow();
+		}
+		assertThat(twseRounds.get()).isEqualTo(1);
+
+		// 失敗後「進行中」的紀錄已清掉：再查一次會重新問官方，而不是一直拿到同一個失敗結果
+		assertThatThrownBy(() -> resolver.resolve("2330")).isInstanceOf(MarketUnavailableException.class);
+		assertThat(twseRounds.get()).isEqualTo(2);
+	}
+
+	@Test
+	void 共用查詢時官方一直不回應_每個請求仍在自己的上限內結束() throws Exception {
+		CountDownLatch never = new CountDownLatch(1);
+		resolver = new MarketResolver(
+				fakeClient(Market.TWSE, (code, day) -> {
+					try {
+						never.await(); // 模擬官方一直不回應
+					} catch (InterruptedException e) {
+						Thread.currentThread().interrupt();
+					}
+					return StockLookup.unavailable(Market.TWSE);
+				}),
+				fakeClient(Market.TPEX, (code, day) -> StockLookup.notFound(Market.TPEX)),
+				clockAt(LocalDate.of(2026, 11, 24)), Duration.ofMillis(200), CACHE_TTL);
+		ExecutorService callers = Executors.newFixedThreadPool(3);
+		try {
+			long start = System.nanoTime();
+			List<Future<StockLookup>> results = resolveConcurrently(callers, resolver, "9999", 3);
+
+			for (Future<StockLookup> result : results) {
+				assertThatThrownBy(() -> result.get(5, TimeUnit.SECONDS))
+						.hasCauseInstanceOf(MarketUnavailableException.class);
+			}
+			assertThat(Duration.ofNanos(System.nanoTime() - start)).isLessThan(Duration.ofSeconds(2));
+		} finally {
+			callers.shutdownNow();
+		}
 	}
 }
