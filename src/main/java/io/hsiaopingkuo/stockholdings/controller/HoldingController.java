@@ -122,8 +122,10 @@ public class HoldingController {
 			return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
 					.body(ErrorResponse.of("QUOTE_UNAVAILABLE", e.getMessage()));
 		} catch (MarketAmbiguousException e) {
-			// 409：兩個市場的資料互相衝突；和 503 分開，畫面才不會叫使用者「稍後再試」
-			return ResponseEntity.status(HttpStatus.CONFLICT).body(ErrorResponse.of("MARKET_AMBIGUOUS", e.getMessage()));
+			// 和 App API（POST /api/v1/holdings）相同：503 + MARKET_UNDETERMINED。
+			// 狀態碼和「連不上」一樣是 503，畫面用 error.code 分辨，才不會叫使用者「稍後再試」
+			return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+					.body(ErrorResponse.of("MARKET_UNDETERMINED", e.getMessage()));
 		}
 	}
 
