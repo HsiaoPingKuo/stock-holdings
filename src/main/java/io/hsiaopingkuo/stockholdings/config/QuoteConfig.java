@@ -9,6 +9,7 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 import org.springframework.web.client.RestClient;
 
 import io.hsiaopingkuo.stockholdings.entity.Market;
@@ -25,7 +26,9 @@ import io.hsiaopingkuo.stockholdings.repository.HoldingRepository;
 import io.hsiaopingkuo.stockholdings.repository.QuoteRepository;
 import io.hsiaopingkuo.stockholdings.service.HoldingBackfillService;
 import io.hsiaopingkuo.stockholdings.service.Pause;
+import io.hsiaopingkuo.stockholdings.service.QuoteRefreshScheduler;
 import io.hsiaopingkuo.stockholdings.service.QuoteRefreshService;
+import io.hsiaopingkuo.stockholdings.service.RefreshSchedule;
 import io.hsiaopingkuo.stockholdings.service.QuoteService;
 import tools.jackson.databind.json.JsonMapper;
 
@@ -102,6 +105,24 @@ public class QuoteConfig {
 		Map<Market, StockLookupClient> stockClients = Map.of(Market.TWSE, twseStock, Market.TPEX, tpexStock);
 		return new QuoteRefreshService(batchClients, stockClients, quoteService, quoteRepository, holdingRepository,
 				backfillService, pause, random, properties.refresh(), clock);
+	}
+
+	/**
+	 * 排程用自己的執行緒池（2 條，上市、上櫃各一條）：證交所在逐檔查詢之間等待時，不會卡住櫃買。
+	 * 這個執行緒池只給行情排程用，不註冊成 bean，避免影響 Spring Boot 其他地方預設的執行緒池；
+	 * 伺服器關閉時由 QuoteRefreshScheduler.close() 停止。
+	 */
+	@Bean
+	QuoteRefreshScheduler quoteRefreshScheduler(QuoteRefreshService refreshService, HolidayCalendar holidayCalendar,
+			RandomGenerator random, QuoteProperties properties, Clock clock) {
+		ThreadPoolTaskScheduler taskScheduler = new ThreadPoolTaskScheduler();
+		taskScheduler.setPoolSize(2);
+		taskScheduler.setThreadNamePrefix("quote-refresh-");
+		// daemon：萬一有請求卡住，也不會擋住程式結束
+		taskScheduler.setDaemon(true);
+		taskScheduler.initialize();
+		return new QuoteRefreshScheduler(refreshService, holidayCalendar,
+				new RefreshSchedule(properties.refresh(), random), taskScheduler, clock, properties.refresh().enabled());
 	}
 
 	private static RestClient restClient(String baseUrl, QuoteProperties properties) {
