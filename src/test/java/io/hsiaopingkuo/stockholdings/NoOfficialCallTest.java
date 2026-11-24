@@ -2,6 +2,7 @@ package io.hsiaopingkuo.stockholdings;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.containsString;
+import static org.hamcrest.Matchers.nullValue;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
@@ -98,6 +99,28 @@ class NoOfficialCallTest {
 				// 6488 沒有行情
 				.andExpect(content().string(containsString("<td>未取得</td>")));
 		mockMvc.perform(get("/holdings")).andExpect(status().isOk());
+
+		verifyNoOfficialCall();
+	}
+
+	@Test
+	void App2的三支讀取API只讀資料庫_不呼叫任何官方client() throws Exception {
+		LocalDateTime now = LocalDateTime.of(2026, 11, 24, 14, 0);
+		Long tsmcId = TestHoldings.saveWithBuy(holdingRepository, tradeRepository, "2330", "台積電", Market.TWSE, 1,
+				"1000.00", now).getId();
+		TestHoldings.saveWithBuy(holdingRepository, tradeRepository, "6488", "環球晶", Market.TPEX, 1, "450.00", now);
+		quoteRepository.save(new Quote(
+				DailyQuote.ofDay("2330", "台積電", Market.TWSE, LocalDate.of(2026, 11, 23), new BigDecimal("2030.00")), now));
+
+		mockMvc.perform(get("/api/v2/holdings"))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$[0].current_price").value(2030.00))
+				// 6488 沒有行情：不會為了補收盤價去問官方，直接回 null
+				.andExpect(jsonPath("$[1].current_price").value(nullValue()));
+		mockMvc.perform(get("/api/v2/holdings/{id}", tsmcId)).andExpect(status().isOk());
+		mockMvc.perform(get("/api/v2/summary"))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.quote_missing").value(1));
 
 		verifyNoOfficialCall();
 	}
