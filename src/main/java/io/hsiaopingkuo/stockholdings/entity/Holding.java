@@ -1,6 +1,5 @@
 package io.hsiaopingkuo.stockholdings.entity;
 
-import java.math.BigDecimal;
 import java.time.LocalDateTime;
 
 import jakarta.persistence.Column;
@@ -15,6 +14,9 @@ import jakarta.persistence.Table;
 /**
  * 一筆持股，對應 V1__create_holding.sql 的 holding 表（V2 加上 name、market）。
  * 資料表由 Flyway 建立，這裡的 @Column 只是對應欄位，Hibernate 啟動時會檢查兩邊一致（ddl-auto=validate）。
+ *
+ * 第 6 題：股數、成本改由 trade 表的交易重播計算，這裡不再對應 lots、buy_price。
+ * 兩個欄位先留在資料庫（V4 已拿掉 NOT NULL），新增的持股寫入 NULL；之後再用新的 migration 刪除。
  */
 @Entity
 @Table(name = "holding")
@@ -37,12 +39,6 @@ public class Holding {
 	@Column(name = "market", length = 4)
 	private Market market;
 
-	@Column(name = "lots", nullable = false)
-	private int lots;
-
-	@Column(name = "buy_price", nullable = false, precision = 12, scale = 2)
-	private BigDecimal buyPrice;
-
 	@Column(name = "created_at", nullable = false)
 	private LocalDateTime createdAt;
 
@@ -54,21 +50,12 @@ public class Holding {
 	}
 
 	// 時間由呼叫端傳入（service 用台北時區的 Clock 算好），Entity 自己不碰系統時間
-	// 名稱和市場在新增時由官方 API 判斷後一起存入，之後不能改（修改只開放張數和買進價）
-	public Holding(String code, String name, Market market, int lots, BigDecimal buyPrice, LocalDateTime now) {
+	// 名稱和市場在新增時由官方 API 判斷後一起存入，之後不能改；股數和價格記在交易（Trade）
+	public Holding(String code, String name, Market market, LocalDateTime now) {
 		this.code = code;
 		this.name = name;
 		this.market = market;
-		this.lots = lots;
-		this.buyPrice = buyPrice;
 		this.createdAt = now;
-		this.updatedAt = now;
-	}
-
-	// 修改只開放張數和買進價：代號建立後就不能改（和 App API 的 PUT 規格一致）
-	public void update(int lots, BigDecimal buyPrice, LocalDateTime now) {
-		this.lots = lots;
-		this.buyPrice = buyPrice;
 		this.updatedAt = now;
 	}
 
@@ -86,14 +73,6 @@ public class Holding {
 
 	public Market getMarket() {
 		return market;
-	}
-
-	public int getLots() {
-		return lots;
-	}
-
-	public BigDecimal getBuyPrice() {
-		return buyPrice;
 	}
 
 	public LocalDateTime getCreatedAt() {

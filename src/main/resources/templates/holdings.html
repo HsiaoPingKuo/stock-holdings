@@ -81,13 +81,24 @@
 			<tr><th>股票代號</th><th>名稱</th><th>市場</th><th>張數</th><th>買進價</th><th>收盤價</th><th>收盤價日期</th><th>盈虧</th><th>收益率</th><th>操作</th></tr>
 		</thead>
 		<tbody>
-			<!-- trend：這一列盈虧的顏色（同總計的規則）；沒有收盤價時沒有盈虧，不上色 -->
-			<tr th:each="h : ${holdings}"
+			<!-- th:block 只負責重複，本身不輸出標籤：每檔依狀態輸出「資料異常」或一般的那一列 -->
+			<th:block th:each="h : ${holdings}">
+			<!-- 第 6 題：重播交易失敗（資料被手動改過）的持股：數字都算不出來，只顯示代號、名稱和「資料異常」，不計入總計 -->
+			<tr th:if="${h.dataError}" class="data-error">
+				<td th:text="${h.code}">2330</td>
+				<td><th:block th:text="${h.name} ?: '—'">台積電</th:block> <strong class="error">資料異常</strong></td>
+				<td th:text="${h.market} != null ? ${h.market.label} : '—'">上市</td>
+				<td>—</td><td>—</td><td>—</td><td></td><td>—</td><td>—</td><td></td>
+			</tr>
+			<!-- trend：這一列盈虧的顏色（同總計的規則）；沒有收盤價時沒有盈虧，不上色。
+			     th:unless 比 th:with 先執行，資料異常的列（profit 是 null）不會走到這裡 -->
+			<tr th:unless="${h.dataError}"
 					th:with="p=${h.profit},
 						trend=${!h.profit.hasClosePrice() ? '' : (h.profit.profit.signum() > 0 ? 'gain' : (h.profit.profit.signum() < 0 ? 'loss' : ''))}">
 				<td th:text="${h.code}">2330</td>
-				<!-- 第 2 題時存的舊資料沒有名稱和市場（NULL），顯示「—」 -->
-				<td th:text="${h.name} ?: '—'">台積電</td>
+				<!-- 第 2 題時存的舊資料沒有名稱和市場（NULL），顯示「—」。
+				     第 6 題：有零股時名稱旁加小字，張數欄只顯示整張，提醒還在用 App 1.0 的使用者更新 -->
+				<td><th:block th:text="${h.name} ?: '—'">台積電</th:block><small class="note odd-lot" th:if="${h.oddLotNote() != null}" th:text="| ${h.oddLotNote()}|">含零股 500 股・App 1.0 只顯示整張，請更新 App 2.0</small></td>
 				<td th:text="${h.market} != null ? ${h.market.label} : '—'">上市</td>
 				<td class="num" th:text="${h.lots}">1</td>
 				<!-- 買進價固定顯示兩位小數、加千分位 -->
@@ -117,6 +128,7 @@
 					</form>
 				</td>
 			</tr>
+			</th:block>
 		</tbody>
 	</table>
 

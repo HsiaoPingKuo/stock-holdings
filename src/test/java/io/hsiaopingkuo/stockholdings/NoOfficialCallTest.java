@@ -22,7 +22,6 @@ import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
-import io.hsiaopingkuo.stockholdings.entity.Holding;
 import io.hsiaopingkuo.stockholdings.entity.Market;
 import io.hsiaopingkuo.stockholdings.entity.Quote;
 import io.hsiaopingkuo.stockholdings.quote.DailyQuote;
@@ -32,6 +31,8 @@ import io.hsiaopingkuo.stockholdings.quote.TpexTradingStockClient;
 import io.hsiaopingkuo.stockholdings.quote.TwseMiIndexClient;
 import io.hsiaopingkuo.stockholdings.quote.TwseStockDayClient;
 import io.hsiaopingkuo.stockholdings.repository.HoldingRepository;
+import io.hsiaopingkuo.stockholdings.repository.TradeRepository;
+import io.hsiaopingkuo.stockholdings.support.TestHoldings;
 import io.hsiaopingkuo.stockholdings.repository.QuoteRepository;
 
 /**
@@ -51,6 +52,9 @@ class NoOfficialCallTest {
 
 	@Autowired
 	private QuoteRepository quoteRepository;
+
+	@Autowired
+	private TradeRepository tradeRepository;
 
 	@MockitoBean
 	private TwseStockDayClient twseStockDayClient;
@@ -81,8 +85,9 @@ class NoOfficialCallTest {
 	@Test
 	void 打開清單只讀資料庫_不呼叫任何官方client() throws Exception {
 		LocalDateTime now = LocalDateTime.of(2026, 11, 24, 14, 0);
-		holdingRepository.save(new Holding("2330", "台積電", Market.TWSE, 1, new BigDecimal("1000.00"), now));
-		holdingRepository.save(new Holding("6488", "環球晶", Market.TPEX, 1, new BigDecimal("450.00"), now));
+		// 第 6 題：張數、買進價記在交易，存成「持股＋一筆整張買進」
+		TestHoldings.saveWithBuy(holdingRepository, tradeRepository, "2330", "台積電", Market.TWSE, 1, "1000.00", now);
+		TestHoldings.saveWithBuy(holdingRepository, tradeRepository, "6488", "環球晶", Market.TPEX, 1, "450.00", now);
 		quoteRepository.save(new Quote(
 				DailyQuote.ofDay("2330", "台積電", Market.TWSE, LocalDate.of(2026, 11, 23), new BigDecimal("2030.00")), now));
 

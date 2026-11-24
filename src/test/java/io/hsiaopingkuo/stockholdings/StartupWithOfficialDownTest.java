@@ -7,7 +7,6 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-import java.math.BigDecimal;
 import java.time.Duration;
 import java.time.LocalDateTime;
 
@@ -18,9 +17,10 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.test.web.servlet.MockMvc;
 
-import io.hsiaopingkuo.stockholdings.entity.Holding;
 import io.hsiaopingkuo.stockholdings.entity.Market;
 import io.hsiaopingkuo.stockholdings.repository.HoldingRepository;
+import io.hsiaopingkuo.stockholdings.repository.TradeRepository;
+import io.hsiaopingkuo.stockholdings.support.TestHoldings;
 import io.hsiaopingkuo.stockholdings.service.QuoteRefreshService;
 
 /**
@@ -41,6 +41,9 @@ class StartupWithOfficialDownTest {
 	private HoldingRepository holdingRepository;
 
 	@Autowired
+	private TradeRepository tradeRepository;
+
+	@Autowired
 	private QuoteRefreshService refreshService;
 
 	@AfterEach
@@ -57,8 +60,9 @@ class StartupWithOfficialDownTest {
 			assertThat(refreshService.state(Market.TPEX).usedPerStock()).isTrue();
 		});
 
-		holdingRepository.save(new Holding("2330", "台積電", Market.TWSE, 1, new BigDecimal("1000.00"),
-				LocalDateTime.of(2026, 11, 24, 14, 0)));
+		// 第 6 題：張數、買進價記在交易，存成「持股＋一筆整張買進」
+		TestHoldings.saveWithBuy(holdingRepository, tradeRepository, "2330", "台積電", Market.TWSE, 1, "1000.00",
+				LocalDateTime.of(2026, 11, 24, 14, 0));
 
 		mockMvc.perform(get("/holdings"))
 				.andExpect(status().isOk())

@@ -76,7 +76,7 @@ class HoldingBackfillServiceTest {
 	}
 
 	private void oldHolding(String code) {
-		holdingRepository.saveAndFlush(new Holding(code, null, null, 1, new BigDecimal("100.00"), CREATED));
+		holdingRepository.saveAndFlush(new Holding(code, null, null, CREATED));
 	}
 
 	private Holding holdingOf(String code) {
@@ -165,7 +165,7 @@ class HoldingBackfillServiceTest {
 
 	@Test
 	void 已經有市場的持股不會被改() {
-		holdingRepository.saveAndFlush(new Holding("2330", "台積電", Market.TWSE, 1, new BigDecimal("100.00"), CREATED));
+		holdingRepository.saveAndFlush(new Holding("2330", "台積電", Market.TWSE, CREATED));
 
 		int filled = service.backfill(true);
 

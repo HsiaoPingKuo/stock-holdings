@@ -35,7 +35,7 @@ class TradeRepositoryTest {
 	private EntityManager entityManager;
 
 	private Holding saveHolding(String code) {
-		return holdingRepository.saveAndFlush(new Holding(code, "測試", Market.TWSE, 1, new BigDecimal("100.00"), NOW));
+		return holdingRepository.saveAndFlush(new Holding(code, "測試", Market.TWSE, NOW));
 	}
 
 	@Test

@@ -35,6 +35,8 @@ import io.hsiaopingkuo.stockholdings.quote.TwseMiIndexClient;
 import io.hsiaopingkuo.stockholdings.quote.TwseStockDayClient;
 import io.hsiaopingkuo.stockholdings.repository.HoldingRepository;
 import io.hsiaopingkuo.stockholdings.repository.QuoteRepository;
+import io.hsiaopingkuo.stockholdings.repository.TradeRepository;
+import io.hsiaopingkuo.stockholdings.support.TestHoldings;
 
 /**
  * App 1.0 API（第 5 題）：啟動整個程式，用真的資料庫（記憶體 H2）、真的 JSON 設定和計算，
@@ -59,6 +61,9 @@ class HoldingApiControllerTest {
 	@Autowired
 	private QuoteRepository quoteRepository;
 
+	@Autowired
+	private TradeRepository tradeRepository;
+
 	@MockitoBean
 	private TwseStockDayClient twseStockDayClient;
 
@@ -81,7 +86,8 @@ class HoldingApiControllerTest {
 	}
 
 	private Holding saveHolding(String code, String name, Market market, int lots, String buyPrice) {
-		return holdingRepository.save(new Holding(code, name, market, lots, new BigDecimal(buyPrice), NOW));
+		// 第 6 題：張數、買進價改記在交易，存成「持股＋一筆整張買進」（和 V4 轉換 1.0 資料的方式相同）
+		return TestHoldings.saveWithBuy(holdingRepository, tradeRepository, code, name, market, lots, buyPrice, NOW);
 	}
 
 	private void saveQuote(String code, String name, Market market, LocalDate date, String closePrice) {

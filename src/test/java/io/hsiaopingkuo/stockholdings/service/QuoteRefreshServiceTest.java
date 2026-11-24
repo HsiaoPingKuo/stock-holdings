@@ -114,8 +114,7 @@ class QuoteRefreshServiceTest {
 	}
 
 	private void hold(String code, Market market) {
-		holdingRepository.saveAndFlush(new Holding(code, "名稱" + code, market, 1, new BigDecimal("100.00"),
-				LocalDateTime.of(2026, 11, 20, 10, 0)));
+		holdingRepository.saveAndFlush(new Holding(code, "名稱" + code, market, LocalDateTime.of(2026, 11, 20, 10, 0)));
 	}
 
 	private void cache(String code, Market market, LocalDate date) {
@@ -385,8 +384,7 @@ class QuoteRefreshServiceTest {
 
 	@Test
 	void 每一輪都會補舊持股的市場_快取有就不用問官方() {
-		holdingRepository.saveAndFlush(new Holding("2330", null, null, 1, new BigDecimal("1000.00"),
-				LocalDateTime.of(2026, 11, 20, 10, 0)));
+		holdingRepository.saveAndFlush(new Holding("2330", null, null, LocalDateTime.of(2026, 11, 20, 10, 0)));
 		twseBatch.answer = date -> batchOf(date, Market.TWSE, "2330", "2050.00");
 
 		service.runRound(Market.TWSE, Trigger.SCHEDULED);
@@ -508,8 +506,7 @@ class QuoteRefreshServiceTest {
 	@Test
 	void 同一輪先補舊持股的市場_再補收盤價_剛補上市場的持股同一輪就補到收盤價() {
 		// 第 2 題留下的舊持股：沒有市場
-		holdingRepository.saveAndFlush(new Holding("2363", null, null, 1, new BigDecimal("10.00"),
-				LocalDateTime.of(2026, 11, 20, 10, 0)));
+		holdingRepository.saveAndFlush(new Holding("2363", null, null, LocalDateTime.of(2026, 11, 20, 10, 0)));
 		twseBatch.answer = date -> batchOf(date, Market.TWSE, "2363", "--");
 		twseStock.answer = code -> noTradeOn1123(Market.TWSE);
 

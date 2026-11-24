@@ -19,10 +19,13 @@ import org.springframework.web.method.annotation.MethodArgumentTypeMismatchExcep
 
 import io.hsiaopingkuo.stockholdings.dto.ErrorResponse;
 import io.hsiaopingkuo.stockholdings.exception.DuplicateCodeException;
+import io.hsiaopingkuo.stockholdings.exception.HoldingBusyException;
+import io.hsiaopingkuo.stockholdings.exception.HoldingDataException;
 import io.hsiaopingkuo.stockholdings.exception.HoldingNotFoundException;
 import io.hsiaopingkuo.stockholdings.exception.MarketAmbiguousException;
 import io.hsiaopingkuo.stockholdings.exception.MarketUnavailableException;
 import io.hsiaopingkuo.stockholdings.exception.StockCodeNotFoundException;
+import io.hsiaopingkuo.stockholdings.exception.UpgradeRequiredException;
 import jakarta.servlet.http.HttpServletRequest;
 import tools.jackson.core.JacksonException;
 import tools.jackson.core.exc.InputCoercionException;
@@ -64,6 +67,27 @@ public class ApiExceptionHandler {
 	@ExceptionHandler(DuplicateCodeException.class)
 	ResponseEntity<ErrorResponse> duplicateCode(DuplicateCodeException e) {
 		return ApiJson.error(HttpStatus.CONFLICT, "DUPLICATE_CODE", e.getMessage());
+	}
+
+	// ===== 第 6 題：持股改由交易計算後的三種衝突（設計決定 3、6-B）=====
+	// 都用 409：使用者送的資料本身沒錯，是和持股目前的狀態衝突
+
+	/** 有多筆交易、零股或配過股，不能用 App 1.0 的方式修改、刪除。 */
+	@ExceptionHandler(UpgradeRequiredException.class)
+	ResponseEntity<ErrorResponse> upgradeRequired(UpgradeRequiredException e) {
+		return ApiJson.error(HttpStatus.CONFLICT, "UPGRADE_REQUIRED", e.getMessage());
+	}
+
+	/** 別的裝置正在修改同一檔持股，等不到鎖。 */
+	@ExceptionHandler(HoldingBusyException.class)
+	ResponseEntity<ErrorResponse> holdingBusy(HoldingBusyException e) {
+		return ApiJson.error(HttpStatus.CONFLICT, "HOLDING_BUSY", e.getMessage());
+	}
+
+	/** 重播交易時超賣（資料被手動改過），股數算不出來。 */
+	@ExceptionHandler(HoldingDataException.class)
+	ResponseEntity<ErrorResponse> holdingDataError(HoldingDataException e) {
+		return ApiJson.error(HttpStatus.CONFLICT, "DATA_ERROR", e.getMessage());
 	}
 
 	// 規格沒有定義的兩種情況（使用者決定）：503 表示伺服器本身正常，只是現在無法確認代號
