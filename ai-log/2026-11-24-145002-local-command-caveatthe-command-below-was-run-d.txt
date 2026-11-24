@@ -1,0 +1,4227 @@
+ ▐▛███▛█   Claude Code v2.1.329
+▝▜██████▀  Opus 5.5 · Claude Pro
+ ▝▝   ▝▝   C:\TKA102_JavaApp\Workspace_for_practice\stock-holdings
+
+
+> /clear                                                                        
+
+> 【規則】                                                                      
+  請先讀 CLAUDE.md。這次只做「提案」，不要修改任何檔案。                        
+  列出做法、要新增或修改的檔案清單，等我回覆「同意」才動手。                    
+                                                                                
+  【任務資料開始】                                                              
+  第 3 題第一小步：新增持股時，系統自己判斷代號是上市（TWSE）還是上櫃（TPEX）。 
+                                                                                
+  ■ 這一步的範圍                                                                
+  1. 證交所、櫃買兩支「逐檔」API 的 client 與解析                               
+  2. MarketResolver：兩支同時查，合併成結論                                     
+  3. 主機網址可由設定檔／環境變數更換（第 3 題要求 6）                          
+  4. 新增持股時套用：查不到、無法確認都要顯示錯誤，資料不儲存                   
+  5. 新增 migration：holding 表加上 market 欄位                                 
+  6. 單元測試                                                                   
+                                                                                
+  ■ 這一步「不做」（之後的步驟才做）                                            
+  - quote 行情表、收盤價顯示、清單的「未取得」                                  
+  - 背景排程、批次 API（MI_INDEX、otc）                                         
+  - 連不上時改查資料庫（quote 表建好後才補）                                    
+  - README 更新（我確認後另外處理）                                             
+                                                                                
+  ■ API（路徑和參數不可以改）                                                   
+  - 證交所：{TWSE_BASE_URL}/rwd/zh/afterTrading/STOCK_DAY?date=yyyyMMdd&stockNo 
+  ={代號}&response=json                                                         
+  - 櫃買：{TPEX_BASE_URL}/www/zh-tw/afterTrading/tradingStock?code={代號}&date= 
+  yyyy/MM/dd&response=json                                                      
+    （日期的斜線要保持跟官方範例一樣）                                          
+  - 設定：                                                                      
+    quote.twse.base-url=${TWSE_BASE_URL:https://www.twse.com.tw}                
+    quote.tpex.base-url=${TPEX_BASE_URL:https://www.tpex.org.tw}                
+    用 @ConfigurationProperties 讀取（例如 QuoteProperties），timeout           
+  也放在這裡                                                                    
+  - 用 RestClient。Spring Boot 4 可能需要在 pom.xml 加                          
+  spring-boot-starter-restclient，                                              
+    請先確認，需要的話列在提案裡。                                              
+                                                                                
+  ■ 實際回應格式（測試資料在 src/test/resources/quotes/，說明見同資料夾的       
+  README.md）                                                                   
+  證交所：                                                                      
+  - 找到：stat="OK"，有 fields、data；data 最後一列是最近交易日                 
+    名稱要從 title 切出來："115年11月 2330 台積電                               
+  各日成交資訊"（名稱後面有很多空白，要 trim）                                  
+  - 查不到：只有 {"stat":"很抱歉，沒有符合條件的資料!","total":0}，沒有         
+  data、fields                                                                  
+    櫃買：                                                                      
+  - 找到：stat="ok"，最外層有 code、name；tables[0].data 最後一列是最近交易日   
+  - 查不到：stat 仍然是 "ok"，但 tables[0].data 是空陣列、name 是空字串         
+    共通：                                                                      
+  - stat 比對不分大小寫（證交所 OK、櫃買 ok）                                   
+  - 欄位名稱前後可能有空白（例如 "日 期"、"收盤 "），比對前先去掉空白           
+  - 收盤價欄位：證交所「收盤價」、櫃買「收盤」；用欄位名稱找位置，不要寫死索引  
+  - 日期是民國年 115/11/23，轉成西元 LocalDate（民國年 + 1911）                 
+  - 價格有千分位逗號（2,030.00），去掉逗號再轉 BigDecimal；"--" 代表沒有收盤價  
+                                                                                
+  ■ 單支 API 的結果分三種（建議 record                                          
+  StockLookup：status、market、name、tradeDate、closePrice）                    
+  - FOUND：stat 是 ok 且資料列不是空的                                          
+  - NOT_FOUND：回應正常但沒有資料。                                             
+    ★ 月初陷阱：證交所「代號不存在」和「這個月還沒有交易日」回的是同一個訊息。  
+      這個月沒資料時，要再查上一個月；兩個月都沒有資料才算                      
+  NOT_FOUND。櫃買也照同樣規則。                                                 
+  - UNAVAILABLE：逾時、HTTP 錯誤、回傳 HTML、JSON 解析失敗                      
+                                                                                
+  ■ MarketResolver 合併規則                                                     
+  | 證交所      | 櫃買        | 結論 |                                          
+  | FOUND       | 任何        | TWSE |                                          
+  | 任何        | FOUND       | TPEX |                                          
+  | NOT_FOUND   | NOT_FOUND   | 代號不存在 → 顯示錯誤，不儲存 |                 
+  | 其他（至少一邊 UNAVAILABLE、另一邊沒找到） | | 無法確認 →                   
+  顯示「暫時無法連線官方網站確認代號，請稍後再試」，不儲存 |                    
+  - 兩邊都 FOUND 不應發生；發生時以 TWSE 為準並寫 log                           
+  - 兩支用 CompletableFuture 同時查；每支連線逾時 3 秒、讀取逾時 5 秒；整體超過 
+  8 秒視為 UNAVAILABLE                                                          
+    （題目要求：從按下新增到看到結果不超過 10 秒）                              
+  - 查詢日期一律用 LocalDate.now(clock)（第 1 題的台北時區                      
+  Clock），不可以用無參數的 now()                                               
+                                                                                
+  ■ 資料庫                                                                      
+  - 新增 V2__add_holding_market.sql：holding 加 market VARCHAR(4)，允許 NULL    
+    （第 2 題測試時已存的資料沒有 market）                                      
+  - V1__create_holding.sql 絕對不能修改                                         
+  - Holding entity 加上 market；新增持股時把判斷結果存進去                      
+  - 新增時代號先 trim 並轉大寫                                                  
+                                                                                
+  ■ 錯誤訊息（顯示在新增表單上，不能整頁錯誤）                                  
+  - 查不到：「查無此股票代號：{代號}（上市、上櫃都找不到）」                    
+  - 無法確認：「暫時無法連線官方網站確認代號，請稍後再試」                      
+                                                                                
+  ■ 單元測試（不可以連網；client 用 MockRestServiceServer 或等效方式，讀上面的  
+  JSON 檔）                                                                     
+  1. 2330 → TWSE、名稱「台積電」（確認尾端空白已去掉）、收盤價 2030.00、日期    
+  2026-11-23                                                                    
+  2. 6488 → TPEX、名稱「環球晶」、收盤價 460.50                                 
+  3. 9999 → 兩邊都查不到 → 代號不存在，資料沒有儲存                             
+  4. 月初：Clock 固定在 2026-12-01，12 月回「查不到」、11 月回 2330 的資料 →    
+  仍然是 FOUND                                                                  
+  5. 一邊逾時、另一邊查不到 → 無法確認，資料沒有儲存                            
+  6. 回傳 HTML → UNAVAILABLE                                                    
+  7. 主機網址改成 http://localhost:9000 時，實際請求的路徑和參數不變            
+     【任務資料結束】                                                           
+                                                                                
+  【規則】再提醒一次：                                                          
+  - 先提案：列出做法、新增／修改的檔案清單、要不要加依賴，等我回覆「同意」才動  
+  手。                                                                          
+  - 只做上面「這一步的範圍」，範圍外的功能列在「建議（未實作）」。              
+  - 不要自己 commit；完成後提出 commit 訊息，格式：feat: 第3題 …（可以拆成多個  
+  commit，請一併建議怎麼拆）。                                                  
+  - 完成後回報：改了哪些檔案、我怎麼驗證、./mvnw test 結果、還沒做的部分。      
+
+● 先看一下目前的程式碼和測試資料，再提出提案。
+
+  Ran 4 shell commands (ctrl+o to expand)
+
+● 第 3 題第一小步：自動判斷上市／上櫃（提案）
+
+  結論
+
+  - 不用加任何依賴。 我查了本機 Maven 裡 spring-boot-starter-webmvc 4.2.0 的
+    pom，它沒有包含 spring-boot-starter-restclient。不過這一步要用的東西都已經在
+    classpath 上：RestClient、可設定逾時的 SimpleClientHttpRequestFactory 在
+    spring-web，測試用的 MockRestServiceServer 在 spring-test。那個 starter
+    主要是幫你自動建好 RestClient.Builder、提供 spring.http.clients.*
+    設定，但題目要求逾時寫在 QuoteProperties，所以用不到。
+  - 要新增 13 個檔案、修改 6 個，建議拆成 3～4 個 commit（詳見最後）。
+  - 有 1 件事要你決定：V2 migration 要不要加 CHECK 約束（第 5 節）。
+
+  ---
+
+  1. 做法
+
+  1-1 設定：QuoteProperties
+
+  @ConfigurationProperties("quote") 用 record 寫：
+  quote.twse.base-url=${TWSE_BASE_URL:https://www.twse.com.tw}
+  quote.tpex.base-url=${TPEX_BASE_URL:https://www.tpex.org.tw}
+  quote.connect-timeout=3s
+  quote.read-timeout=5s
+  quote.lookup-timeout=8s   # MarketResolver 整體上限；測試時可以調短
+  QuoteConfig 做三件事：
+  - 建兩個 RestClient，各自帶 baseUrl 和逾時設定
+  - 建一個查詢專用的小執行緒池（2～4 條）
+  - 用 @EnableConfigurationProperties 啟用上面的設定
+
+  逾時用 SimpleClientHttpRequestFactory 設定，它是 JDK 內建的 HTTP
+  連線，最好解釋。
+  另外會在 src/test/resources/application.properties
+  加一行註解，說明測試不會用到正式網址。
+
+  1-2 兩支逐檔 client（quote 套件）
+
+  - 共用介面 StockLookupClient，方法是 StockLookup lookupMonth(String code, 
+    LocalDate dayInMonth)。
+  - TwseStockDayClient、TpexTradingStockClient 各實作一個。
+  - 回傳 record StockLookup(Status status, Market market, String name, LocalDate
+    tradeDate, BigDecimal closePrice)，Status
+    有三種：FOUND／NOT_FOUND／UNAVAILABLE。
+
+  兩個實作上的關鍵點（都會寫進測試）：
+
+  1. 櫃買日期的斜線：如果寫成 .uri("...?date={date}", "2026/11/23")，RestClient
+     預設會把變數裡的 / 編碼成 %2F，跟官方範例不同。我改用
+     uriBuilder.queryParam(...) 組網址，再用測試 7 直接比對完整網址確認。
+  2. 中文亂碼：回應先讀成 byte[]，再交給 Jackson 3 的 JsonMapper 解析，不讀成
+     String。官方回應的 Content-Type 如果沒寫 charset，讀成 String
+     時中文可能會變亂碼。
+
+  判斷規則：
+
+  ┌────────────────────────────────────────────┬────────────────────────────┐
+  │                    情況                    │            結果            │
+  ├────────────────────────────────────────────┼────────────────────────────┤
+  │ 逾時、連不上、HTTP 4xx/5xx                 │ UNAVAILABLE                │
+  ├────────────────────────────────────────────┼────────────────────────────┤
+  │ Content-Type 是 text/html，或內容開頭是 <  │ UNAVAILABLE                │
+  ├────────────────────────────────────────────┼────────────────────────────┤
+  │ JSON 解析失敗、找不到需要的欄位            │ UNAVAILABLE                │
+  ├────────────────────────────────────────────┼────────────────────────────┤
+  │ 證交所 stat 是 ok（不分大小寫），且 data   │ FOUND                      │
+  │ 不是空的                                   │                            │
+  ├────────────────────────────────────────────┼────────────────────────────┤
+  │ 證交所 stat 含「沒有符合條件的資料」       │ NOT_FOUND                  │
+  ├────────────────────────────────────────────┼────────────────────────────┤
+  │ 證交所其他 stat 訊息（例如被限流的提示）   │ UNAVAILABLE ←              │
+  │                                            │ 我的判斷，請確認           │
+  ├────────────────────────────────────────────┼────────────────────────────┤
+  │ 櫃買 stat 是 ok，且 tables[0].data         │ FOUND                      │
+  │ 不是空的                                   │                            │
+  ├────────────────────────────────────────────┼────────────────────────────┤
+  │ 櫃買 stat 是 ok，但 data 是空陣列          │ NOT_FOUND                  │
+  ├────────────────────────────────────────────┼────────────────────────────┤
+  │ 櫃買 stat 不是 ok，或沒有 tables           │ UNAVAILABLE                │
+  └────────────────────────────────────────────┴────────────────────────────┘
+
+  解析細節：
+  - 解析工具集中在 QuoteParsing：欄位名稱去掉所有空白後再比對；民國日期加 1911
+    轉成西元 LocalDate；價格去掉逗號轉 BigDecimal，遇到 -- 或空字串就回 null。
+  - 取 data
+    的最後一列。日期欄找「日期」，收盤價欄證交所找「收盤價」、櫃買找「收盤」。
+  - 證交所的名稱用正規表示式從 title 切出來：代號 + 空白 + (名稱) + 空白 + 
+    各日成交資訊，再 trim。切不出來時名稱給 null，但仍然算
+    FOUND，因為這一步只需要判斷市場。
+
+  1-3 MarketResolver（quote 套件）
+
+  - 用 CompletableFuture.supplyAsync 在自己的執行緒池裡同時查兩邊。
+  - 月初規則集中寫在這裡：查詢日期是 LocalDate.now(clock)；結果是 NOT_FOUND
+    時，再用 today.minusMonths(1) 查一次，兩次都 NOT_FOUND 才算
+    NOT_FOUND。如果結果是 UNAVAILABLE，就不再查上個月。
+  - 整體上限 8 秒：用 allOf(...).get(8s)，時間到時沒完成的那一邊當成
+    UNAVAILABLE。
+  - 合併規則照你的表。兩邊都 FOUND 時取 TWSE，並記一筆 log.warn。
+  - 對外只有一個方法 Market resolve(String code)，例外有兩種：
+    - StockCodeNotFoundException：「查無此股票代號：{代號}（上市、上櫃都找不到）
+      」
+    - MarketUnavailableException：「暫時無法連線官方網站確認代號，請稍後再試」
+
+    寫法和第 2 題的 DuplicateCodeException 一樣，之後 App API 也能共用。
+
+  1-4 套用到新增持股
+
+  - HoldingService.create 的順序：代號 trim、轉大寫（第 2 題已經有）→
+    先檢查重複代號 → marketResolver.resolve(code) → 存檔時一併存入
+    market。先檢查重複，是為了重複代號時不用白白連外網。
+  - HoldingController.create 多接住上面兩種例外，用
+    bindingResult.rejectValue("code", ...)
+    把訊息顯示在代號欄位下方，不會出現錯誤頁。
+  - Market enum（TWSE、TPEX）放在 entity 套件，Holding 加上
+    @Enumerated(EnumType.STRING) market。
+
+  ---
+
+  2. 檔案清單
+
+  新增（main）
+
+  ┌─────────────────────────────────────────┬────────────────────────────────┐
+  │                  檔案                   │              用途              │
+  ├─────────────────────────────────────────┼────────────────────────────────┤
+  │ entity/Market.java                      │ 上市／上櫃 enum                │
+  ├─────────────────────────────────────────┼────────────────────────────────┤
+  │ config/QuoteProperties.java             │ 主機網址、逾時設定             │
+  ├─────────────────────────────────────────┼────────────────────────────────┤
+  │ config/QuoteConfig.java                 │ 兩個 RestClient、執行緒池      │
+  ├─────────────────────────────────────────┼────────────────────────────────┤
+  │ quote/StockLookup.java                  │ 單支 API 的查詢結果（含        │
+  │                                         │ Status）                       │
+  ├─────────────────────────────────────────┼────────────────────────────────┤
+  │ quote/StockLookupClient.java            │ 介面                           │
+  ├─────────────────────────────────────────┼────────────────────────────────┤
+  │ quote/TwseStockDayClient.java           │ 證交所逐檔                     │
+  ├─────────────────────────────────────────┼────────────────────────────────┤
+  │ quote/TpexTradingStockClient.java       │ 櫃買逐檔                       │
+  ├─────────────────────────────────────────┼────────────────────────────────┤
+  │ quote/QuoteParsing.java                 │ 日期、價格、欄位名稱的解析工具 │
+  ├─────────────────────────────────────────┼────────────────────────────────┤
+  │ quote/MarketResolver.java               │ 同時查兩邊、合併結論           │
+  ├─────────────────────────────────────────┼────────────────────────────────┤
+  │ exception/StockCodeNotFoundException.ja │ 代號不存在                     │
+  │ va                                      │                                │
+  ├─────────────────────────────────────────┼────────────────────────────────┤
+  │ exception/MarketUnavailableException.ja │ 無法確認                       │
+  │ va                                      │                                │
+  ├─────────────────────────────────────────┼────────────────────────────────┤
+  │ db/migration/V2__add_holding_market.sql │ ALTER TABLE holding ADD COLUMN │
+  │                                         │  market VARCHAR(4);            │
+  └─────────────────────────────────────────┴────────────────────────────────┘
+
+  修改（main）
+  - entity/Holding.java：加 market 欄位和 getter，建構子多一個 Market 參數
+  - service/HoldingService.java：注入 MarketResolver，改寫 create 的流程
+  - controller/HoldingController.java：多接住兩種例外
+  - application.properties：加入 quote 設定
+
+  測試（全部不連網）
+
+  檔案: quote/TwseStockDayClientTest（新）
+  涵蓋: 題目測試 1、6、7，另外加 HTTP 500、逾時、9999 查不到
+  ────────────────────────────────────────
+  檔案: quote/TpexTradingStockClientTest（新）
+  涵蓋: 題目測試 2、6、7（確認斜線保持原樣）、2330 查不到
+  ────────────────────────────────────────
+  檔案: quote/MarketResolverTest（新）
+  涵蓋: 題目測試 3、4（真的證交所 client + MockRestServiceServer，先回 12
+    月查不到、再回 11 月的 2330）、5，另外加整體逾時（假 client
+    卡住，把逾時設成 200ms）、兩邊都 FOUND、一邊 UNAVAILABLE 另一邊 FOUND
+  ────────────────────────────────────────
+  檔案: quote/QuoteParsingTest（新）
+  涵蓋: 民國日期、千分位、--、欄位名稱有空白
+  ────────────────────────────────────────
+  檔案: service/HoldingServiceTest（改）
+  涵蓋: 用 @MockitoBean MarketResolver；確認 market
+    有存進去；查不到或無法確認時資料筆數是 0；代號重複時不會呼叫 resolver
+  ────────────────────────────────────────
+  檔案: controller/HoldingControllerTest（改）
+  涵蓋: 兩種錯誤都顯示在表單上（200，不是導頁）
+  ────────────────────────────────────────
+  檔案: repository/HoldingRepositoryTest（改）
+  涵蓋: 配合 Holding 建構子多一個參數
+  ────────────────────────────────────────
+  檔案: src/test/resources/quotes/（已存在，目前還沒 commit）
+  涵蓋: 直接拿來用，不修改
+
+  ---
+
+  3. 先說明的取捨
+
+  - 新增持股時，資料庫連線最多會被佔用 8 秒。 create 有
+    @Transactional，連外網的這段時間交易一直開著。單一使用者的考試專案不會有影響
+    。如果要改成「連網時不佔連線」，會讓現有的 @DataJpaTest
+    測試資料無法自動回復，反而更複雜，所以這一步先不改。
+  - 代號不存在時最多會送 4 個請求：兩個市場各查本月和上月。平常每個請求不到 1
+    秒，不會超過 8 秒。
+  - 第 2 題已存在的持股，market 是 NULL。 這一步不補資料，之後做行情時再處理。
+
+  4. 實作後要你手動確認一次（真的連網）
+
+  單元測試不能連網，所以 User-Agent 會不會被證交所擋這類事情，要在本機實際新增
+  2330、6488、9999 各一次才知道。如果被擋，我再提修正。
+
+  5. 需要你決定
+
+  V2 要不要順便加 CONSTRAINT ck_holding_market CHECK (market IN 
+  ('TWSE','TPEX'))？NULL 一樣可以存。
+  - 我的建議：加。migration 一旦 commit
+    就不能改，現在加最省事，資料庫層也能擋掉打錯的值。
+  - 不過題目只寫「加 market VARCHAR(4)，允許
+    NULL」，依照「只做要求的事」原則，我先不加，由你決定。
+
+  6. 建議的 commit 拆法
+
+  建議開分支 feature/q3-market-resolver（由你建立）。
+  1. test: 第3題 加入證交所、櫃買官方 API 實測回應作為測試資料
+  2. feat: 第3題 證交所、櫃買逐檔 API client 與解析，主機網址可由環境變數更換
+  3. feat: 第3題 MarketResolver 同時查詢上市上櫃並合併結論（含月初查上個月）
+  4. feat: 第3題 新增持股時自動判斷上市上櫃，查不到或無法確認時顯示錯誤
+
+  7. 建議（未實作）
+
+  - 清單頁顯示市場欄位（上市／上櫃）。
+  - 把 StockLookup 查到的名稱也存進資料庫（要再加 migration）。
+  - 興櫃股票兩支 API 都查不到，會被當成「查無此代號」。如果要確認題意，可以問主
+    考官：「興櫃股票是否需要支援新增？目前上市、上櫃 API
+    都查不到，會顯示查無此代號。」
+
+  如果同意，請回覆「同意」，並告訴我第 5 節的 CHECK 約束要不要加。
+
+✻ Baked for 2m 25s · done 下午12:58
+
+> V2加                                                                          
+  清單顯示市場欄位                                                              
+  分支已開好                                                                    
+   StockLookup 查到的名稱也存進資料庫                                           
+  興櫃以查無此代號處理                                                          
+  還有什麼需要跟我確認和討論的                                                  
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Answered Claude's questions:
+  ⎿  · 清單的「市場」欄要顯示什麼文字？（資料庫一律存 
+     TWSE／TPEX，這裡只影響畫面） → 上市／上櫃 (Recommended)
+     · 第2題時已經存進去的持股沒有市場和名稱（NULL），清單上要怎麼處理？ → 
+     顯示「—」，這步不補 (Recommended)
+     · 證交所回的 stat 不是 OK、也不是「沒有符合條件的資料」（例如限流提示、查詢
+     日期錯誤）時，要算哪一種？ → UNAVAILABLE (Recommended)
+     · 修改頁要不要也顯示名稱和市場？（目前只顯示代號） → 要，跟代號一起只顯示 
+     (Recommended)
+
+● Updated plan
+  ⎿  /plan to preview
+
+● 市場、名稱與修改頁的四個答案已寫入計畫。V2 遷移會一次加入 market 與 name
+  欄位，實作後還需你在本機實際連網新增一次，確認證交所不擋程式的 User-Agent。 
+  · summary
+
+● Approved Claude's plan
+  ⎿  Plan saved to: ~\.claude\plans\v2-stocklookup-wild-wilkinson-of-1ee53179-b5
+     39-43e6-9098-37a68d940383.md · /plan to edit
+     第 3 題第一小步：新增持股時自動判斷上市／上櫃（含名稱、清單顯示）
+
+     Context
+
+     第 3 題要求新增持股時，系統自己判斷代號是上市（TWSE）還是上櫃（TPEX）。代號
+     查不到、或官方網站連不上無法確認時，要在表單上顯示錯誤，而且不能儲存。
+     這一步做的事：
+     - 逐檔 API 的 client 與解析
+     - MarketResolver
+     - 主機網址可以換
+     - V2 migration
+     - 套用到新增持股
+
+     使用者另外追加：
+     - 把名稱存進資料庫
+     - 清單和修改頁顯示名稱與市場
+     - V2 加上 CHECK 約束
+
+     分支：feature/q3-market-resolver（使用者已開好）。不加任何依賴。spring-boot
+     -starter-webmvc 4.2.0 沒有包含 restclient starter，但這一步要用的
+     RestClient、SimpleClientHttpRequestFactory、MockRestServiceServer 都已經在
+     classpath 上。
+
+     已確認的決定
+
+     - 市場在畫面上顯示「上市／上櫃」，資料庫存 TWSE／TPEX。
+     - 第 2 題留下的舊資料，market 和 name 是
+       NULL，畫面顯示「—」，這一步不補資料。
+     - 證交所 stat 不是 OK、也不是「沒有符合條件的資料」時，算 UNAVAILABLE。
+     - 修改頁顯示「代號 名稱（市場）」，只顯示，不能修改。
+     - 興櫃股票兩支 API 都查不到，當成「查無此股票代號」。
+     - 名稱只在新增時存一次，之後不自動更新。證交所名稱切不出來時存 NULL，仍然算
+       FOUND。
+
+     做法
+
+     1. 設定（config）
+
+     - QuoteProperties：record，加上 @ConfigurationProperties("quote")。欄位：
+       - twse.baseUrl、tpex.baseUrl
+       - connectTimeout（3s）、readTimeout（5s）、lookupTimeout（8s）
+     - QuoteConfig：
+       - @EnableConfigurationProperties(QuoteProperties.class)
+       - 兩個 RestClient bean（twseRestClient、tpexRestClient），各自帶
+         baseUrl，用 SimpleClientHttpRequestFactory 設定逾時
+       - 一個查詢用的固定執行緒池 bean（destroy 時 shutdown）
+     - application.properties 加上：
+     quote.twse.base-url=${TWSE_BASE_URL:https://www.twse.com.tw}
+     quote.tpex.base-url=${TPEX_BASE_URL:https://www.tpex.org.tw}
+     quote.connect-timeout=3s
+     quote.read-timeout=5s
+     quote.lookup-timeout=8s
+
+     2. 逐檔 client（quote）
+
+     - StockLookup record：status（FOUND／NOT_FOUND／UNAVAILABLE）、market、name
+       、tradeDate、closePrice，另外提供 notFound()、unavailable()
+       兩個工廠方法。
+     - StockLookupClient 介面：Market market()、StockLookup lookupMonth(String 
+       code, LocalDate dayInMonth)。
+     - TwseStockDayClient
+       - 網址：/rwd/zh/afterTrading/STOCK_DAY?date=yyyyMMdd&stockNo=&response=js
+         on
+       - 名稱用正規表示式 代號\s+(.+?)\s+各日成交資訊 從 title 切出，再 trim
+       - stat 是 OK 且 data 不是空的 → FOUND；stat 含「沒有符合條件的資料」→
+         NOT_FOUND；其他 → UNAVAILABLE
+     - TpexTradingStockClient
+       - 網址：/www/zh-tw/afterTrading/tradingStock?code=&date=yyyy/MM/dd&respon
+         se=json
+       - 用 uriBuilder.queryParam 組網址，日期裡的 / 才不會被編碼成 %2F
+       - 名稱取最外層的 name（trim）
+       - stat 是 ok 且 tables[0].data 不是空的 → FOUND；data 是空的 →
+         NOT_FOUND；其他 → UNAVAILABLE
+     - 兩支共通：
+       - 用 toEntity(byte[].class) 取回應，交給 Jackson 3 的 JsonMapper.readTree
+         解析，避免 charset 沒寫時中文變亂碼
+       - Content-Type 是 text/html，或內容開頭是 < → UNAVAILABLE
+       - RestClientException 或 JSON 解析例外 → UNAVAILABLE
+       - 取 data 的最後一列；用欄位名稱找位置（日期、收盤價／收盤）；找不到欄位
+         → UNAVAILABLE
+     - QuoteParsing：
+       - normalizeField：去掉所有空白
+       - parseRocDate：民國年 + 1911 轉成 LocalDate
+       - parsePrice：去掉逗號轉 BigDecimal；-- 或空字串回 null
+       - isOk：比對 stat，不分大小寫
+     - JsonMapper 由 Spring Boot 自動提供的 bean 注入。如果 4.x 沒有這個 bean
+       型別，就在 QuoteConfig 自己建一個，實作時確認。
+
+     3. MarketResolver（quote）
+
+     - 回傳 record MarketResolution(Market market, String 
+       name)；查不到或無法確認時丟例外。
+     - 兩支 client 都用 CompletableFuture.supplyAsync(..., executor) 同時查。
+     - 每一支的流程：先用 LocalDate.now(clock) 查本月；結果是 NOT_FOUND 時，再用
+       minusMonths(1) 查上個月。
+     - 整體等待 lookupTimeout：allOf(...).get(...)，時間到時沒完成的那一邊算
+       UNAVAILABLE，並 cancel。
+     - 合併規則：
+       - 證交所 FOUND → TWSE（如果兩邊都 FOUND，log.warn）
+       - 否則櫃買 FOUND → TPEX
+       - 兩邊都 NOT_FOUND → StockCodeNotFoundException
+       - 其他情況 → MarketUnavailableException
+     - 兩種例外放在 exception 套件，訊息照題目。寫法參考現有的
+       exception/DuplicateCodeException.java。
+
+     4. 資料庫與 Entity
+
+     - 新增 db/migration/V2__add_holding_market_and_name.sql：
+     ALTER TABLE holding ADD COLUMN market VARCHAR(4);
+     ALTER TABLE holding ADD COLUMN name VARCHAR(50);
+     ALTER TABLE holding ADD CONSTRAINT ck_holding_market CHECK (market IN
+     ('TWSE','TPEX'));
+       兩個欄位都允許 NULL。V1 不動。
+     - 新增 entity/Market.java：enum TWSE("上市")、TPEX("上櫃")，提供 getLabel()
+       給畫面用。
+     - entity/Holding.java：
+       - 加 @Enumerated(EnumType.STRING) market（length 4）、name（length 50）和
+         getter
+       - 建構子改成 Holding(code, name, market, lots, buyPrice, now)
+
+     5. Service／Controller／畫面
+
+     - service/HoldingService.java
+       - 注入 MarketResolver
+       - create 的順序：normalizeCode（已存在）→ existsByCode 檢查重複 →
+         marketResolver.resolve → saveAndFlush（帶入 name、market）
+     - controller/HoldingController.java：create 多接住兩種例外，用
+       bindingResult.rejectValue("code", ...) 顯示在表單上，然後 showList。
+     - templates/holdings.html：表格加上「名稱」「市場」兩欄，NULL 時顯示「—」。
+     - templates/holding-edit.html：代號後面顯示名稱與市場，只顯示，不能修改。
+
+     6. 測試（不連網）
+
+     - 新增 quote/TwseStockDayClientTest，用
+       MockRestServiceServer.bindTo(RestClient.builder().baseUrl(...))：
+       - 2330：名稱「台積電」、2030.00、2026-11-23
+       - 9999 查不到
+       - 回傳 HTML、HTTP
+         500、逾時（withException(SocketTimeoutException)）、其他 stat →
+         UNAVAILABLE
+       - 主機網址是 http://localhost:9000 時，完整網址相同
+     - 新增 quote/TpexTradingStockClientTest：
+       - 6488：名稱「環球晶」、460.50
+       - 2330 查不到
+       - 回傳 HTML → UNAVAILABLE
+       - 主機網址是 localhost:9000 時，完整網址相同，日期保留 /
+     - 新增 quote/MarketResolverTest：
+       - 9999 兩邊都查不到 → 代號不存在
+       - 月初：Clock 固定在 2026-12-01，用真的證交所 client + mock
+         server，先回查不到（20261201），再回 2330（20261101）→ FOUND
+       - 一邊逾時、另一邊查不到 → 無法確認
+       - 整體逾時：假 client 卡住，lookupTimeout 設 200ms
+       - 兩邊都 FOUND → TWSE
+       - 一邊 UNAVAILABLE、另一邊 FOUND → 取 FOUND 那一邊
+     - 新增 quote/QuoteParsingTest：民國日期、千分位、--、欄位名稱有空白
+     - 修改 service/HoldingServiceTest：
+       - 加 @MockitoBean MarketResolver
+       - market 和 name 有存進去
+       - 查不到、無法確認時，資料筆數是 0
+       - 代號重複時不會呼叫 resolver
+     - 修改 controller/HoldingControllerTest：
+       - 兩種錯誤都顯示在表單上（200）
+       - 清單顯示名稱和「上市」；NULL 顯示「—」
+       - 修改頁顯示名稱和市場
+     - 修改 repository/HoldingRepositoryTest：
+       - 配合新的建構子
+       - 新增：CHECK 約束擋下不是 TWSE／TPEX 的 market
+       - 新增：market 是 NULL 時可以存
+     - 測試資料直接用 src/test/resources/quotes/ 現有的檔案，不修改。
+
+     建議的 commit 拆法（由使用者執行）
+
+     1. test: 第3題 加入證交所、櫃買官方 API 實測回應作為測試資料
+     2. feat: 第3題 證交所、櫃買逐檔 API client 與解析，主機網址可由環境變數更換
+     3. feat: 第3題 MarketResolver 同時查詢上市上櫃並合併結論（含月初查上個月）
+     4. feat: 第3題 
+        新增持股時自動判斷上市上櫃並存入名稱，查不到或無法確認時顯示錯誤
+     5. feat: 第3題 持股清單與修改頁顯示名稱和市場
+
+     驗證
+
+     1. 執行 ./mvnw test，全部通過。
+     2. 本機實際連網測試：./mvnw spring-boot:run，打開
+        http://localhost:8080/holdings
+        - 新增 2330 → 清單顯示「台積電／上市」
+        - 新增 6488 → 「環球晶／上櫃」
+        - 新增 9999 →
+          表單顯示「查無此股票代號：9999（上市、上櫃都找不到）」，清單沒有多一筆
+     3. 把 TWSE_BASE_URL 和 TPEX_BASE_URL 都設成 http://localhost:9
+        再啟動，新增任何代號 → 表單顯示「暫時無法連線官方網站確認代號，請稍後再
+        試」，不會出現錯誤頁，回應時間在 10 秒內。
+     4. 用第 2 題留下的 ./data 資料庫啟動 → Flyway 套用 V2
+        成功，舊資料的名稱和市場顯示「—」。
+
+     已知取捨（回報時說明）
+
+     - create 在交易裡連外網，資料庫連線最多佔用約 8
+       秒；單一使用者的情境可以接受。
+     - 代號不存在時最多會送 4 個請求（兩個市場 × 本月和上月）。
+     - 如果實際測試時被官方擋（例如 User-Agent），再另外提修正。
+
+● 先確認幾個 Spring Boot 4／Jackson 3 的 API 細節，再開始寫程式。
+
+  Ran 6 shell commands (ctrl+o to expand)
+
+● API 細節確認好了（Spring Framework 7.1、Jackson 3.1.8
+  都有我要用的方法），現在開始寫程式。
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\entity\Market.java)
+  ⎿  Wrote 23 lines to
+     src\main\java\io\hsiaopingkuo\stockholdings\entity\Market.java
+       1 package io.hsiaopingkuo.stockholdings.entity;
+       2 
+       3 /**
+       4  * 股票掛牌的市場。資料庫存 enum 名稱（TWSE／TPEX，剛好 4 個字，
+         對應 V2 的 VARCHAR(4)），
+       5  * 畫面顯示台灣使用者習慣的「上市／上櫃」。
+       6  */
+       7 public enum Market {
+       8 
+       9   /** 上市：台灣證券交易所。 */
+     … +14 lines (ctrl+o to expand)
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\config\QuoteProperties.java)
+  ⎿  Wrote 25 lines to src\main\java\io\hsiaopingkuo\stockholdings\config\Q
+     uoteProperties.java
+       1 package io.hsiaopingkuo.stockholdings.config;
+       2 
+       3 import java.time.Duration;
+       4 
+       5 import org.springframework.boot.context.properties.Configuration
+         Properties;
+       6 
+       7 /**
+       8  * 外部行情 API 的設定（application.properties 的 quote.*）。
+       9  * 主機網址可以用環境變數 TWSE_BASE_URL、TPEX_BASE_URL 換掉，主
+     … +17 lines (ctrl+o to expand)
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\config\QuoteConfig.java)
+  ⎿  Wrote 60 lines to
+     src\main\java\io\hsiaopingkuo\stockholdings\config\QuoteConfig.java
+       1 package io.hsiaopingkuo.stockholdings.config;
+       2 
+       3 import java.util.concurrent.ExecutorService;
+       4 import java.util.concurrent.Executors;
+       5 
+       6 import org.springframework.beans.factory.annotation.Qualifier;
+       7 import org.springframework.boot.context.properties.EnableConfigu
+         rationProperties;
+       8 import org.springframework.context.annotation.Bean;
+       9 import org.springframework.context.annotation.Configuration;
+     … +51 lines (ctrl+o to expand)
+
+● 上面 QuoteConfig 最後多寫了一段沒用到的 @interface 
+  Unused，是我寫錯的，先刪掉。
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\config\QuoteConfig.java)
+  ⎿  Removed 5 lines
+      52          .requestFactory(requestFactory)
+      53          .build();
+      54    }
+      55 -                                                               
+      56 -  // 讓其他類別用名稱指定要哪一個 RestClient（兩個都是 RestClie
+         -nt 型別，只靠型別分不出來）                                    
+      57 -  @Qualifier                                                   
+      58 -  @interface Unused {                                          
+      59 -  }                                                            
+      55  }
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\config\QuoteConfig.java)
+  ⎿  Removed 1 line
+      3  import java.util.concurrent.ExecutorService;
+      4  import java.util.concurrent.Executors;
+      5 
+      6 -import org.springframework.beans.factory.annotation.Qualifier;  
+      6  import org.springframework.boot.context.properties.EnableConfigu
+         rationProperties;
+      7  import org.springframework.context.annotation.Bean;
+      8  import org.springframework.context.annotation.Configuration;
+
+● 兩個 client 和 MarketResolver 改在 QuoteConfig 用 @Bean 建立，不另外宣告
+  ExecutorService bean，以免 Spring Boot 不再建預設的
+  applicationTaskExecutor；執行緒池改由 MarketResolver 自己管理。 · summary
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\config\QuoteConfig.java)
+  ⎿  Added 19 lines, removed 22 lines
+      1  package io.hsiaopingkuo.stockholdings.config;
+      2 
+      3 -import java.util.concurrent.ExecutorService;                    
+      4 -import java.util.concurrent.Executors;                          
+      3 +import java.time.Clock;                                         
+      4 
+      5  import org.springframework.boot.context.properties.EnableConfigu
+         rationProperties;
+      6  import org.springframework.context.annotation.Bean;
+     ...
+       8  import org.springframework.http.client.SimpleClientHttpRequestF
+          actory;
+       9  import org.springframework.web.client.RestClient;
+      10 
+      11 +import io.hsiaopingkuo.stockholdings.quote.MarketResolver;     
+      12 +import io.hsiaopingkuo.stockholdings.quote.TpexTradingStockClie
+         +nt;                                                            
+      13 +import io.hsiaopingkuo.stockholdings.quote.TwseStockDayClient; 
+      14 +import tools.jackson.databind.json.JsonMapper;                 
+      15 +                                                               
+      16  /**
+      13 - * 建立呼叫證交所、櫃買中心用的 RestClient。                   
+      14 - * 兩個市場各一個 client，主機網址分開設定；逾時設定兩邊共用。 
+      17 + * 組裝外部行情相關的物件：兩個市場的逐檔 client，以及合併兩邊 
+         +結果的 MarketResolver。                                        
+      18 + * 在這裡統一用 @Bean 建立（而不是各自加 @Component），主機網址
+         +、逾時從哪裡來一眼就看得到。                                   
+      19   */
+      20  @Configuration
+      21  @EnableConfigurationProperties(QuoteProperties.class)
+      22  public class QuoteConfig {
+      23 
+      20 -  public static final String TWSE_REST_CLIENT = "twseRestClient
+         -";                                                             
+      21 -  public static final String TPEX_REST_CLIENT = "tpexRestClient
+         -";                                                             
+      22 -  public static final String QUOTE_LOOKUP_EXECUTOR = "quoteLook
+         -upExecutor";                                                   
+      23 -                                                               
+      24 -  @Bean(TWSE_REST_CLIENT)                                      
+      25 -  RestClient twseRestClient(QuoteProperties properties) {      
+      26 -    return restClient(properties.twse().baseUrl(), properties);
+      24 +  @Bean                                                        
+      25 +  TwseStockDayClient twseStockDayClient(QuoteProperties propert
+         +ies, JsonMapper jsonMapper) {                                  
+      26 +    return new TwseStockDayClient(restClient(properties.twse().
+         +baseUrl(), properties), jsonMapper);                           
+      27    }
+      28 
+      29 -  @Bean(TPEX_REST_CLIENT)                                      
+      30 -  RestClient tpexRestClient(QuoteProperties properties) {      
+      31 -    return restClient(properties.tpex().baseUrl(), properties);
+      29 +  @Bean                                                        
+      30 +  TpexTradingStockClient tpexTradingStockClient(QuoteProperties
+         + properties, JsonMapper jsonMapper) {                          
+      31 +    return new TpexTradingStockClient(restClient(properties.tpe
+         +x().baseUrl(), properties), jsonMapper);                       
+      32    }
+      33 
+      34 -  /**                                                          
+      35 -   * 新增持股時「同時查兩個市場」用的執行緒。                  
+      36 -   * 不用 CompletableFuture 預設的共用執行緒池：那是給計算用的 
+         -，拿來等網路回應會卡住別的工作。                               
+      37 -   * 容器關閉時 Spring 會自動呼叫 shutdown()。                 
+      38 -   */                                                          
+      39 -  @Bean(QUOTE_LOOKUP_EXECUTOR)                                 
+      40 -  ExecutorService quoteLookupExecutor() {                      
+      41 -    return Executors.newFixedThreadPool(4);                    
+      34 +  // MarketResolver 有 close()，容器關閉時 Spring 會自動呼叫， 
+         +把查詢用的執行緒收掉                                           
+      35 +  @Bean                                                        
+      36 +  MarketResolver marketResolver(TwseStockDayClient twse, TpexTr
+         +adingStockClient tpex, Clock clock,                            
+      37 +      QuoteProperties properties) {                            
+      38 +    return new MarketResolver(twse, tpex, clock, properties.loo
+         +kupTimeout());                                                 
+      39    }
+      40 
+      41    private static RestClient restClient(String baseUrl, QuotePro
+          perties properties) {
+
+● 接著寫 quote 套件：查詢結果、介面、解析工具、HTTP 共用、兩支
+  client、MarketResolver。
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\quote\StockLookup.java)
+  ⎿  Wrote 41 lines to
+     src\main\java\io\hsiaopingkuo\stockholdings\quote\StockLookup.java
+       1 package io.hsiaopingkuo.stockholdings.quote;
+       2 
+       3 import java.math.BigDecimal;
+       4 import java.time.LocalDate;
+       5 
+       6 import io.hsiaopingkuo.stockholdings.entity.Market;
+       7 
+       8 /**
+       9  * 查一個市場、一個代號的結果。
+      10  * 「查不到」和「查不了」要分開：前者代表代號在這個市場不存在，
+     … +32 lines (~1 KB) (ctrl+o to expand)
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\quote\StockLookupClient.java
+       )  ⎿  Wrote 21 lines to src\main\java\io\hsiaopingkuo\stockholdings\quote\St
+     ockLookupClient.java
+       1 package io.hsiaopingkuo.stockholdings.quote;
+       2 
+       3 import java.time.LocalDate;
+       4 
+       5 import io.hsiaopingkuo.stockholdings.entity.Market;
+       6 
+       7 /**
+       8  * 查詢單一市場「某代號某個月」的逐檔成交資訊。
+       9  * 包成 interface，MarketResolver 測試時就能換成假的實作，不必連
+         網。
+     … +12 lines (ctrl+o to expand)
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\quote\QuoteParsing.java)
+  ⎿  Wrote 87 lines to
+     src\main\java\io\hsiaopingkuo\stockholdings\quote\QuoteParsing.java
+       1 package io.hsiaopingkuo.stockholdings.quote;
+       2 
+       3 import java.math.BigDecimal;
+       4 import java.time.LocalDate;
+       5 
+       6 import tools.jackson.databind.JsonNode;
+       7 
+       8 /**
+       9  * 解析官方行情 JSON 的共用小工具。官方格式有不少地雷（民國年、
+         千分位、欄位名稱夾空白），集中在這裡處理。
+     … +78 lines (ctrl+o to expand)
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\quote\QuoteHttp.java)
+  ⎿  Wrote 72 lines to
+     src\main\java\io\hsiaopingkuo\stockholdings\quote\QuoteHttp.java
+       1 package io.hsiaopingkuo.stockholdings.quote;
+       2 
+       3 import java.net.URI;
+       4 import java.util.Optional;
+       5 import java.util.function.Function;
+       6 
+       7 import org.slf4j.Logger;
+       8 import org.slf4j.LoggerFactory;
+       9 import org.springframework.http.MediaType;
+      10 import org.springframework.http.ResponseEntity;
+     … +62 lines (ctrl+o to expand)
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\quote\TwseStockDayClient.jav
+       a)
+  ⎿  Wrote 101 lines to src\main\java\io\hsiaopingkuo\stockholdings\quote\T
+     wseStockDayClient.java
+       1 package io.hsiaopingkuo.stockholdings.quote;
+       2 
+       3 import java.time.LocalDate;
+       4 import java.time.format.DateTimeFormatter;
+       5 import java.util.Optional;
+       6 import java.util.regex.Matcher;
+       7 import java.util.regex.Pattern;
+       8 
+       9 import org.slf4j.Logger;
+      10 import org.slf4j.LoggerFactory;
+     … +91 lines (ctrl+o to expand)
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\quote\TpexTradingStockClient
+       .java)
+  ⎿  Wrote 84 lines to src\main\java\io\hsiaopingkuo\stockholdings\quote\Tp
+     exTradingStockClient.java
+      1 package io.hsiaopingkuo.stockholdings.quote;
+      2 
+      3 import java.time.LocalDate;
+      4 import java.time.format.DateTimeFormatter;
+      5 import java.util.Optional;
+      6 
+      7 import org.slf4j.Logger;
+      8 import org.slf4j.LoggerFactory;
+      9 import org.springframework.web.client.RestClient;
+     … +75 lines (ctrl+o to expand)
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\quote\MarketResolver.java)
+  ⎿  Wrote 139 lines to
+     src\main\java\io\hsiaopingkuo\stockholdings\quote\MarketResolver.java
+       1 package io.hsiaopingkuo.stockholdings.quote;
+       2 
+       3 import java.time.Clock;
+       4 import java.time.Duration;
+       5 import java.time.LocalDate;
+       6 import java.util.concurrent.CompletableFuture;
+       7 import java.util.concurrent.ExecutionException;
+       8 import java.util.concurrent.ExecutorService;
+       9 import java.util.concurrent.Executors;
+      10 import java.util.concurrent.TimeUnit;
+     … +129 lines (ctrl+o to expand)
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\exception\StockCodeNotFoundE
+       xception.java)
+  ⎿  Wrote 16 lines to src\main\java\io\hsiaopingkuo\stockholdings\exceptio
+     n\StockCodeNotFoundException.java
+       1 package io.hsiaopingkuo.stockholdings.exception;
+       2 
+       3 /** 證交所、櫃買都確定沒有這個代號（第 3 題）。 */
+       4 public class StockCodeNotFoundException extends RuntimeException
+          {
+       5 
+       6   private final String code;
+       7 
+       8   public StockCodeNotFoundException(String code) {
+       9     super("查無此股票代號：" + code + "（上市、上櫃都找不到）");
+     … +7 lines (ctrl+o to expand)
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\exception\MarketUnavailableE
+       xception.java)
+  ⎿  Wrote 12 lines to src\main\java\io\hsiaopingkuo\stockholdings\exceptio
+     n\MarketUnavailableException.java
+       1 package io.hsiaopingkuo.stockholdings.exception;
+       2 
+       3 /**
+       4  * 官方網站連不上或回應異常，無法確認代號是上市還是上櫃（第 3 題
+         ）。
+       5  * 和「查無此代號」分開：這不是使用者打錯，請他稍後再試即可。
+       6  */
+       7 public class MarketUnavailableException extends RuntimeException
+          {
+       8 
+     … +4 lines (ctrl+o to expand)
+
+● 接著改資料庫、Entity、Service、Controller 和畫面。
+
+● Write(src\main\resources\db\migration\V2__add_holding_market_and_name.sql)
+  ⎿  Wrote 11 lines to
+     src\main\resources\db\migration\V2__add_holding_market_and_name.sql
+       1 -- 第 3 題：持股記錄市場（上市／上櫃）和股票名稱
+       2 -- 注意：這個檔案一旦 commit 就不能再改；之後資料表有任何變動，
+         一律新增 V3__、V4__…
+       3 
+       4 -- 兩個欄位都允許 NULL：第 2 題時已經存進去的持股沒有這兩項資料
+         ，升級後仍要能正常讀取
+       5 -- 市場存 TWSE（上市）或 TPEX（上櫃），剛好 4 個字
+       6 ALTER TABLE holding ADD COLUMN market VARCHAR(4);
+       7 -- 名稱只在新增時從官方取得一次；50 字足以容納 ETF 等較長的簡稱
+       8 ALTER TABLE holding ADD COLUMN name VARCHAR(50);
+     … +3 lines (ctrl+o to expand)
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\entity\Holding.java)
+  ⎿  Added 9 lines
+      26    @Column(name = "code", nullable = false, length = 10)
+      27    private String code;
+      28 
+      29 +  // 第 3 題（V2 migration）加入；第 2 題時存的舊資料沒有名稱和
+         +市場，所以允許 null                                            
+      30 +  @Column(name = "name", length = 50)                          
+      31 +  private String name;                                         
+      32 +                                                               
+      33 +  // 存 enum 名稱（TWSE／TPEX）而不是序號：資料庫裡看得懂，日後
+         +調整 enum 順序也不會對錯                                       
+      34 +  @Enumerated(EnumType.STRING)                                 
+      35 +  @Column(name = "market", length = 4)                         
+      36 +  private Market market;                                       
+      37 +                                                               
+      38    @Column(name = "lots", nullable = false)
+      39    private int lots;
+      40 
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\entity\Holding.java)
+  ⎿  Added 4 lines, removed 1 line
+      52    }
+      53 
+      54    // 時間由呼叫端傳入（service 用台北時區的 Clock 算好），Entit
+          y 自己不碰系統時間
+      55 -  public Holding(String code, int lots, BigDecimal buyPrice, Lo
+         -calDateTime now) {                                             
+      55 +  // 名稱和市場在新增時由官方 API 判斷後一起存入，之後不能改（ 
+         +修改只開放張數和買進價）                                       
+      56 +  public Holding(String code, String name, Market market, int l
+         +ots, BigDecimal buyPrice, LocalDateTime now) {                 
+      57      this.code = code;
+      58 +    this.name = name;                                          
+      59 +    this.market = market;                                      
+      60      this.lots = lots;
+      61      this.buyPrice = buyPrice;
+      62      this.createdAt = now;
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\entity\Holding.java)
+  ⎿  Added 8 lines
+      78      return code;
+      79    }
+      80 
+      81 +  public String getName() {                                    
+      82 +    return name;                                               
+      83 +  }                                                            
+      84 +                                                               
+      85 +  public Market getMarket() {                                  
+      86 +    return market;                                             
+      87 +  }                                                            
+      88 +                                                               
+      89    public int getLots() {
+      90      return lots;
+      91    }
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\entity\Holding.java)
+  ⎿  Added 2 lines
+       5 
+       6  import jakarta.persistence.Column;
+       7  import jakarta.persistence.Entity;
+       8 +import jakarta.persistence.EnumType;                           
+       9 +import jakarta.persistence.Enumerated;                         
+      10  import jakarta.persistence.GeneratedValue;
+      11  import jakarta.persistence.GenerationType;
+      12  import jakarta.persistence.Id;
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\entity\Holding.java)
+  ⎿  Added 1 line, removed 1 line
+      13  import jakarta.persistence.Table;
+      14 
+      15  /**
+      16 - * 一筆持股，對應 V1__create_holding.sql 的 holding 表。       
+      16 + * 一筆持股，對應 V1__create_holding.sql 的 holding 表（V2 加上
+         + name、market）。                                              
+      17   * 資料表由 Flyway 建立，這裡的 @Column 只是對應欄位，Hibernate
+           啟動時會檢查兩邊一致（ddl-auto=validate）。
+      18   */
+      19  @Entity
+
+● Service、Controller：
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\service\HoldingService.java
+        )
+  ⎿  Added 3 lines, removed 1 line
+      28    private static final String UNIQUE_CODE_CONSTRAINT = "UK_HOLD
+          ING_CODE";
+      29 
+      30    private final HoldingRepository holdingRepository;
+      31 +  private final MarketResolver marketResolver;                 
+      32    private final Clock clock;
+      33 
+      33 -  public HoldingService(HoldingRepository holdingRepository, Cl
+         -ock clock) {                                                   
+      34 +  public HoldingService(HoldingRepository holdingRepository, Ma
+         +rketResolver marketResolver, Clock clock) {                    
+      35      this.holdingRepository = holdingRepository;
+      36 +    this.marketResolver = marketResolver;                      
+      37      this.clock = clock;
+      38    }
+      39 
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\service\HoldingService.java
+        )
+  ⎿  Added 12 lines, removed 2 lines
+      45      return holdingRepository.findById(id).orElseThrow(() -> new
+           HoldingNotFoundException(id));
+      46    }
+      47 
+      48 +  /**                                                          
+      49 +   * @throws DuplicateCodeException      代號已在持股中        
+      50 +   * @throws StockCodeNotFoundException  上市、上櫃都查不到這個
+         +代號（第 3 題）                                                
+      51 +   * @throws MarketUnavailableException  官方網站連不上，無法確
+         +認代號（第 3 題）                                              
+      52 +   */                                                          
+      53    @Transactional
+      54    public Holding create(String code, int lots, BigDecimal buyPr
+          ice) {
+      55      String normalizedCode = normalizeCode(code);
+      56 
+      52 -    // 第一道檢查：先查一次，大部分重複新增在這裡就擋下，訊息也
+         -比較好懂                                                       
+      57 +    // 第一道檢查：先查一次，大部分重複新增在這裡就擋下，訊息也
+         +比較好懂；                                                     
+      58 +    // 放在連官方 API 之前，重複代號就不用白白等網路           
+      59      if (holdingRepository.existsByCode(normalizedCode)) {
+      60        throw new DuplicateCodeException(normalizedCode);
+      61      }
+      62 
+      63 +    // 第 3 題：由官方 API 判斷上市或上櫃；查不到或無法確認時直
+         +接丟例外，後面的儲存不會執行                                   
+      64 +    StockLookup lookup = marketResolver.resolve(normalizedCode)
+         +;                                                              
+      65 +                                                               
+      66      try {
+      67        // saveAndFlush：立刻把 INSERT 送到資料庫，違反約束時在這
+          裡就丟例外，才接得到
+      59 -      return holdingRepository.saveAndFlush(new Holding(normali
+         -zedCode, lots, buyPrice, now()));                              
+      68 +      return holdingRepository.saveAndFlush(                   
+      69 +          new Holding(normalizedCode, lookup.name(), lookup.mar
+         +ket(), lots, buyPrice, now()));                                
+      70      } catch (DataIntegrityViolationException e) {
+      71        // 最後防線：兩個請求同時新增同一代號時，上面的檢查都會通
+          過，由資料庫的 UNIQUE 約束擋下
+      72        if (isUniqueCodeViolation(e)) {
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\service\HoldingService.java
+        )
+  ⎿  Added 4 lines
+      13  import io.hsiaopingkuo.stockholdings.entity.Holding;
+      14  import io.hsiaopingkuo.stockholdings.exception.DuplicateCodeExc
+          eption;
+      15  import io.hsiaopingkuo.stockholdings.exception.HoldingNotFoundE
+          xception;
+      16 +import io.hsiaopingkuo.stockholdings.exception.MarketUnavailabl
+         +eException;                                                    
+      17 +import io.hsiaopingkuo.stockholdings.exception.StockCodeNotFoun
+         +dException;                                                    
+      18 +import io.hsiaopingkuo.stockholdings.quote.MarketResolver;     
+      19 +import io.hsiaopingkuo.stockholdings.quote.StockLookup;        
+      20  import io.hsiaopingkuo.stockholdings.repository.HoldingReposito
+          ry;
+      21 
+      22  /**
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\controller\HoldingControlle
+        r.java)
+  ⎿  Added 8 lines
+      64        // 重複代號也當成「代號欄位的錯誤」顯示在表單上，不跳錯誤
+          頁
+      65        bindingResult.rejectValue("code", "duplicate", e.getMessa
+          ge());
+      66        return showList(model);
+      67 +    } catch (StockCodeNotFoundException e) {                   
+      68 +      // 第 3 題：上市、上櫃都查不到，資料不儲存，錯誤顯示在代 
+         +號欄位                                                         
+      69 +      bindingResult.rejectValue("code", "notFound", e.getMessag
+         +e());                                                          
+      70 +      return showList(model);                                  
+      71 +    } catch (MarketUnavailableException e) {                   
+      72 +      // 第 3 題：官方連不上時不能出現錯誤頁，請使用者稍後再試 
+         +；表單內容保留，不用重打                                       
+      73 +      bindingResult.rejectValue("code", "unavailable", e.getMes
+         +sage());                                                       
+      74 +      return showList(model);                                  
+      75      }
+      76    }
+      77 
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\controller\HoldingControlle
+        r.java)
+  ⎿  Added 2 lines
+      19  import io.hsiaopingkuo.stockholdings.entity.Holding;
+      20  import io.hsiaopingkuo.stockholdings.exception.DuplicateCodeExc
+          eption;
+      21  import io.hsiaopingkuo.stockholdings.exception.HoldingNotFoundE
+          xception;
+      22 +import io.hsiaopingkuo.stockholdings.exception.MarketUnavailabl
+         +eException;                                                    
+      23 +import io.hsiaopingkuo.stockholdings.exception.StockCodeNotFoun
+         +dException;                                                    
+      24  import io.hsiaopingkuo.stockholdings.service.HoldingService;
+      25  import jakarta.validation.Valid;
+      26 
+
+● 畫面與設定檔：
+● Update(src\main\resources\templates\holdings.html)
+  ⎿  Added 4 lines, removed 1 line
+      42    <p th:if="${#lists.isEmpty(holdings)}">目前沒有持股。</p>
+      43    <table th:unless="${#lists.isEmpty(holdings)}">
+      44      <thead>
+      45 -      <tr><th>股票代號</th><th>張數</th><th>買進價</th><th>操作
+         -</th></tr>                                                     
+      45 +      <tr><th>股票代號</th><th>名稱</th><th>市場</th><th>張數</
+         +th><th>買進價</th><th>操作</th></tr>                           
+      46      </thead>
+      47      <tbody>
+      48        <tr th:each="h : ${holdings}">
+      49          <td th:text="${h.code}">2330</td>
+      50 +        <!-- 第 2 題時存的舊資料沒有名稱和市場（NULL），顯示「—
+         +」 -->                                                         
+      51 +        <td th:text="${h.name} ?: '—'">台積電</td>             
+      52 +        <td th:text="${h.market} != null ? ${h.market.label} : 
+         +'—'">上市</td>                                                 
+      53          <td class="num" th:text="${h.lots}">1</td>
+      54          <!-- 買進價固定顯示兩位小數、加千分位 -->
+      55          <td class="num" th:text="${#numbers.formatDecimal(h.buy
+          Price, 1, 'COMMA', 2, 'POINT')}">1,000.00</td>
+
+● Update(src\main\resources\templates\holding-edit.html)
+  ⎿  Added 5 lines, removed 1 line
+      13 
+      14    <form th:action="@{/holdings/{id}(id=${holding.id})}" th:obje
+          ct="${updateForm}" method="post">
+      15      <!-- 代號只顯示、不能改（和 App API 的 PUT 規格一致），所以
+          不是輸入框 -->
+      16 -    <p>股票代號：<strong id="code" th:text="${holding.code}">23
+         -30</strong></p>                                                
+      16 +    <p>股票代號：<strong id="code" th:text="${holding.code}">23
+         +30</strong>                                                    
+      17 +      <!-- 名稱、市場在新增時由官方判斷，這裡也只顯示；舊資料沒
+         +有時顯示「—」 -->                                              
+      18 +      <span id="name" th:text="${holding.name} ?: '—'">台積電</
+         +span>                                                          
+      19 +      （<span id="market" th:text="${holding.market} != null ? 
+         +${holding.market.label} : '—'">上市</span>）                   
+      20 +    </p>                                                       
+      21      <p>
+      22        <label>張數 <input type="text" th:field="*{lots}" inputmo
+          de="numeric" placeholder="1～999"></label>
+      23        <span class="error" th:if="${#fields.hasErrors('lots')}"
+          th:errors="*{lots}">錯誤</span>
+
+● Update(src\main\resources\application.properties)
+  ⎿  Added 11 lines, removed 1 line
+      15  # 資料表一律由 Flyway migration 建立；Hibernate 只檢查 Entity 
+          和資料表對不對得上，不自己改表
+      16  spring.jpa.hibernate.ddl-auto=validate
+      17  # 關掉 open-in-view：資料庫連線只在 service 層使用，避免畫面渲
+          染時才偷偷查資料庫
+      18 -spring.jpa.open-in-view=false                                  
+         \ No newline at end of file
+      18 +spring.jpa.open-in-view=false                                  
+      19 +                                                               
+      20 +# ===== 外部行情（第 3 題）=====                               
+      21 +# 主機網址可用環境變數換成主考官的測試伺服器；路徑和參數寫在程 
+         +式裡，不會變                                                   
+      22 +quote.twse.base-url=${TWSE_BASE_URL:https://www.twse.com.tw}   
+      23 +quote.tpex.base-url=${TPEX_BASE_URL:https://www.tpex.org.tw}   
+      24 +# 每個請求：建立連線最多 3 秒、等回應最多 5 秒                 
+      25 +quote.connect-timeout=3s                                       
+      26 +quote.read-timeout=5s                                          
+      27 +# 新增持股時同時查上市、上櫃，整體最多等 8 秒（題目要求按下新增
+         +後 10 秒內看到結果）                                           
+      28 +quote.lookup-timeout=8s                                        
+         \ No newline at end of file
+
+● 測試的 application.properties 會整個蓋掉正式的設定檔，所以也要補上 quote
+  設定，不然 @SpringBootTest 啟動時讀不到逾時設定。
+
+● Update(src\test\resources\application.properties)
+  ⎿  Added 8 lines
+       7 
+       8  spring.jpa.hibernate.ddl-auto=validate
+       9  spring.jpa.open-in-view=false
+      10 +                                                               
+      11 +# 外部行情：測試不可以連外網，主機指到本機不存在的服務；       
+      12 +# 需要模擬官方回應的測試用 MockRestServiceServer，不會用到這裡 
+         +的網址                                                         
+      13 +quote.twse.base-url=http://localhost:9                         
+      14 +quote.tpex.base-url=http://localhost:9                         
+      15 +quote.connect-timeout=1s                                       
+      16 +quote.read-timeout=1s                                          
+      17 +quote.lookup-timeout=2s                                        
+
+● 接下來寫測試。先寫解析工具和兩支 client 的測試。
+
+● Write(src\test\java\io\hsiaopingkuo\stockholdings\quote\QuoteParsingTest.java)
+  ⎿  Wrote 77 lines to src\test\java\io\hsiaopingkuo\stockholdings\quote\Qu
+     oteParsingTest.java
+       1 package io.hsiaopingkuo.stockholdings.quote;
+       2 
+       3 import static org.assertj.core.api.Assertions.assertThat;
+       4 import static org.assertj.core.api.Assertions.assertThatThrownBy
+         ;
+       5 
+       6 import java.time.LocalDate;
+       7 
+       8 import org.junit.jupiter.api.Test;
+       9 
+     … +68 lines (ctrl+o to expand)
+
+● Write(src\test\java\io\hsiaopingkuo\stockholdings\quote\TwseStockDayClientTest
+       .java)
+  ⎿  Wrote 177 lines to src\test\java\io\hsiaopingkuo\stockholdings\quote\T
+     wseStockDayClientTest.java
+      1 package io.hsiaopingkuo.stockholdings.quote;
+      2 
+      3 import static org.assertj.core.api.Assertions.assertThat;
+      4 import static org.springframework.test.web.client.match.MockRestR
+        equestMatchers.method;
+      5 import static org.springframework.test.web.client.match.MockRestR
+        equestMatchers.requestTo;
+      6 import static org.springframework.test.web.client.response.MockRe
+        stResponseCreators.withException;
+      7 import static org.springframework.test.web.client.response.MockRe
+     … +171 lines (~6 KB) (ctrl+o to expand)
+
+● Write(src\test\java\io\hsiaopingkuo\stockholdings\quote\TpexTradingStockClient
+       Test.java)
+  ⎿  Wrote 104 lines to src\test\java\io\hsiaopingkuo\stockholdings\quote\T
+     pexTradingStockClientTest.java
+       1 package io.hsiaopingkuo.stockholdings.quote;
+       2 
+       3 import static org.assertj.core.api.Assertions.assertThat;
+       4 import static org.springframework.test.web.client.match.MockRest
+         RequestMatchers.method;
+       5 import static org.springframework.test.web.client.match.MockRest
+         RequestMatchers.requestTo;
+       6 import static org.springframework.test.web.client.response.MockR
+         estResponseCreators.withException;
+       7 import static org.springframework.test.web.client.response.MockR
+     … +98 lines (~4 KB) (ctrl+o to expand)
+
+● MarketResolver 的測試（題目的測試 3、4、5 和整體逾時）：
+
+● Write(src\test\java\io\hsiaopingkuo\stockholdings\quote\MarketResolverTest.jav
+       a)
+  ⎿  Wrote 256 lines to src\test\java\io\hsiaopingkuo\stockholdings\quote\M
+     arketResolverTest.java
+       1 package io.hsiaopingkuo.stockholdings.quote;
+       2 
+       3 import static org.assertj.core.api.Assertions.assertThat;
+       4 import static org.assertj.core.api.Assertions.assertThatThrownBy
+         ;
+       5 import static org.springframework.test.web.client.match.MockRest
+         RequestMatchers.requestTo;
+       6 import static org.springframework.test.web.client.response.MockR
+         estResponseCreators.withException;
+       7 import static org.springframework.test.web.client.response.MockR
+     … +250 lines (~10 KB) (ctrl+o to expand)
+
+● 接著修改既有的三個測試，配合新的建構子並補上新情境。
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Update(src\test\java\io\hsiaopingkuo\stockholdings\controller\HoldingControlle
+        rTest.java)
+  ⎿  Added 52 lines, removed 1 line
+       47    private HoldingService holdingService;
+       48 
+       49    private static Holding holding(long id, String code, int lot
+           s, String buyPrice) {
+       50 -    Holding h = new Holding(code, lots, new BigDecimal(buyPric
+          -e), LocalDateTime.of(2026, 11, 24, 14, 0));                   
+       50 +    return holding(id, code, null, null, lots, buyPrice);     
+       51 +  }                                                           
+       52 +                                                              
+       53 +  private static Holding holding(long id, String code, String 
+          +name, Market market, int lots, String buyPrice) {             
+       54 +    Holding h = new Holding(code, name, market, lots, new BigD
+          +ecimal(buyPrice), LocalDateTime.of(2026, 11, 24, 14, 0));     
+       55      // id 平常由資料庫產生，測試裡直接塞值
+       56      ReflectionTestUtils.setField(h, "id", id);
+       57      return h;
+       58    }
+       59 
+       60    @Test
+       61 +  void 清單顯示名稱與市場_舊資料沒有時顯示破折號() throws Exce
+          +ption {                                                       
+       62 +    given(holdingService.findAll()).willReturn(List.of(       
+       63 +        holding(1, "2330", "台積電", Market.TWSE, 1, "1000.00"
+          +),                                                            
+       64 +        holding(2, "6488", "環球晶", Market.TPEX, 1, "460.50")
+          +,                                                             
+       65 +        holding(3, "0050", null, null, 1, "150.00")));        
+       66 +                                                              
+       67 +    mockMvc.perform(get("/holdings"))                         
+       68 +        .andExpect(status().isOk())                           
+       69 +        .andExpect(content().string(containsString("<td>台積電
+          +</td>")))                                                     
+       70 +        .andExpect(content().string(containsString("<td>上市</
+          +td>")))                                                       
+       71 +        .andExpect(content().string(containsString("<td>環球晶
+          +</td>")))                                                     
+       72 +        .andExpect(content().string(containsString("<td>上櫃</
+          +td>")))                                                       
+       73 +        .andExpect(content().string(containsString("<td>—</td>
+          +")));                                                         
+       74 +  }                                                           
+       75 +                                                              
+       76 +  @Test                                                       
+       77 +  void 查無此代號_表單顯示錯誤且不導頁() throws Exception {   
+       78 +    given(holdingService.create(anyString(), anyInt(), any()))
+          +.willThrow(new StockCodeNotFoundException("9999"));           
+       79 +                                                              
+       80 +    mockMvc.perform(post("/holdings").param("code", "9999").pa
+          +ram("lots", "1").param("buyPrice", "1000"))                   
+       81 +        .andExpect(status().isOk())                           
+       82 +        .andExpect(content().string(containsString("查無此股票
+          +代號：9999（上市、上櫃都找不到）")));                         
+       83 +  }                                                           
+       84 +                                                              
+       85 +  @Test                                                       
+       86 +  void 官方連不上_表單顯示稍後再試且保留輸入內容() throws Exce
+          +ption {                                                       
+       87 +    given(holdingService.create(anyString(), anyInt(), any()))
+          +.willThrow(new MarketUnavailableException());                 
+       88 +                                                              
+       89 +    mockMvc.perform(post("/holdings").param("code", "2330").pa
+          +ram("lots", "3").param("buyPrice", "1000"))                   
+       90 +        .andExpect(status().isOk())                           
+       91 +        .andExpect(content().string(containsString("暫時無法連
+          +線官方網站確認代號，請稍後再試")))                            
+       92 +        // 使用者不用重打：剛才輸入的值還在表單上             
+       93 +        .andExpect(content().string(containsString("value=\"23
+          +30\"")))                                                      
+       94 +        .andExpect(content().string(containsString("value=\"3\
+          +"")));                                                        
+       95 +  }                                                           
+       96 +                                                              
+       97 +  @Test                                                       
+       98 +  void 修改頁顯示名稱與市場() throws Exception {              
+       99 +    given(holdingService.findById(1L)).willReturn(holding(1, "
+          +6488", "環球晶", Market.TPEX, 1, "460.50"));                  
+      100 +                                                              
+      101 +    mockMvc.perform(get("/holdings/1/edit"))                  
+      102 +        .andExpect(status().isOk())                           
+      103 +        .andExpect(content().string(containsString("<span id=\
+          +"name\">環球晶</span>")))                                     
+      104 +        .andExpect(content().string(containsString("<span id=\
+          +"market\">上櫃</span>")));                                    
+      105 +  }                                                           
+      106 +                                                              
+      107 +  @Test                                                       
+      108    void 清單頁顯示所有持股() throws Exception {
+      109      given(holdingService.findAll()).willReturn(List.of(
+      110          holding(1, "0050", 2, "150.00"),
+
+● Update(src\test\java\io\hsiaopingkuo\stockholdings\controller\HoldingControlle
+        rTest.java)
+  ⎿  Added 3 lines
+      29  import org.springframework.test.web.servlet.MockMvc;
+      30 
+      31  import io.hsiaopingkuo.stockholdings.entity.Holding;
+      32 +import io.hsiaopingkuo.stockholdings.entity.Market;            
+      33  import io.hsiaopingkuo.stockholdings.exception.DuplicateCodeExc
+          eption;
+      34  import io.hsiaopingkuo.stockholdings.exception.HoldingNotFoundE
+          xception;
+      35 +import io.hsiaopingkuo.stockholdings.exception.MarketUnavailabl
+         +eException;                                                    
+      36 +import io.hsiaopingkuo.stockholdings.exception.StockCodeNotFoun
+         +dException;                                                    
+      37  import io.hsiaopingkuo.stockholdings.service.HoldingService;
+      38 
+      39  /**
+
+● Update(src\test\java\io\hsiaopingkuo\stockholdings\repository\HoldingRepositor
+        yTest.java)
+  ⎿  Added 35 lines, removed 1 line
+      25    @Autowired
+      26    private HoldingRepository holdingRepository;
+      27 
+      28 +  @Autowired                                                   
+      29 +  private EntityManager entityManager;                         
+      30 +                                                               
+      31 +  /** 測試只在意某些欄位時，名稱和市場用固定值。 */            
+      32 +  private static Holding holding(String code, int lots, BigDeci
+         +mal buyPrice) {                                                
+      33 +    return new Holding(code, "測試", Market.TWSE, lots, buyPric
+         +e, NOW);                                                       
+      34 +  }                                                            
+      35 +                                                               
+      36    @Test
+      37    void 可以存取持股且代號開頭的0不會掉() {
+      30 -    Holding saved = holdingRepository.saveAndFlush(new Holding(
+         -"0050", 2, new BigDecimal("150.00"), NOW));                    
+      38 +    Holding saved = holdingRepository.saveAndFlush(            
+      39 +        new Holding("0050", "元大台灣50", Market.TWSE, 2, new B
+         +igDecimal("150.00"), NOW));                                    
+      40 +    // 清掉 JPA 的快取，下面的 findById 才會真的從資料庫讀，確 
+         +認欄位對應正確                                                 
+      41 +    entityManager.clear();                                     
+      42 
+      43      Holding found = holdingRepository.findById(saved.getId()).o
+          rElseThrow();
+      44      assertThat(found.getCode()).isEqualTo("0050");
+      45 +    assertThat(found.getName()).isEqualTo("元大台灣50");       
+      46 +    assertThat(found.getMarket()).isEqualTo(Market.TWSE);      
+      47      assertThat(found.getLots()).isEqualTo(2);
+      48      assertThat(found.getBuyPrice()).isEqualByComparingTo("150.0
+          0");
+      49      assertThat(holdingRepository.existsByCode("0050")).isTrue()
+          ;
+      50    }
+      51 
+      52    @Test
+      53 +  void 名稱和市場允許NULL_第2題的舊資料升級後仍可讀取() {      
+      54 +    Holding saved = holdingRepository.saveAndFlush(new Holding(
+         +"2330", null, null, 1, new BigDecimal("1000.00"), NOW));       
+      55 +    entityManager.clear();                                     
+      56 +                                                               
+      57 +    Holding found = holdingRepository.findById(saved.getId()).o
+         +rElseThrow();                                                  
+      58 +    assertThat(found.getName()).isNull();                      
+      59 +    assertThat(found.getMarket()).isNull();                    
+      60 +  }                                                            
+      61 +                                                               
+      62 +  @Test                                                        
+      63 +  void 資料庫的CHECK約束擋下TWSE和TPEX以外的市場() {           
+      64 +    // Entity 用 enum 寫不出錯的值，所以直接下 SQL，確認資料庫 
+         +這道防線存在                                                   
+      65 +    assertThatThrownBy(() -> entityManager.createNativeQuery(  
+      66 +        "INSERT INTO holding (code, market, lots, buy_price, cr
+         +eated_at, updated_at) "                                        
+      67 +            + "VALUES ('2330', 'NYSE', 1, 1000, CURRENT_TIMESTA
+         +MP, CURRENT_TIMESTAMP)")                                       
+      68 +        .executeUpdate())                                      
+      69 +        .isInstanceOf(PersistenceException.class)              
+      70 +        .hasStackTraceContaining("CK_HOLDING_MARKET");         
+      71 +  }                                                            
+      72 +                                                               
+      73 +  @Test                                                        
+      74    void 資料庫的UNIQUE約束擋下重複代號_錯誤訊息含約束名稱() {
+      75      holdingRepository.saveAndFlush(new Holding("2330", 1, new B
+          igDecimal("1000.00"), NOW));
+      76 
+
+● Repository 測試裡其他 new Holding(...) 換成新的 helper，再補 import：
+
+● Bash(f=src/test/java/io/hsiaopingkuo/stockholdings/repository/HoldingRepositor
+      yTest.java && sed -i -E 's/new Holding\(("[0-9]+"), ([0-9]+), (new
+      BigDecimal\("[0-9.]+…)
+  ⎿  3:import static org.assertj.core.api.Assertions.assertThat;
+     4:import static org.assertj.core.api.Assertions.assertThatThrownBy;
+     6:import java.math.BigDecimal;
+     … +21 lines (ctrl+o to expand)
+  ⎿  Updated src\test\java\io\hsiaopingkuo\stockholdings\repository\Holding
+     RepositoryTest.java +109 -106
+        1 -package io.hsiaopingkuo.stockholdings.repository;             
+        2 -                                                              
+        3 -import static org.assertj.core.api.Assertions.assertThat;     
+        4 -import static org.assertj.core.api.Assertions.assertThatThrown
+          -By;                                                           
+        5 -                                                              
+        6 -import java.math.BigDecimal;                                  
+        7 -import java.time.LocalDateTime;                               
+        8 -                                                              
+        9 -import org.junit.jupiter.api.Test;                            
+       10 -import org.springframework.beans.factory.annotation.Autowired;
+       11 -import org.springframework.boot.data.jpa.test.autoconfigure.Da
+          -taJpaTest;                                                    
+       12 -import org.springframework.dao.DataIntegrityViolationException
+          -;                                                             
+       13 -                                                              
+       14 -import io.hsiaopingkuo.stockholdings.entity.Holding;          
+       15 -                                                              
+       16 -/**                                                           
+       17 - * 驗證 V1 migration 建出來的表：欄位對得上 Entity，而且資料庫
+          -本身的約束有作用。                                            
+       18 - * 這裡刻意繞過表單和 service，直接寫資料庫，確認「最後一道防 
+          -線」真的存在。                                                
+       19 - */                                                           
+       20 -@DataJpaTest                                                  
+       21 -class HoldingRepositoryTest {                                 
+       22 -                                                              
+       23 -        private static final LocalDateTime NOW = LocalDateTime
+          -.of(2026, 11, 24, 14, 0);                                     
+       24 -                                                              
+       25 -        @Autowired                                            
+       26 -        private HoldingRepository holdingRepository;          
+       27 -                                                              
+       28 -        @Autowired                                            
+       29 -        private EntityManager entityManager;                  
+       30 -                                                              
+       31 -        /** 測試只在意某些欄位時，名稱和市場用固定值。 */     
+       32 -        private static Holding holding(String code, int lots, 
+          -BigDecimal buyPrice) {                                        
+       33 -                return new Holding(code, "測試", Market.TWSE, 
+          -lots, buyPrice, NOW);                                         
+       34 -        }                                                     
+       35 -                                                              
+       36 -        @Test                                                 
+       37 -        void 可以存取持股且代號開頭的0不會掉() {              
+       38 -                Holding saved = holdingRepository.saveAndFlush
+          -(                                                             
+       39 -                                new Holding("0050", "元大台灣5
+          -0", Market.TWSE, 2, new BigDecimal("150.00"), NOW));          
+       40 -                // 清掉 JPA 的快取，下面的 findById 才會真的從
+          -資料庫讀，確認欄位對應正確                                    
+     … +175 lines (ctrl+o to expand)
+
+● HoldingServiceTest：加上假的
+  MarketResolver，並補上「查不到／無法確認時不儲存」的測試。
+
+● Update(src\test\java\io\hsiaopingkuo\stockholdings\service\HoldingServiceTest.
+        java)
+  ⎿  Added 65 lines
+       43    @Autowired
+       44    private HoldingRepository holdingRepository;
+       45 
+       46 +  @Autowired                                                  
+       47 +  private EntityManager entityManager;                        
+       48 +                                                              
+       49 +  // 官方 API 的判斷另外在 MarketResolverTest 測；這裡用假的，
+          +專心測 service 的流程，也不會連網                             
+       50 +  @MockitoBean                                                
+       51 +  private MarketResolver marketResolver;                      
+       52 +                                                              
+       53 +  @BeforeEach                                                 
+       54 +  void 預設任何代號都判斷為上市() {                           
+       55 +    given(marketResolver.resolve(anyString())).willAnswer(invo
+          +cation -> StockLookup.found(                                  
+       56 +        Market.TWSE, "測試股", LocalDate.of(2026, 11, 23), new
+          + BigDecimal("10.00")));                                       
+       57 +  }                                                           
+       58 +                                                              
+       59    @Test
+       60 +  void 新增時存入官方查到的名稱和市場() {                     
+       61 +    given(marketResolver.resolve("6488")).willReturn(StockLook
+          +up.found(                                                     
+       62 +        Market.TPEX, "環球晶", LocalDate.of(2026, 11, 23), new
+          + BigDecimal("460.50")));                                      
+       63 +                                                              
+       64 +    Holding created = holdingService.create("6488", 1, new Big
+          +Decimal("450.00"));                                           
+       65 +    // 清掉 JPA 快取，確認是真的寫進資料庫                    
+       66 +    entityManager.flush();                                    
+       67 +    entityManager.clear();                                    
+       68 +                                                              
+       69 +    Holding saved = holdingRepository.findById(created.getId()
+          +).orElseThrow();                                              
+       70 +    assertThat(saved.getMarket()).isEqualTo(Market.TPEX);     
+       71 +    assertThat(saved.getName()).isEqualTo("環球晶");          
+       72 +  }                                                           
+       73 +                                                              
+       74 +  @Test                                                       
+       75 +  void 交給官方查詢的是正規化後的代號() {                     
+       76 +    holdingService.create(" 00631l ", 1, new BigDecimal("20.00
+          +"));                                                          
+       77 +                                                              
+       78 +    verify(marketResolver).resolve("00631L");                 
+       79 +  }                                                           
+       80 +                                                              
+       81 +  @Test                                                       
+       82 +  void 上市上櫃都查不到_丟出錯誤且不儲存() {                  
+       83 +    given(marketResolver.resolve("9999")).willThrow(new StockC
+          +odeNotFoundException("9999"));                                
+       84 +                                                              
+       85 +    assertThatThrownBy(() -> holdingService.create("9999", 1, 
+          +new BigDecimal("10.00")))                                     
+       86 +        .isInstanceOf(StockCodeNotFoundException.class)       
+       87 +        .hasMessage("查無此股票代號：9999（上市、上櫃都找不到 
+          +）");                                                         
+       88 +    assertThat(holdingRepository.count()).isZero();           
+       89 +  }                                                           
+       90 +                                                              
+       91 +  @Test                                                       
+       92 +  void 官方連不上無法確認_丟出錯誤且不儲存() {                
+       93 +    given(marketResolver.resolve("2330")).willThrow(new Market
+          +UnavailableException());                                      
+       94 +                                                              
+       95 +    assertThatThrownBy(() -> holdingService.create("2330", 1, 
+          +new BigDecimal("1000.00")))                                   
+       96 +        .isInstanceOf(MarketUnavailableException.class)       
+       97 +        .hasMessage("暫時無法連線官方網站確認代號，請稍後再試"
+          +);                                                            
+       98 +    assertThat(holdingRepository.count()).isZero();           
+       99 +  }                                                           
+      100 +                                                              
+      101 +  @Test                                                       
+      102 +  void 代號重複時不會去查官方() {                             
+      103 +    holdingService.create("2330", 1, new BigDecimal("1000.00")
+          +);                                                            
+      104 +                                                              
+      105 +    assertThatThrownBy(() -> holdingService.create("2330", 2, 
+          +new BigDecimal("900.00")))                                    
+      106 +        .isInstanceOf(DuplicateCodeException.class);          
+      107 +    // 只有第一次新增查過官方                                 
+      108 +    verify(marketResolver, times(1)).resolve("2330");         
+      109 +  }                                                           
+      110 +                                                              
+      111 +  @Test                                                       
+      112    void 新增持股_時間用台北時區() {
+      113      Holding created = holdingService.create("2330", 1, new Big
+           Decimal("1000.00"));
+      114 
+
+● Update(src\test\java\io\hsiaopingkuo\stockholdings\service\HoldingServiceTest.
+        java)
+  ⎿  Added 6 lines
+       2 
+       3  import static org.assertj.core.api.Assertions.assertThat;
+       4  import static org.assertj.core.api.Assertions.assertThatThrownB
+          y;
+       5 +import static org.mockito.ArgumentMatchers.anyString;          
+       6 +import static org.mockito.BDDMockito.given;                    
+       7 +import static org.mockito.Mockito.times;                       
+       8 +import static org.mockito.Mockito.verify;                      
+       9 
+      10  import java.math.BigDecimal;
+      11  import java.time.Clock;
+      12  import java.time.Instant;
+      13 +import java.time.LocalDate;                                    
+      14  import java.time.LocalDateTime;
+      15  import java.time.ZoneId;
+      16 
+      17 +import org.junit.jupiter.api.BeforeEach;                       
+      18  import org.junit.jupiter.api.Test;
+      19  import org.springframework.beans.factory.annotation.Autowired;
+      20  import org.springframework.boot.data.jpa.test.autoconfigure.Dat
+          aJpaTest;
+
+● Update(src\test\java\io\hsiaopingkuo\stockholdings\service\HoldingServiceTest.
+        java)
+  ⎿  Added 7 lines
+      21  import org.springframework.boot.test.context.TestConfiguration;
+      22  import org.springframework.context.annotation.Bean;
+      23  import org.springframework.context.annotation.Import;
+      24 +import org.springframework.test.context.bean.override.mockito.M
+         +ockitoBean;                                                    
+      25 
+      26  import io.hsiaopingkuo.stockholdings.entity.Holding;
+      27 +import io.hsiaopingkuo.stockholdings.entity.Market;            
+      28  import io.hsiaopingkuo.stockholdings.exception.DuplicateCodeExc
+          eption;
+      29  import io.hsiaopingkuo.stockholdings.exception.HoldingNotFoundE
+          xception;
+      30 +import io.hsiaopingkuo.stockholdings.exception.MarketUnavailabl
+         +eException;                                                    
+      31 +import io.hsiaopingkuo.stockholdings.exception.StockCodeNotFoun
+         +dException;                                                    
+      32 +import io.hsiaopingkuo.stockholdings.quote.MarketResolver;     
+      33 +import io.hsiaopingkuo.stockholdings.quote.StockLookup;        
+      34  import io.hsiaopingkuo.stockholdings.repository.HoldingReposito
+          ry;
+      35 +import jakarta.persistence.EntityManager;                      
+      36 
+      37  /** Service 搭配真的資料庫（測試用 H2 記憶體模式 + Flyway）測試
+          業務規則。 */
+      38  @DataJpaTest
+
+● 程式寫完了，跑一次全部測試。
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● 79 個測試全部通過，接下來我會用暫存資料庫和 18080
+  埠對真實官方網站跑一次，不動到 ./data 的資料。 · summary
+  Ran 3 shell commands (ctrl+o to expand)
+
+● 我已用官方網站確認：2330 是上市的台積電、6488 是上櫃的環球晶，9999
+  則查無此代號；接下來量測回應時間，並模擬主機無法連線的情況。 · summary
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● 9999 只花 0.13 秒，1101 也成功新增，log
+  裡沒有任何警告。接著把主機網址改到不存在的位置，重新啟動來測。
+
+● Stop Task
+  ⎿  SCR="C:/Users/Ping/AppData/Local/Temp/claude/d50855ca92fd132e/1ee53179
+     -b539-43e6-9098-37a68d940383/scratchpad" && ./mvnw -q spring-boot:run
+     -Dspring-boot.run.ar… · stopped
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● 停掉 Maven 之後，它啟動的 java 程式還留著，PID 26916 跟剛才啟動 log
+  裡的一樣，確定是我啟動的那個，把它關掉：
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● 證交所指到不會回應的 IP（測連線逾時），櫃買指到本機沒開的埠（測立即被拒）：
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● 連不上時表單顯示「暫時無法連線官方網站確認代號，請稍後再試」，花 4
+  秒，沒有出現錯誤頁。關掉測試用的程式：
+
+● Stop Task
+  ⎿  SCR="C:/Users/Ping/AppData/Local/Temp/claude/d50855ca92fd132e/1ee53179
+     -b539-43e6-9098-37a68d940383/scratchpad" &&
+     TWSE_BASE_URL=http://10.255.255.1 TPEX_BASE_UR… · stopped
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● 第 3 題第一小步完成：新增持股時自動判斷上市／上櫃
+
+  ./mvnw test 79 個全部通過（失敗 0、錯誤 0）。另外用暫存資料庫和 18080
+  埠實際啟動並連真的官方網站測過，你 ./data 的資料沒有被動到：
+
+  ┌────────────────────────────────┬─────────────────────────────────────────┐
+  │              實測              │                  結果                   │
+  ├────────────────────────────────┼─────────────────────────────────────────┤
+  │ 新增 2330                      │ 清單顯示「台積電／上市」                │
+  ├────────────────────────────────┼─────────────────────────────────────────┤
+  │ 新增 6488                      │ 「環球晶／上櫃」                        │
+  ├────────────────────────────────┼─────────────────────────────────────────┤
+  │ 新增 9999                      │ 表單顯示「查無此股票代號：9999（上市、  │
+  │                                │ 上櫃都找不到）」，沒有儲存，花 0.13 秒  │
+  ├────────────────────────────────┼─────────────────────────────────────────┤
+  │ 兩個主機網址都指到連不上的位置 │ 表單顯示「暫時無法連線官方網站確認代號  │
+  │                                │ ，請稍後再試」，花 4 秒，沒有錯誤頁     │
+  └────────────────────────────────┴─────────────────────────────────────────┘
+
+  實測時沒有被證交所擋，不用另外處理 User-Agent。
+
+  跟計畫不一樣的三個地方
+
+  1. MarketResolver.resolve() 直接回傳 StockLookup，沒有另外寫
+     MarketResolution。查到的那一邊本來就有市場和名稱，也有之後行情步驟會用到的
+     收盤價和日期，不必多一個類別。
+  2. 執行緒池由 MarketResolver 自己建立和關閉，沒有宣告成
+     bean。原因是只要你自己定義任何 Executor bean，Spring Boot
+     就不會再建它預設的 applicationTaskExecutor，會影響到別的功能。
+  3. 兩支 client 和 MarketResolver 都在 QuoteConfig 用 @Bean 
+     建立，沒有另外宣告兩個 RestClient bean。兩個 RestClient 型別相同，如果做成
+     bean 還得額外指定名稱來區分。
+
+  AI 犯的錯（可以記進 REVIEW.md）
+
+  - 第一次寫 QuoteConfig 時，檔案最後多了一段沒有任何用途的 @Qualifier 
+    @interface Unused，寫完我自己發現就刪掉了。
+  - 啟動測試用的程式後，停掉 Maven 並不會一起關掉它啟動的 java 程式，18080
+    埠還被佔用。我確認 PID 是自己啟動的那個之後才手動關掉。
+
+  改了哪些檔案
+
+  新增
+  - quote/：StockLookup、StockLookupClient、TwseStockDayClient、TpexTradingStock
+    Client、QuoteParsing、QuoteHttp（兩支 client 共用的「送出請求、取回
+    JSON」）、MarketResolver
+  - config/：QuoteProperties、QuoteConfig
+  - entity/Market.java
+  - exception/：StockCodeNotFoundException、MarketUnavailableException
+  - db/migration/V2__add_holding_market_and_name.sql（加 market、name 兩欄和
+    ck_holding_market 約束）
+  - 測試：quote/ 底下 4 個測試類別
+
+  修改
+  - Holding、HoldingService、HoldingController
+  - holdings.html、holding-edit.html
+  - 兩個 application.properties：測試用的那份也要加 quote
+    設定，因為它會整個蓋掉正式的設定檔
+  - 3 個既有的測試類別
+
+  沒有動： pom.xml（沒加依賴）、V1__create_holding.sql
+
+  你要怎麼驗證
+
+  1. 執行 ./mvnw test，預期最後看到 Tests run: 79, Failures: 0, Errors: 0 和
+     BUILD SUCCESS。
+  2. 執行 ./mvnw spring-boot:run，打開 http://localhost:8080/holdings
+     - 啟動 log 會出現 Migrating schema "PUBLIC" to version "2 - add holding 
+       market and name"
+     - 第 2 題留下的舊資料，名稱和市場顯示「—」
+     - 新增 2330、6488、9999，結果應該和上面實測一樣
+  3. 測連不上的情況（Windows PowerShell）：
+  $env:TWSE_BASE_URL="http://localhost:9";
+  $env:TPEX_BASE_URL="http://localhost:9"; ./mvnw spring-boot:run
+     新增任何代號，預期表單顯示「暫時無法連線官方網站確認代號，請稍後再試」。測
+     完記得關掉這個終端機，或清掉這兩個環境變數。
+
+  建議的 commit（由你執行）
+
+  原本建議拆 5 個，但修改過的測試檔（例如 HoldingControllerTest）同時有第 4 和第
+  5 個 commit 的內容，要拆就得用 git add -p 一段一段挑。所以改成 3 個，每個
+  commit 單獨都能編譯和測試：
+
+  1. test: 第3題 加入證交所、櫃買官方 API 實測回應作為測試資料
+     - src/test/resources/quotes/
+  2. feat: 第3題 證交所、櫃買逐檔 API client 與 
+     MarketResolver，主機網址可由環境變數更換
+     - quote/（main 和 test）、config/Quote*、entity/Market.java、exception/
+       兩個新例外、兩個 application.properties
+  3. feat: 第3題 
+     新增持股時自動判斷上市上櫃並存入名稱，清單與修改頁顯示名稱和市場
+     - 其餘檔案：V2、Holding、HoldingService、HoldingController、兩個 html、3
+       個既有測試
+
+  每個 commit 訊息最後要加一行：
+  Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+  還沒做的部分
+
+  - 第 3 題其餘步驟：行情表、收盤價顯示、清單的「未取得」、背景排程、批次
+    API、連不上時改查資料庫。
+  - 舊資料的名稱和市場不會自動補上，之後做行情步驟時再處理。
+
+  這題結束前的提醒
+
+  - README：這一步新增了環境變數 TWSE_BASE_URL、TPEX_BASE_URL，需要更新。依照我
+    們的約定，等你手動驗證通過後，我再提出草稿。
+  - TESTLOG：這次是我自己實測，沒有發現問題。你實際操作時如果有發現，再告訴我。
+  - ai-log：記得用 /export 匯出放進 ai-log/，commit 前檢查裡面有沒有密碼或
+    token。
+
+  建議（未實作）
+
+  - 新增持股要等官方回應，最多 8 秒，這段期間資料庫連線一直被佔用。單一使用者沒
+    有影響，以後如果有多人同時使用，再把「連官方」移到交易外面。
+
+✻ Worked for 11m 11s · done 下午1:20
+
+※ recap: 第 3 題第一小步「新增持股時自動判斷上市／上櫃」已完成，79 個測試全過，實測連官方網站也正常。下一步請你照回報裡的方式手動驗證，再分 3 個 commit 提交。
+
+> 測試的內容通過，但我想在輸入股票代號時，欄位旁邊可顯示該股票的名稱和市場名稱  
+
+● 可以做，但這個功能會碰到 CLAUDE.md 的一條設計規則，所以先討論，還不動手。
+
+  先講衝突
+
+  CLAUDE.md 2.1 第 1 條規定：使用者的請求不可以呼叫官方 API，只能讀資料庫裡的行
+  情快取。之所以允許「新增持股時查官方」，是因為一次只查一次。
+  「輸入時就顯示名稱」如果每打一個字就查官方，一個代號可能送出十幾個請求，很容易
+  被證交所擋（回 403 或 HTML），反而會讓真正的新增也失敗。
+
+  兩種做法
+
+  A. 現在做：游標離開代號欄位時查官方，加上短時間快取
+  - 觸發時機：游標離開代號欄位時，或停止輸入 0.5 秒後，而且代號是 4～6
+    個英數字才查。用很少量的原生 JavaScript，不加套件。
+  - 新增一個網址 GET /holdings/lookup?code=2330，內部呼叫現有的
+    MarketResolver，回傳 JSON：
+  {"code":"2330","name":"台積電","market":"TWSE","market_label":"上市"}
+  - MarketResolver 加上記憶體快取，只記住「查到」和「確定查不到」，10
+    分鐘內同一個代號不再查官方。這樣「欄位旁先查一次」加上「按下新增再查一次」，
+    只會真的送出一次請求。連不上的結果不記，下次會重查。
+  - 欄位旁的顯示：
+    - 查詢中：灰字「查詢中…」
+    - 查到：「台積電（上市）」
+    - 查不到：紅字「查無此股票代號」
+    - 連不上：灰字「暫時無法確認」
+  - 按下新增時，伺服器端仍然會重新檢查。畫面上的提示只是方便使用者，不能拿來當作
+    判斷依據。
+
+  B. 等之後做：查本地資料
+  - 第 3 題後面的步驟會用批次
+    API（MI_INDEX、otc）抓全市場行情，一次就有所有上市和上櫃股票的代號與名稱（約
+    2400 筆）。
+  - 存進資料庫之後，輸入時只查本地資料，完全符合規則、瞬間就有結果，還可以做下拉
+    自動完成。
+  - 缺點：要等批次那一步完成才能做。
+
+  我的建議
+
+  先做 A，等批次步驟完成後，把 /holdings/lookup 的資料來源換成本地資料（B）。
+  這個網址和回傳格式不變，畫面端的 JavaScript 就不用改。
+  - A 會在 CLAUDE.md 規則 1 加一個例外：「新增表單的代號提示可以查官方，但必須有
+    快取和觸發限制」。這需要你同意。
+  - 建議記進 REVIEW.md 的討論，說明為什麼這樣取捨。
+
+  如果做 A，會改的檔案
+
+  ┌───────────────────┬──────────────────────────────────────────────────────┐
+  │       檔案        │                         內容                         │
+  ├───────────────────┼──────────────────────────────────────────────────────┤
+  │                   │ 新增 /holdings/lookup，回傳                          │
+  │ HoldingController │ JSON；查不到或連不上時，錯誤一樣用                   │
+  │                   │ {"error":{"code","message"}} 格式                    │
+  ├───────────────────┼──────────────────────────────────────────────────────┤
+  │ MarketResolver    │ 加上 10 分鐘的記憶體快取（用 ConcurrentHashMap       │
+  │                   │ 記錄時間，時間用 Clock 計算）                        │
+  ├───────────────────┼──────────────────────────────────────────────────────┤
+  │ holdings.html     │ 欄位旁加一個 <span> 和約 30 行 JavaScript            │
+  ├───────────────────┼──────────────────────────────────────────────────────┤
+  │ 測試              │ 查詢網址的四種結果；快取命中時不會再呼叫             │
+  │                   │ client；過期之後會重查                               │
+  └───────────────────┴──────────────────────────────────────────────────────┘
+
+  不需要新的依賴，也不需要 migration。
+
+  要你決定
+
+  1. 做法：A 先做、之後換成 B（建議）／只做 B（等批次步驟）／只做 A？
+  2. 觸發時機：游標離開欄位，或停止輸入 0.5 
+     秒（建議）／只在游標離開時／旁邊放一個「查詢」按鈕？
+  3. 快取時間 10 分鐘 可以嗎？
+
+  另外提醒：這個功能題目沒有要求，屬於額外功能。如果時間有限，優先順序可以排在第
+  3 題其餘步驟（行情、「未取得」）後面。
+
+✻ Cooked for 30s · done 下午1:29
+
+> 好，先做A，之後增加批次功能時，換成B                                          
+  觸發時機：游標離開欄位後，或是停止輸入後0.5秒                                 
+  快取時間10分鐘可以                                                            
+
+● 收到，開始實作 A。先確認 Jackson 3 的 @JsonProperty 套件路徑，再動手。
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Jackson 3 沿用 com.fasterxml.jackson.annotation.JsonProperty（2.21
+  版）。開始修改：設定、MarketResolver 快取。
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\config\QuoteProperties.java
+        )
+  ⎿  Added 2 lines, removed 1 line
+      14   * @param connectTimeout 建立連線的上限
+      15   * @param readTimeout    等待回應的上限
+      16   * @param lookupTimeout  新增持股時「同時查兩個市場」的整體上限
+          （題目要求 10 秒內看到結果）
+      17 + * @param lookupCacheTtl 代號查詢結果記住多久；輸入代號時的即時
+         +提示和按下新增共用，避免重複打官方                             
+      18   */
+      19  @ConfigurationProperties("quote")
+      20  public record QuoteProperties(Host twse, Host tpex, Duration co
+          nnectTimeout, Duration readTimeout,
+      20 -    Duration lookupTimeout) {                                  
+      21 +    Duration lookupTimeout, Duration lookupCacheTtl) {         
+      22 
+      23    /** @param baseUrl 主機網址，例如 https://www.twse.com.tw；路
+          徑和參數寫在 client 裡，不能改 */
+      24    public record Host(String baseUrl) {
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\config\QuoteConfig.java)
+  ⎿  Added 1 line, removed 1 line
+      35    @Bean
+      36    MarketResolver marketResolver(TwseStockDayClient twse, TpexTr
+          adingStockClient tpex, Clock clock,
+      37        QuoteProperties properties) {
+      38 -    return new MarketResolver(twse, tpex, clock, properties.loo
+         -kupTimeout());                                                 
+      38 +    return new MarketResolver(twse, tpex, clock, properties.loo
+         +kupTimeout(), properties.lookupCacheTtl());                    
+      39    }
+      40 
+      41    private static RestClient restClient(String baseUrl, QuotePro
+          perties properties) {
+
+● Update(src\main\resources\application.properties)
+  ⎿  Added 4 lines, removed 1 line
+      25  quote.connect-timeout=3s
+      26  quote.read-timeout=5s
+      27  # 新增持股時同時查上市、上櫃，整體最多等 8 秒（題目要求按下新增
+          後 10 秒內看到結果）
+      28 -quote.lookup-timeout=8s                                        
+         \ No newline at end of file
+      28 +quote.lookup-timeout=8s                                        
+      29 +# 查過的代號記住 10 分鐘：輸入代號時的即時提示和按下新增共用結 
+         +果，避免短時間重複打官方而被擋                                 
+      30 +# （只記「查到」和「確定查不到」；連不上的結果不記，下次會重查 
+         +）                                                             
+      31 +quote.lookup-cache-ttl=10m                                     
+         \ No newline at end of file
+
+● Update(src\test\resources\application.properties)
+  ⎿  Added 1 line
+      15  quote.connect-timeout=1s
+      16  quote.read-timeout=1s
+      17  quote.lookup-timeout=2s
+      18 +quote.lookup-cache-ttl=10m                                     
+
+● Now the cache inside MarketResolver:
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\quote\MarketResolver.java)
+  ⎿  Added 39 lines, removed 1 line
+      34    private final StockLookupClient tpex;
+      35    private final Clock clock;
+      36    private final Duration lookupTimeout;
+      37 +  private final Duration cacheTtl;                             
+      38    // 查詢用的執行緒；不用 CompletableFuture 預設的共用執行緒池
+          ，那是給計算用的，拿來等網路會卡住別人
+      39    private final ExecutorService executor;
+      40 +  // 代號 → 最近一次的確定結果。輸入時的即時提示和按下新增會查 
+         +同一個代號，記住結果才不會重複打官方；                         
+      41 +  // 用 ConcurrentHashMap：多個使用者的請求可能同時讀寫        
+      42 +  private final Map<String, CachedResult> cache = new Concurren
+         +tHashMap<>();                                                  
+      43 
+      40 -  public MarketResolver(StockLookupClient twse, StockLookupClie
+         -nt tpex, Clock clock, Duration lookupTimeout) {                
+      44 +  public MarketResolver(StockLookupClient twse, StockLookupClie
+         +nt tpex, Clock clock, Duration lookupTimeout,                  
+      45 +      Duration cacheTtl) {                                     
+      46      this.twse = twse;
+      47      this.tpex = tpex;
+      48      this.clock = clock;
+      49      this.lookupTimeout = lookupTimeout;
+      50 +    this.cacheTtl = cacheTtl;                                  
+      51      this.executor = newExecutor();
+      52    }
+      53 
+     ...
+      58     * @throws MarketUnavailableException 官方網站連不上或回應異
+          常，無法確認
+      59     */
+      60    public StockLookup resolve(String code) {
+      61 +    CachedResult cached = cache.get(code);                     
+      62 +    if (cached != null && clock.instant().isBefore(cached.expir
+         +esAt())) {                                                     
+      63 +      if (cached.found() == null) {                            
+      64 +        throw new StockCodeNotFoundException(code);            
+      65 +      }                                                        
+      66 +      return cached.found();                                   
+      67 +    }                                                          
+      68 +                                                               
+      69 +    try {                                                      
+      70 +      StockLookup found = lookupBothMarkets(code);             
+      71 +      remember(code, found);                                   
+      72 +      return found;                                            
+      73 +    } catch (StockCodeNotFoundException e) {                   
+      74 +      // 「確定查不到」也記住，使用者反覆輸入打錯的代號時不會一
+         +直打官方                                                       
+      75 +      remember(code, null);                                    
+      76 +      throw e;                                                 
+      77 +    }                                                          
+      78 +    // MarketUnavailableException 不記：連不上可能只是暫時的， 
+         +下次要重新查                                                   
+      79 +  }                                                            
+      80 +                                                               
+      81 +  /** found 是 null 代表「確定查不到」。 */                    
+      82 +  private void remember(String code, StockLookup found) {      
+      83 +    Instant now = clock.instant();                             
+      84 +    // 順手清掉過期的項目，避免快取無限長大（持股頁的代號數量不
+         +多，整個掃一遍很快）                                           
+      85 +    cache.values().removeIf(entry -> !now.isBefore(entry.expire
+         +sAt()));                                                       
+      86 +    cache.put(code, new CachedResult(found, now.plus(cacheTtl))
+         +);                                                             
+      87 +  }                                                            
+      88 +                                                               
+      89 +  private record CachedResult(StockLookup found, Instant expire
+         +sAt) {                                                         
+      90 +  }                                                            
+      91 +                                                               
+      92 +  private StockLookup lookupBothMarkets(String code) {         
+      93      // 一定要用台北時區的 clock：主機在海外時，無參數的 now() 
+          在月初可能還是上個月
+      94      LocalDate today = LocalDate.now(clock);
+      95      CompletableFuture<StockLookup> twseFuture =
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\quote\MarketResolver.java)
+  ⎿  Added 3 lines
+       2 
+       3  import java.time.Clock;
+       4  import java.time.Duration;
+       5 +import java.time.Instant;                                      
+       6  import java.time.LocalDate;
+       7 +import java.util.Map;                                          
+       8  import java.util.concurrent.CompletableFuture;
+       9 +import java.util.concurrent.ConcurrentHashMap;                 
+      10  import java.util.concurrent.ExecutionException;
+      11  import java.util.concurrent.ExecutorService;
+      12  import java.util.concurrent.Executors;
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\quote\MarketResolver.java)  ⎿  Added 2 lines
+      28   * 合併規則：
+      29   * 證交所 FOUND → 上市；櫃買 FOUND → 上櫃；兩邊都 NOT_FOUND →
+          代號不存在；
+      30   * 其他（至少一邊查不了、另一邊沒找到）→ 無法確認，請使用者稍後
+          再試。
+      31 + *                                                             
+      32 + * 確定的結果（查到、確定查不到）會記住一段時間（預設 10 分鐘）
+         +，期間內同一代號不再打官方。                                   
+      33   */
+      34  public class MarketResolver implements AutoCloseable {
+      35 
+
+● 接著是回傳給畫面的 JSON 格式（dto）、Service 和 Controller：
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\dto\StockLookupResponse.java
+       )
+  ⎿  Wrote 25 lines to src\main\java\io\hsiaopingkuo\stockholdings\dto\Stoc
+     kLookupResponse.java
+       1 package io.hsiaopingkuo.stockholdings.dto;
+       2 
+       3 import com.fasterxml.jackson.annotation.JsonProperty;
+       4 
+       5 import io.hsiaopingkuo.stockholdings.quote.StockLookup;
+       6 
+       7 /**
+       8  * 新增表單輸入代號時的即時提示：GET /holdings/lookup?code=2330
+         的回應。
+       9  * 欄位名稱用 snake_case，和之後 App API 的慣例一致；name 查不到
+     … +17 lines (ctrl+o to expand)
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\dto\ErrorResponse.java)
+  ⎿  Wrote 15 lines to
+     src\main\java\io\hsiaopingkuo\stockholdings\dto\ErrorResponse.java
+       1 package io.hsiaopingkuo.stockholdings.dto;
+       2 
+       3 /**
+       4  * JSON 錯誤回應，格式固定是 {"error":{"code":"...","message":".
+         .."}}（專案慣例，App API 也會用同一個格式）。
+       5  * code 給程式判斷，message 給人看。
+       6  */
+       7 public record ErrorResponse(Error error) {
+       8 
+       9   public record Error(String code, String message) {
+     … +6 lines (ctrl+o to expand)
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\service\HoldingService.java
+        )
+  ⎿  Added 13 lines
+      81      }
+      82    }
+      83 
+      84 +  /**                                                          
+      85 +   * 新增表單輸入代號時的即時提示：查這個代號的名稱與市場。    
+      86 +   * 結果由 MarketResolver 記住 10 分鐘，使用者接著按下新增時不
+         +會再打一次官方。                                               
+      87 +   * NOT_SUPPORTED：這裡完全不碰資料庫，不要為了等官方回應（最 
+         +多 8 秒）白白佔住一條資料庫連線。                              
+      88 +   *                                                           
+      89 +   * @throws StockCodeNotFoundException 上市、上櫃都查不到     
+      90 +   * @throws MarketUnavailableException 官方網站連不上，無法確 
+         +認                                                             
+      91 +   */                                                          
+      92 +  @Transactional(propagation = Propagation.NOT_SUPPORTED)      
+      93 +  public StockLookup lookupStock(String code) {                
+      94 +    return marketResolver.resolve(normalizeCode(code));        
+      95 +  }                                                            
+      96 +                                                               
+      97    @Transactional
+      98    public Holding update(Long id, int lots, BigDecimal buyPrice)
+           {
+      99      Holding holding = findById(id);
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\service\HoldingService.java
+        )
+  ⎿  Added 1 line
+       8 
+       9  import org.springframework.dao.DataIntegrityViolationException;
+      10  import org.springframework.stereotype.Service;
+      11 +import org.springframework.transaction.annotation.Propagation; 
+      12  import org.springframework.transaction.annotation.Transactional
+          ;
+      13 
+      14  import io.hsiaopingkuo.stockholdings.entity.Holding;
+
+● ErrorResponse 裡的內部類別叫 Error，會和 Java 內建的 java.lang.Error
+  撞名、容易看錯，改名為 Detail：
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\dto\ErrorResponse.java)
+  ⎿  Added 4 lines, removed 3 lines
+       4   * JSON 錯誤回應，格式固定是 {"error":{"code":"...","message":"
+          ..."}}（專案慣例，App API 也會用同一個格式）。
+       5   * code 給程式判斷，message 給人看。
+       6   */
+       7 -public record ErrorResponse(Error error) {                     
+       7 +public record ErrorResponse(Detail error) {                    
+       8 
+       9 -  public record Error(String code, String message) {           
+       9 +  // 不叫 Error：會和 Java 內建的 java.lang.Error 撞名，閱讀時 
+         +容易誤會                                                       
+      10 +  public record Detail(String code, String message) {          
+      11    }
+      12 
+      13    public static ErrorResponse of(String code, String message) {
+      13 -    return new ErrorResponse(new Error(code, message));        
+      14 +    return new ErrorResponse(new Detail(code, message));       
+      15    }
+      16  }
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\controller\HoldingControlle
+        r.java)
+  ⎿  Added 25 lines
+       77      }
+       78    }
+       79 
+       80 +  /**                                                         
+       81 +   * 新增表單輸入代號時，欄位旁即時顯示名稱與市場（畫面上的 Ja
+          +vaScript 呼叫）。                                             
+       82 +   * 只是提示：按下新增時伺服器仍會重新檢查，不能只相信畫面上 
+          +的結果。                                                      
+       83 +   * 回傳 JSON；錯誤格式和專案慣例一致：{"error":{"code":"..."
+          +,"message":"..."}}。                                          
+       84 +   */                                                         
+       85 +  @GetMapping(value = "/lookup", produces = MediaType.APPLICAT
+          +ION_JSON_VALUE)                                               
+       86 +  @ResponseBody                                               
+       87 +  public ResponseEntity<Object> lookup(@RequestParam(required 
+          += false) String code) {                                       
+       88 +    // 和新增表單相同的格式規則；不合格的代號直接擋掉，不浪費 
+          +官方查詢                                                      
+       89 +    if (code == null || !VALID_CODE.matcher(code.trim()).match
+          +es()) {                                                       
+       90 +      return ResponseEntity.badRequest()                      
+       91 +          .body(ErrorResponse.of("INVALID_CODE", "股票代號只能
+          +是英文字母或數字，最多 10 個字"));                            
+       92 +    }                                                         
+       93 +    try {                                                     
+       94 +      StockLookup lookup = holdingService.lookupStock(code);  
+       95 +      return ResponseEntity.ok(StockLookupResponse.of(lookup.m
+          +arket() == null ? code : normalized(code), lookup));          
+       96 +    } catch (StockCodeNotFoundException e) {                  
+       97 +      return ResponseEntity.status(HttpStatus.NOT_FOUND).body(
+          +ErrorResponse.of("STOCK_NOT_FOUND", e.getMessage()));         
+       98 +    } catch (MarketUnavailableException e) {                  
+       99 +      // 503：伺服器本身正常，只是暫時拿不到官方資料          
+      100 +      return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILA
+          +BLE)                                                          
+      101 +          .body(ErrorResponse.of("QUOTE_UNAVAILABLE", e.getMes
+          +sage()));                                                     
+      102 +    }                                                         
+      103 +  }                                                           
+      104 +                                                              
+      105    @GetMapping("/{id}/edit")
+      106    public String editForm(@PathVariable Long id, Model model) {
+      107      Holding holding = holdingService.findById(id);
+
+● 那行 lookup.market() == null ? code : normalized(code)
+  寫得沒道理，是我寫錯了；我會改成直接共用
+  HoldingService.normalizeCode，讓回傳代號固定是正規化後的值。 · summary
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\controller\HoldingControlle
+        r.java)
+  ⎿  Added 2 lines, removed 1 line
+      92      }
+      93      try {
+      94        StockLookup lookup = holdingService.lookupStock(code);
+      95 -      return ResponseEntity.ok(StockLookupResponse.of(lookup.ma
+         -rket() == null ? code : normalized(code), lookup));            
+      95 +      // 回傳正規化後的代號（例如輸入 00631l 回 00631L），畫面 
+         +顯示和實際儲存的一致                                           
+      96 +      return ResponseEntity.ok(StockLookupResponse.of(HoldingSe
+         +rvice.normalizeCode(code), lookup));                           
+      97      } catch (StockCodeNotFoundException e) {
+      98        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(E
+          rrorResponse.of("STOCK_NOT_FOUND", e.getMessage()));
+      99      } catch (MarketUnavailableException e) {
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\service\HoldingService.java
+        )
+  ⎿  Added 1 line, removed 1 line
+      110    }
+      111 
+      112    /** 去掉前後空白並轉大寫，讓「 00631l」和「00631L」被視為同
+           一個代號。 */
+      113 -  static String normalizeCode(String code) {                  
+      113 +  public static String normalizeCode(String code) {           
+      114      // Locale.ROOT：避免在特殊語系（例如土耳其文）下大小寫轉換
+           結果不同
+      115      return code.trim().toUpperCase(Locale.ROOT);
+      116    }
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\controller\HoldingControlle
+        r.java)
+  ⎿  Added 3 lines
+      33  @RequestMapping("/holdings")
+      34  public class HoldingController {
+      35 
+      36 +  // 和 HoldingCreateForm 的 @Pattern、@Size 相同：英數字、1～1
+         +0 個字                                                         
+      37 +  private static final Pattern VALID_CODE = Pattern.compile("^[
+         +A-Za-z0-9]{1,10}$");                                           
+      38 +                                                               
+      39    private final HoldingService holdingService;
+      40 
+      41    public HoldingController(HoldingService holdingService) {
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\controller\HoldingControlle
+        r.java)
+  ⎿  Added 5 lines
+       1  package io.hsiaopingkuo.stockholdings.controller;
+       2 
+       3 +import java.util.regex.Pattern;                                
+       4 +                                                               
+       5  import org.springframework.beans.propertyeditors.StringTrimmerE
+          ditor;
+       6 +import org.springframework.http.HttpStatus;                    
+       7 +import org.springframework.http.MediaType;                     
+       8 +import org.springframework.http.ResponseEntity;                
+       9  import org.springframework.stereotype.Controller;
+      10  import org.springframework.ui.Model;
+      11  import org.springframework.validation.BindingResult;
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\controller\HoldingControlle
+        r.java)
+  ⎿  Added 2 lines
+      17  import org.springframework.web.bind.annotation.PathVariable;
+      18  import org.springframework.web.bind.annotation.PostMapping;
+      19  import org.springframework.web.bind.annotation.RequestMapping;
+      20 +import org.springframework.web.bind.annotation.RequestParam;   
+      21 +import org.springframework.web.bind.annotation.ResponseBody;   
+      22  import org.springframework.web.servlet.mvc.support.RedirectAttr
+          ibutes;
+      23 
+      24  import io.hsiaopingkuo.stockholdings.dto.HoldingCreateForm;
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\controller\HoldingControlle
+        r.java)
+  ⎿  Added 2 lines
+      21  import org.springframework.web.bind.annotation.ResponseBody;
+      22  import org.springframework.web.servlet.mvc.support.RedirectAttr
+          ibutes;
+      23 
+      24 +import io.hsiaopingkuo.stockholdings.dto.ErrorResponse;        
+      25  import io.hsiaopingkuo.stockholdings.dto.HoldingCreateForm;
+      26 +import io.hsiaopingkuo.stockholdings.dto.StockLookupResponse;  
+      27  import io.hsiaopingkuo.stockholdings.dto.HoldingUpdateForm;
+      28  import io.hsiaopingkuo.stockholdings.entity.Holding;
+      29  import io.hsiaopingkuo.stockholdings.exception.DuplicateCodeExc
+          eption;
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\controller\HoldingControlle
+        r.java)
+  ⎿  Added 1 line
+      30  import io.hsiaopingkuo.stockholdings.exception.HoldingNotFoundE
+          xception;
+      31  import io.hsiaopingkuo.stockholdings.exception.MarketUnavailabl
+          eException;
+      32  import io.hsiaopingkuo.stockholdings.exception.StockCodeNotFoun
+          dException;
+      33 +import io.hsiaopingkuo.stockholdings.quote.StockLookup;        
+      34  import io.hsiaopingkuo.stockholdings.service.HoldingService;
+      35  import jakarta.validation.Valid;
+      36 
+
+● 現在改畫面：代號欄位旁加提示區，再加一小段 JavaScript。
+
+● Update(src\main\resources\templates\holdings.html)
+  ⎿  Added 3 lines, removed 1 line
+      24    <!-- 欄位用 text 而不是 number：檢查規則以伺服器為準，錯誤訊
+          息統一顯示在表單上 -->
+      25    <form th:action="@{/holdings}" th:object="${createForm}" meth
+          od="post">
+      26      <p>
+      27 -      <label>股票代號 <input type="text" th:field="*{code}" max
+         -length="20" placeholder="例：2330"></label>                    
+      27 +      <label>股票代號 <input type="text" th:field="*{code}" max
+         +length="20" placeholder="例：2330" autocomplete="off"></label> 
+      28 +      <!-- 輸入代號時即時顯示名稱與市場（下方 script 填入）；只
+         +是提示，按下新增時伺服器仍會重新檢查 -->                       
+      29 +      <span id="code-hint" class="hint" aria-live="polite" th:d
+         +ata-lookup-url="@{/holdings/lookup}"></span>                   
+      30        <span class="error" th:if="${#fields.hasErrors('code')}"
+          th:errors="*{code}">錯誤</span>
+      31      </p>
+      32      <p>
+
+● Update(src\main\resources\templates\holdings.html)
+  ⎿  Added 4 lines
+      10      td.num { text-align: right; }
+      11      .error { color: #c00; }
+      12      .message { color: #070; }
+      13 +    .hint { margin-left: 0.5em; }                              
+      14 +    .hint.found { color: #036; font-weight: bold; }            
+      15 +    .hint.muted { color: #888; }                               
+      16 +    .hint.error { color: #c00; }                               
+      17      form.inline { display: inline; }
+      18    </style>
+      19  </head>
+
+● Update(src\main\resources\templates\holdings.html)
+  ⎿  Added 68 lines
+       70        </tr>
+       71      </tbody>
+       72    </table>
+       73 +                                                              
+       74 +  <script>                                                    
+       75 +    // 輸入股票代號時，在欄位旁顯示名稱與市場。               
+       76 +    // 觸發時機：停止輸入 0.5 秒後，或游標離開欄位時；同一個代
+          +號不重複查（伺服器端另有 10 分鐘快取）。                      
+       77 +    (function () {                                            
+       78 +      var input = document.getElementById('code');            
+       79 +      var hint = document.getElementById('code-hint');        
+       80 +      var lookupUrl = hint.dataset.lookupUrl;                 
+       81 +      // 少於 4 個字不查：台股代號至少 4 碼，打到一半就查只是 
+          +浪費官方請求                                                  
+       82 +      var pattern = /^[A-Za-z0-9]{4,10}$/;                    
+       83 +      var timer = null;                                       
+       84 +      var lastCode = null;                                    
+       85 +      var requestSeq = 0; // 只採用最後一次查詢的結果，較早送 
+          +出但較晚回來的回應要丟掉                                      
+       86 +                                                              
+       87 +      function show(text, cssClass) {                         
+       88 +        // 用 textContent 而不是 innerHTML：內容不會被當成 HTM
+          +L 執行                                                        
+       89 +        hint.textContent = text;                              
+       90 +        hint.className = 'hint' + (cssClass ? ' ' + cssClass :
+          + '');                                                         
+       91 +      }                                                       
+       92 +                                                              
+       93 +      function lookup() {                                     
+       94 +        clearTimeout(timer);                                  
+       95 +        var code = input.value.trim().toUpperCase();          
+       96 +        if (code === lastCode) {                              
+       97 +          return;                                             
+       98 +        }                                                     
+       99 +        lastCode = code;                                      
+      100 +        if (!pattern.test(code)) {                            
+      101 +          show('');                                           
+      102 +          return;                                             
+      103 +        }                                                     
+      104 +        var seq = ++requestSeq;                               
+      105 +        show('查詢中…', 'muted');                             
+      106 +        fetch(lookupUrl + '?code=' + encodeURIComponent(code),
+          + { headers: { 'Accept': 'application/json' } })               
+      107 +          .then(function (res) {                              
+      108 +            return res.json().then(function (body) { return { 
+          +status: res.status, body: body }; });                         
+      109 +          })                                                  
+      110 +          .then(function (result) {                           
+      111 +            if (seq !== requestSeq) {                         
+      112 +              return;                                         
+      113 +            }                                                 
+      114 +            if (result.status === 200) {                      
+      115 +              show((result.body.name || '（名稱未知）') + '（'
+          + + result.body.market_label + '）', 'found');                 
+      116 +            } else if (result.status === 404) {               
+      117 +              show('查無此股票代號', 'error');                
+      118 +            } else {                                          
+      119 +              unavailable();                                  
+      120 +            }                                                 
+      121 +          })                                                  
+      122 +          .catch(function () {                                
+      123 +            if (seq === requestSeq) {                         
+      124 +              unavailable();                                  
+      125 +            }                                                 
+      126 +          });                                                 
+      127 +      }                                                       
+      128 +                                                              
+      129 +      function unavailable() {                                
+      130 +        show('暫時無法確認', 'muted');                        
+      131 +        lastCode = null; // 連不上可能只是暫時的，讓使用者離開
+          +欄位時可以再查一次                                            
+      132 +      }                                                       
+      133 +                                                              
+      134 +      input.addEventListener('input', function () {           
+      135 +        clearTimeout(timer);                                  
+      136 +        timer = setTimeout(lookup, 500);                      
+      137 +      });                                                     
+      138 +      input.addEventListener('blur', lookup);                 
+      139 +    })();                                                     
+      140 +  </script>                                                   
+      141  </body>
+      142  </html>
+
+● 更新測試。先把 MarketResolverTest 的建構子改成 5 個參數，再補快取的測試：
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Bash(f=src/test/java/io/hsiaopingkuo/stockholdings/quote/MarketResolverTest.ja
+      va && sed -i -E 's/(clockAt\([^;]*\)), LOOKUP_TIMEOUT\);/\1,
+      LOOKUP_TIMEOUT, CACHE_TTL)…)  ⎿  43:     private static final Duration CACHE_TTL =
+     Duration.ofMinutes(10);
+     66:                             clockAt(today), LOOKUP_TIMEOUT,
+     CACHE_TTL);
+     229:                            Duration.ofMillis(200), CACHE_TTL);
+     … +2 lines (ctrl+o to expand)
+  ⎿  Updated src\test\java\io\hsiaopingkuo\stockholdings\quote\MarketResolv
+     erTest.java +5 -4
+      40          private static final String TWSE = "https://www.twse.co
+          m.tw";
+      41          private static final String TPEX = "https://www.tpex.or
+          g.tw";
+      42          private static final Duration LOOKUP_TIMEOUT = Duration
+          .ofSeconds(8);
+      43 +        private static final Duration CACHE_TTL = Duration.ofMi
+         +nutes(10);                                                     
+      44 
+      45          private final JsonMapper jsonMapper = JsonMapper.builde
+          r().build();
+      46          private MockRestServiceServer twseServer;
+     ...
+      63                  resolver = new MarketResolver(
+      64                                  new TwseStockDayClient(twseBuil
+          der.build(), jsonMapper),
+      65                                  new TpexTradingStockClient(tpex
+          Builder.build(), jsonMapper),
+      65 -                                clockAt(today), LOOKUP_TIMEOUT)
+         -;                                                              
+      66 +                                clockAt(today), LOOKUP_TIMEOUT,
+         + CACHE_TTL);                                                   
+      67                  return resolver;
+      68          }
+      69 
+     ...
+      226                  });
+      227                  StockLookupClient tpexNotFound = fakeClient(Ma
+           rket.TPEX, (code, day) -> StockLookup.notFound(Market.TPEX));
+      228                  resolver = new MarketResolver(stuckTwse, tpexN
+           otFound, clockAt(LocalDate.of(2026, 11, 24)),
+      228 -                                Duration.ofMillis(200));      
+      229 +                                Duration.ofMillis(200), CACHE_
+          +TTL);                                                         
+      230 
+      231                  long start = System.nanoTime();
+      232                  assertThatThrownBy(() -> resolver.resolve("999
+           9")).isInstanceOf(MarketUnavailableException.class);
+     ...
+      238                  resolver = new MarketResolver(
+      239                                  fakeClient(Market.TWSE, (code,
+            day) -> found(Market.TWSE)),
+      240                                  fakeClient(Market.TPEX, (code,
+            day) -> found(Market.TPEX)),
+      240 -                                clockAt(LocalDate.of(2026, 11,
+          - 24)), LOOKUP_TIMEOUT);                                       
+      241 +                                clockAt(LocalDate.of(2026, 11,
+          + 24)), LOOKUP_TIMEOUT, CACHE_TTL);                            
+      242 
+      243                  assertThat(resolver.resolve("1234").market()).
+           isEqualTo(Market.TWSE);
+      244          }
+     ...
+      250                                          throw new IllegalState
+           Exception("模擬程式錯誤");
+      251                                  }),
+      252                                  fakeClient(Market.TPEX, (code,
+            day) -> StockLookup.notFound(Market.TPEX)),
+      252 -                                clockAt(LocalDate.of(2026, 11,
+          - 24)), LOOKUP_TIMEOUT);                                       
+      253 +                                clockAt(LocalDate.of(2026, 11,
+          + 24)), LOOKUP_TIMEOUT, CACHE_TTL);                            
+      254 
+      255                  assertThatThrownBy(() -> resolver.resolve("123
+           4")).isInstanceOf(MarketUnavailableException.class);
+      256          }
+
+  Read 1 file (ctrl+o to expand)
+
+● Update(src\test\java\io\hsiaopingkuo\stockholdings\quote\MarketResolverTest.ja
+        va)
+  ⎿  Added 125 lines
+      254 
+      255      assertThatThrownBy(() -> resolver.resolve("1234")).isInsta
+           nceOf(MarketUnavailableException.class);
+      256    }
+      257 +                                                              
+      258 +  // ===== 快取：輸入代號時的即時提示和按下新增共用結果 ===== 
+      259 +                                                              
+      260 +  /** 可以手動往前撥的時鐘，用來測「10 分鐘後過期」。 */      
+      261 +  private static final class MutableClock extends Clock {     
+      262 +    private Instant now;                                      
+      263 +                                                              
+      264 +    MutableClock(Instant start) {                             
+      265 +      this.now = start;                                       
+      266 +    }                                                         
+      267 +                                                              
+      268 +    void advance(Duration duration) {                         
+      269 +      now = now.plus(duration);                               
+      270 +    }                                                         
+      271 +                                                              
+      272 +    @Override                                                 
+      273 +    public ZoneId getZone() {                                 
+      274 +      return TAIPEI;                                          
+      275 +    }                                                         
+      276 +                                                              
+      277 +    @Override                                                 
+      278 +    public Clock withZone(ZoneId zone) {                      
+      279 +      throw new UnsupportedOperationException();              
+      280 +    }                                                         
+      281 +                                                              
+      282 +    @Override                                                 
+      283 +    public Instant instant() {                                
+      284 +      return now;                                             
+      285 +    }                                                         
+      286 +  }                                                           
+      287 +                                                              
+      288 +  /** 會記錄被呼叫幾次的假 client。 */                        
+      289 +  private static StockLookupClient countingClient(Market marke
+          +t, AtomicInteger calls, StockLookup answer) {                 
+      290 +    return fakeClient(market, (code, day) -> {                
+      291 +      calls.incrementAndGet();                                
+      292 +      return answer;                                          
+      293 +    });                                                       
+      294 +  }                                                           
+      295 +                                                              
+      296 +  private MutableClock clock;                                 
+      297 +                                                              
+      298 +  private MarketResolver resolverWithCounting(AtomicInteger tw
+          +seCalls, StockLookup twseAnswer,                              
+      299 +      AtomicInteger tpexCalls, StockLookup tpexAnswer) {      
+      300 +    clock = new MutableClock(clockAt(LocalDate.of(2026, 11, 24
+          +)).instant());                                                
+      301 +    resolver = new MarketResolver(                            
+      302 +        countingClient(Market.TWSE, twseCalls, twseAnswer),   
+      303 +        countingClient(Market.TPEX, tpexCalls, tpexAnswer),   
+      304 +        clock, LOOKUP_TIMEOUT, CACHE_TTL);                    
+      305 +    return resolver;                                          
+      306 +  }                                                           
+      307 +                                                              
+      308 +  @Test                                                       
+      309 +  void 查到之後10分鐘內再查同一代號_不再呼叫官方() {          
+      310 +    AtomicInteger twseCalls = new AtomicInteger();            
+      311 +    AtomicInteger tpexCalls = new AtomicInteger();            
+      312 +    MarketResolver resolver = resolverWithCounting(twseCalls, 
+          +found(Market.TWSE),                                           
+      313 +        tpexCalls, StockLookup.notFound(Market.TPEX));        
+      314 +                                                              
+      315 +    resolver.resolve("2330");                                 
+      316 +    int twseAfterFirst = twseCalls.get();                     
+      317 +    int tpexAfterFirst = tpexCalls.get();                     
+      318 +    clock.advance(Duration.ofMinutes(9));                     
+      319 +    StockLookup second = resolver.resolve("2330");            
+      320 +                                                              
+      321 +    assertThat(second.market()).isEqualTo(Market.TWSE);       
+      322 +    assertThat(twseCalls.get()).isEqualTo(twseAfterFirst);    
+      323 +    assertThat(tpexCalls.get()).isEqualTo(tpexAfterFirst);    
+      324 +  }                                                           
+      325 +                                                              
+      326 +  @Test                                                       
+      327 +  void 超過10分鐘_重新查官方() {                              
+      328 +    AtomicInteger twseCalls = new AtomicInteger();            
+      329 +    AtomicInteger tpexCalls = new AtomicInteger();            
+      330 +    MarketResolver resolver = resolverWithCounting(twseCalls, 
+          +found(Market.TWSE),                                           
+      331 +        tpexCalls, StockLookup.notFound(Market.TPEX));        
+      332 +                                                              
+      333 +    resolver.resolve("2330");                                 
+      334 +    clock.advance(Duration.ofMinutes(10));                    
+      335 +    resolver.resolve("2330");                                 
+      336 +                                                              
+      337 +    // 證交所這個月就查到，每次只呼叫一次；兩次查詢共 2 次    
+      338 +    assertThat(twseCalls.get()).isEqualTo(2);                 
+      339 +  }                                                           
+      340 +                                                              
+      341 +  @Test                                                       
+      342 +  void 確定查不到也會記住_期間內直接回查無此代號() {          
+      343 +    AtomicInteger twseCalls = new AtomicInteger();            
+      344 +    AtomicInteger tpexCalls = new AtomicInteger();            
+      345 +    MarketResolver resolver = resolverWithCounting(twseCalls, 
+          +StockLookup.notFound(Market.TWSE),                            
+      346 +        tpexCalls, StockLookup.notFound(Market.TPEX));        
+      347 +                                                              
+      348 +    assertThatThrownBy(() -> resolver.resolve("9999")).isInsta
+          +nceOf(StockCodeNotFoundException.class);                      
+      349 +    int callsAfterFirst = twseCalls.get() + tpexCalls.get();  
+      350 +    assertThatThrownBy(() -> resolver.resolve("9999"))        
+      351 +        .isInstanceOf(StockCodeNotFoundException.class)       
+      352 +        .hasMessage("查無此股票代號：9999（上市、上櫃都找不到 
+          +）");                                                         
+      353 +                                                              
+      354 +    assertThat(twseCalls.get() + tpexCalls.get()).isEqualTo(ca
+          +llsAfterFirst);                                               
+      355 +  }                                                           
+      356 +                                                              
+      357 +  @Test                                                       
+      358 +  void 無法確認的結果不記住_下次會重新查() {                  
+      359 +    AtomicInteger twseCalls = new AtomicInteger();            
+      360 +    AtomicInteger tpexCalls = new AtomicInteger();            
+      361 +    MarketResolver resolver = resolverWithCounting(twseCalls, 
+          +StockLookup.unavailable(Market.TWSE),                         
+      362 +        tpexCalls, StockLookup.notFound(Market.TPEX));        
+      363 +                                                              
+      364 +    assertThatThrownBy(() -> resolver.resolve("2330")).isInsta
+          +nceOf(MarketUnavailableException.class);                      
+      365 +    assertThatThrownBy(() -> resolver.resolve("2330")).isInsta
+          +nceOf(MarketUnavailableException.class);                      
+      366 +                                                              
+      367 +    assertThat(twseCalls.get()).isEqualTo(2);                 
+      368 +  }                                                           
+      369 +                                                              
+      370 +  @Test                                                       
+      371 +  void 不同代號各自快取() {                                   
+      372 +    AtomicInteger twseCalls = new AtomicInteger();            
+      373 +    AtomicInteger tpexCalls = new AtomicInteger();            
+      374 +    MarketResolver resolver = resolverWithCounting(twseCalls, 
+          +found(Market.TWSE),                                           
+      375 +        tpexCalls, StockLookup.notFound(Market.TPEX));        
+      376 +                                                              
+      377 +    resolver.resolve("2330");                                 
+      378 +    resolver.resolve("2317");                                 
+      379 +                                                              
+      380 +    assertThat(twseCalls.get()).isEqualTo(2);                 
+      381 +  }                                                           
+      382  }
+
+● Update(src\test\java\io\hsiaopingkuo\stockholdings\quote\MarketResolverTest.ja
+        va)
+  ⎿  Added 1 line
+      10  import java.net.SocketTimeoutException;
+      11  import java.time.Clock;
+      12  import java.time.Duration;
+      13 +import java.time.Instant;                                      
+      14  import java.time.LocalDate;
+      15  import java.time.ZoneId;
+      16  import java.time.ZonedDateTime;
+
+● Update(src\test\java\io\hsiaopingkuo\stockholdings\quote\MarketResolverTest.ja
+        va)
+  ⎿  Added 1 line
+      15  import java.time.ZoneId;
+      16  import java.time.ZonedDateTime;
+      17  import java.util.concurrent.CountDownLatch;
+      18 +import java.util.concurrent.atomic.AtomicInteger;              
+      19  import java.util.function.BiFunction;
+      20 
+      21  import org.junit.jupiter.api.AfterEach;
+
+● 接著補 Controller 和 Service 的測試：
+
+● Update(src\test\java\io\hsiaopingkuo\stockholdings\controller\HoldingControlle
+        rTest.java)
+  ⎿  Added 81 lines
+       97          .andExpect(content().string(containsString("value=\"3\
+           "")));
+       98    }
+       99 
+      100 +  // ===== 輸入代號時的即時提示：GET /holdings/lookup =====   
+      101 +                                                              
+      102 +  private static StockLookup found(Market market, String name)
+          + {                                                            
+      103 +    return StockLookup.found(market, name, LocalDate.of(2026, 
+          +11, 23), new BigDecimal("100.00"));                           
+      104 +  }                                                           
+      105 +                                                              
+      106    @Test
+      107 +  void 即時查詢_查到時回傳名稱與市場() throws Exception {     
+      108 +    given(holdingService.lookupStock("2330")).willReturn(found
+          +(Market.TWSE, "台積電"));                                     
+      109 +                                                              
+      110 +    mockMvc.perform(get("/holdings/lookup").param("code", "233
+          +0"))                                                          
+      111 +        .andExpect(status().isOk())                           
+      112 +        .andExpect(content().contentTypeCompatibleWith(MediaTy
+          +pe.APPLICATION_JSON))                                         
+      113 +        .andExpect(jsonPath("$.code").value("2330"))          
+      114 +        .andExpect(jsonPath("$.name").value("台積電"))        
+      115 +        .andExpect(jsonPath("$.market").value("TWSE"))        
+      116 +        .andExpect(jsonPath("$.market_label").value("上市")); 
+      117 +  }                                                           
+      118 +                                                              
+      119 +  @Test                                                       
+      120 +  void 即時查詢_回傳正規化後的代號() throws Exception {       
+      121 +    given(holdingService.lookupStock("00631l")).willReturn(fou
+          +nd(Market.TWSE, "元大台灣50正2"));                            
+      122 +                                                              
+      123 +    mockMvc.perform(get("/holdings/lookup").param("code", " 00
+          +631l "))                                                      
+      124 +        .andExpect(status().isOk())                           
+      125 +        .andExpect(jsonPath("$.code").value("00631L"));       
+      126 +  }                                                           
+      127 +                                                              
+      128 +  @Test                                                       
+      129 +  void 即時查詢_名稱不明時輸出null而不是省略欄位() throws Exce
+          +ption {                                                       
+      130 +    given(holdingService.lookupStock("6488")).willReturn(found
+          +(Market.TPEX, null));                                         
+      131 +                                                              
+      132 +    mockMvc.perform(get("/holdings/lookup").param("code", "648
+          +8"))                                                          
+      133 +        .andExpect(status().isOk())                           
+      134 +        .andExpect(content().string(containsString("\"name\":n
+          +ull")))                                                       
+      135 +        .andExpect(jsonPath("$.market_label").value("上櫃")); 
+      136 +  }                                                           
+      137 +                                                              
+      138 +  @Test                                                       
+      139 +  void 即時查詢_查不到回404與錯誤格式() throws Exception {    
+      140 +    given(holdingService.lookupStock("9999")).willThrow(new St
+          +ockCodeNotFoundException("9999"));                            
+      141 +                                                              
+      142 +    mockMvc.perform(get("/holdings/lookup").param("code", "999
+          +9"))                                                          
+      143 +        .andExpect(status().isNotFound())                     
+      144 +        .andExpect(jsonPath("$.error.code").value("STOCK_NOT_F
+          +OUND"))                                                       
+      145 +        .andExpect(jsonPath("$.error.message").value("查無此股
+          +票代號：9999（上市、上櫃都找不到）"));                        
+      146 +  }                                                           
+      147 +                                                              
+      148 +  @Test                                                       
+      149 +  void 即時查詢_官方連不上回503與錯誤格式() throws Exception {
+      150 +    given(holdingService.lookupStock("2330")).willThrow(new Ma
+          +rketUnavailableException());                                  
+      151 +                                                              
+      152 +    mockMvc.perform(get("/holdings/lookup").param("code", "233
+          +0"))                                                          
+      153 +        .andExpect(status().isServiceUnavailable())           
+      154 +        .andExpect(jsonPath("$.error.code").value("QUOTE_UNAVA
+          +ILABLE"))                                                     
+      155 +        .andExpect(jsonPath("$.error.message").value("暫時無法
+          +連線官方網站確認代號，請稍後再試"));                          
+      156 +  }                                                           
+      157 +                                                              
+      158 +  @Test                                                       
+      159 +  void 即時查詢_代號格式不對或沒給_回400且不查官方() throws Ex
+          +ception {                                                     
+      160 +    mockMvc.perform(get("/holdings/lookup").param("code", "23-
+          +30"))                                                         
+      161 +        .andExpect(status().isBadRequest())                   
+      162 +        .andExpect(jsonPath("$.error.code").value("INVALID_COD
+          +E"));                                                         
+      163 +    mockMvc.perform(get("/holdings/lookup").param("code", "123
+          +45678901"))                                                   
+      164 +        .andExpect(status().isBadRequest());                  
+      165 +    mockMvc.perform(get("/holdings/lookup"))                  
+      166 +        .andExpect(status().isBadRequest())                   
+      167 +        .andExpect(jsonPath("$.error.code").value("INVALID_COD
+          +E"));                                                         
+      168 +    verify(holdingService, never()).lookupStock(anyString()); 
+      169 +  }                                                           
+      170 +                                                              
+      171 +  @Test                                                       
+      172 +  void 新增表單有即時提示的位置和查詢網址() throws Exception {
+      173 +    given(holdingService.findAll()).willReturn(List.of());    
+      174 +                                                              
+      175 +    mockMvc.perform(get("/holdings"))                         
+      176 +        .andExpect(status().isOk())                           
+      177 +        .andExpect(content().string(containsString("id=\"code-
+          +hint\"")))                                                    
+      178 +        .andExpect(content().string(containsString("data-looku
+          +p-url=\"/holdings/lookup\"")));                               
+      179 +  }                                                           
+      180 +                                                              
+      181 +  @Test                                                       
+      182    void 修改頁顯示名稱與市場() throws Exception {
+      183      given(holdingService.findById(1L)).willReturn(holding(1, "
+           6488", "環球晶", Market.TPEX, 1, "460.50"));
+      184 
+
+● Update(src\test\java\io\hsiaopingkuo\stockholdings\controller\HoldingControlle
+        rTest.java)
+  ⎿  Added 1 line
+      14  import static org.springframework.test.web.servlet.request.Mock
+          MvcRequestBuilders.post;
+      15  import static org.springframework.test.web.servlet.result.MockM
+          vcResultMatchers.content;
+      16  import static org.springframework.test.web.servlet.result.MockM
+          vcResultMatchers.flash;
+      17 +import static org.springframework.test.web.servlet.result.MockM
+         +vcResultMatchers.jsonPath;                                     
+      18  import static org.springframework.test.web.servlet.result.MockM
+          vcResultMatchers.redirectedUrl;
+      19  import static org.springframework.test.web.servlet.result.MockM
+          vcResultMatchers.status;
+      20 
+
+● Update(src\test\java\io\hsiaopingkuo\stockholdings\controller\HoldingControlle
+        rTest.java)
+  ⎿  Added 2 lines
+      19  import static org.springframework.test.web.servlet.result.MockM
+          vcResultMatchers.status;
+      20 
+      21  import java.math.BigDecimal;
+      22 +import java.time.LocalDate;                                    
+      23  import java.time.LocalDateTime;
+      24  import java.util.List;
+      25 
+      26  import org.junit.jupiter.api.Test;
+      27  import org.springframework.beans.factory.annotation.Autowired;
+      28  import org.springframework.boot.webmvc.test.autoconfigure.WebMv
+          cTest;
+      29 +import org.springframework.http.MediaType;                     
+      30  import org.springframework.test.context.bean.override.mockito.M
+          ockitoBean;
+      31  import org.springframework.test.util.ReflectionTestUtils;
+      32  import org.springframework.test.web.servlet.MockMvc;
+
+● Update(src\test\java\io\hsiaopingkuo\stockholdings\controller\HoldingControlle
+        rTest.java)
+  ⎿  Added 1 line
+      37  import io.hsiaopingkuo.stockholdings.exception.HoldingNotFoundE
+          xception;
+      38  import io.hsiaopingkuo.stockholdings.exception.MarketUnavailabl
+          eException;
+      39  import io.hsiaopingkuo.stockholdings.exception.StockCodeNotFoun
+          dException;
+      40 +import io.hsiaopingkuo.stockholdings.quote.StockLookup;        
+      41  import io.hsiaopingkuo.stockholdings.service.HoldingService;
+      42 
+      43  /**
+
+● Update(src\test\java\io\hsiaopingkuo\stockholdings\service\HoldingServiceTest.
+        java)
+  ⎿  Added 12 lines
+      112    }
+      113 
+      114    @Test
+      115 +  void 即時查詢_代號正規化後交給官方查詢_而且不會新增資料() { 
+      116 +    given(marketResolver.resolve("00631L")).willReturn(StockLo
+          +okup.found(                                                   
+      117 +        Market.TWSE, "元大台灣50正2", LocalDate.of(2026, 11, 2
+          +3), new BigDecimal("20.00")));                                
+      118 +                                                              
+      119 +    StockLookup result = holdingService.lookupStock(" 00631l "
+          +);                                                            
+      120 +                                                              
+      121 +    assertThat(result.name()).isEqualTo("元大台灣50正2");     
+      122 +    verify(marketResolver).resolve("00631L");                 
+      123 +    assertThat(holdingRepository.count()).isZero();           
+      124 +  }                                                           
+      125 +                                                              
+      126 +  @Test                                                       
+      127    void 代號重複時不會去查官方() {
+      128      holdingService.create("2330", 1, new BigDecimal("1000.00")
+           );
+      129 
+
+● 跑全部測試：
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● 92 個測試全部通過，中間的 WARN 是「JSON 格式壞掉」測試預期會印出的
+  log，亂碼只是終端機編碼問題。接下來我會用暫存資料庫和 18080
+  埠，對真實官方網站再測一次查詢網址與快取。 · summary
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● 查詢網址已確認可正常連到官方網站。同一代號第二次查詢降到 0.007 秒，查無結果的
+  9999 也有快取，接著我要關掉測試用的程式。 · summary
+
+● Stop Task
+  ⎿  SCR="C:/Users/Ping/AppData/Local/Temp/claude/d50855ca92fd132e/1ee53179
+     -b539-43e6-9098-37a68d940383/scratchpad" && ./mvnw -q spring-boot:run
+     -Dspring-boot.run.ar… · stopped
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● 輸入代號時，欄位旁顯示名稱和市場（做法 A）
+
+  已經做好，./mvnw test 92 個全部通過（失敗 0、錯誤
+  0）。另外用真的官方網站測過查詢網址和快取，都正常。
+
+  有一部分我沒辦法測：畫面上的 JavaScript。 我只能用 curl 打查詢網址，沒有開瀏覽
+  器，所以「欄位旁出現文字」這段要請你在瀏覽器確認，步驟寫在下面。
+
+  實際測到的結果
+
+  ┌──────────────┬────────────────────────────────┬──────────────────────────┐
+  │     查詢     │              結果              │           時間           │
+  ├──────────────┼────────────────────────────────┼──────────────────────────┤
+  │              │ {"code":"6488","name":"環球晶" │ 2.4                      │
+  │ 6488，第一次 │ ,"market":"TPEX","market_label │ 秒（含程式剛啟動的暖機） │
+  │              │ ":"上櫃"}                      │                          │
+  ├──────────────┼────────────────────────────────┼──────────────────────────┤
+  │ 6488，第二次 │ 同上，用了快取                 │ 0.007 秒                 │
+  ├──────────────┼────────────────────────────────┼──────────────────────────┤
+  │ 00631l       │ 代號轉成 00631L，名稱「元大台  │ 0.1 秒                   │
+  │              │ 灣50正2」，上市                │                          │
+  ├──────────────┼────────────────────────────────┼──────────────────────────┤
+  │ 9999，第二次 │ 404 STOCK_NOT_FOUND，「確定查  │ 0.004 秒                 │
+  │              │ 不到」也有記住                 │                          │
+  ├──────────────┼────────────────────────────────┼──────────────────────────┤
+  │ 23-30        │ 400 INVALID_CODE，沒有去查官方 │ —                        │
+  ├──────────────┼────────────────────────────────┼──────────────────────────┤
+  │ 查過 6488    │                                │                          │
+  │ 之後新增     │ 用快取，不再查官方             │ 0.5 秒                   │
+  │ 6488         │                                │                          │
+  └──────────────┴────────────────────────────────┴──────────────────────────┘
+
+  做法摘要
+
+  - 查詢網址 GET /holdings/lookup?code=2330：
+    - 查到回 200，JSON 欄位是 code、name、market、market_label；名稱不明時輸出
+      null，不省略欄位。
+    - 查不到回 404，連不上回 503，代號格式不對回 400。
+    - 錯誤一律是 {"error":{"code","message"}}。
+  - 快取：放在 MarketResolver，記住 10 分鐘，可以用 quote.lookup-cache-ttl
+    調整。
+    - 只記「查到」和「確定查不到」，連不上的結果不記。
+    - 每次存入新結果時，順便清掉已過期的項目。
+  - 畫面的 JavaScript：
+    - 停止輸入 0.5 秒後，或游標離開欄位時查詢。
+    - 代號少於 4 個字不查；同一個代號不重複查。
+    - 較早送出、但較晚才回來的結果會丟掉，不會蓋掉最新的提示。
+    - 用 textContent 顯示，內容不會被當成 HTML 執行。
+  - HoldingService.lookupStock 標了 Propagation.NOT_SUPPORTED：這個方法不碰資料
+    庫，等官方回應的期間不會佔住資料庫連線。
+  - 按下新增時，伺服器端仍然會重新檢查。畫面上的提示只是方便使用者。
+
+  AI 犯的錯（可以記進 REVIEW.md）
+
+  - 第一次寫查詢網址時，回傳代號那行寫成 lookup.market() == null ? code : 
+    normalized(code)，邏輯沒有道理，而且 normalized
+    這個方法根本不存在。我自己發現後，改成共用
+    HoldingService.normalizeCode（所以這個方法從 package-private 改成 public）。
+  - 錯誤回應裡的內部類別原本叫 Error，會和 Java 內建的 java.lang.Error
+    撞名，改成 Detail。
+
+  改了哪些檔案
+
+  新增
+  - dto/StockLookupResponse.java
+  - dto/ErrorResponse.java
+
+  修改
+  - MarketResolver（加快取）、QuoteProperties、QuoteConfig
+  - HoldingService（lookupStock；normalizeCode 改為 public）
+  - HoldingController（/holdings/lookup）
+  - holdings.html（提示區、樣式、script）
+  - 兩個 application.properties（quote.lookup-cache-ttl=10m）
+  - 測試：MarketResolverTest 多 5 個快取測試、HoldingControllerTest 多 7
+    個、HoldingServiceTest 多 1 個
+
+  你要怎麼驗證（瀏覽器）
+
+  1. 執行 ./mvnw spring-boot:run，打開 http://localhost:8080/holdings
+  2. 在股票代號欄位輸入 2330，停下來約 0.5 秒：
+     - 欄位旁先出現灰字「查詢中…」
+     - 接著出現藍字「台積電（上市）」
+  3. 改成 6488，按 Tab 離開欄位 → 「環球晶（上櫃）」
+  4. 輸入 9999 → 紅字「查無此股票代號」
+  5. 只輸入 23 → 不顯示任何文字
+  6. 輸入 6488 看到提示後，填好張數和買進價按新增，應該很快完成，因為用了快取。
+
+  commit 建議
+
+  前 3 個 commit 你還沒做的話，這次改到的
+  MarketResolver、HoldingController、holdings.html 和前一步是同一批檔案，不用
+  git add -p 就拆不開。建議照原本的 3 個 commit 拆法，把這次的內容一起放進去，第
+  3 個 commit 的訊息改成：
+
+  feat: 第3題 新增持股時自動判斷上市上櫃並存入名稱，輸入代號時即時顯示名稱與市場
+
+  （快取相關的程式在 MarketResolver，會跟著第 2 個 commit
+  一起進去，不影響編譯。）
+
+  如果前 3 個已經 commit 了，這次就單獨一個 commit：
+
+  feat: 第3題 輸入股票代號時即時顯示名稱與市場（查詢結果快取 10 分鐘）
+
+  CLAUDE.md 規則例外（草稿，你同意後我再寫入）
+
+  2.1「設計規則」第 1 條後面補一句：
+
+  ▎ 例外：新增表單輸入代號時的即時提示（/holdings/lookup），可以查官方逐檔 
+  ▎ API，但必須同時符合三點：停止輸入 0.5 秒或游標離開欄位才查、少於 4 
+  ▎ 個字不查、結果快取 10 分鐘（連不上不快取）。批次行情完成後改成只查本地資料。
+
+  還沒做的部分
+
+  - 做法 B（改成查本地資料）：等批次行情步驟完成後再換。到時候 /holdings/lookup
+    的網址和回傳格式不變，JavaScript 不用改。
+  - 表單送出失敗、頁面重新顯示時（例如代號重複），不會自動重新顯示提示，要重新打
+    字或離開欄位才會查。
+
+  提醒
+
+  - README：新增了 quote.lookup-cache-ttl 設定，可以等這題全部驗證完，再一起提出
+    README 草稿。
+  - TESTLOG：你在瀏覽器操作時如果發現問題，告訴我。
+  - ai-log：記得匯出，commit 前檢查有沒有密碼或 token。
+
+✻ Churned for 4m 21s · done 下午1:36
+
+※ recap: 第 3 題要在新增持股時自動判斷上市、上櫃，並在輸入代號時顯示名稱和市場；兩者都做好了，92 個測試全部通過。下一步請你在瀏覽器輸入 2330、6488、9999，確認欄位旁的提示正確後再 commit。
+
+> 0056會顯示暫時無法確認，好像不合理，要先確認完這個才可以commit                
+
+● 先查原因，還不改程式。我直接用 curl 查官方對 0056
+  的實際回應，看是哪一邊回了什麼。
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● 兩邊官方回應都正常（證交所 stat 是 OK 且有資料，櫃買是正常的查無資料），所以問
+  題可能出在我的解析程式。我接下來會看證交所的完整資料。 · summary
+
+  Ran 2 shell commands · 1 failed (ctrl+o to expand)
+
+● 官方的資料都正常，每一列都有日期和收盤價。我自己啟動程式，用查詢網址重現一次：
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● 我這邊重現不出來：剛才查 0056 回 200，正確顯示「元大高股息（上市）」，log
+  裡也沒有任何警告。
+
+  先把測試用的程式關掉：
+
+● Stop Task
+  ⎿  SCR="C:/Users/Ping/AppData/Local/Temp/claude/d50855ca92fd132e/1ee53179
+     -b539-43e6-9098-37a68d940383/scratchpad" && ./mvnw -q spring-boot:run
+     -Dspring-boot.run.ar… · stopped
+  Ran 1 shell command (ctrl+o to expand)
+
+● 0056 顯示「暫時無法確認」：還沒找到原因
+
+  我重現不出來，現在查 0056
+  是正常的，而且官方兩邊的回應也都正常。目前對原因沒有八成把握，所以先不改程式，
+  需要你提供當時的資訊。同意你的判斷：找到原因之前先不要 commit。
+
+  已經確認的事
+
+  ┌─────────────────────────────┬───────────────────────────────────────────┐
+  │          查了什麼           │                   結果                    │
+  ├─────────────────────────────┼───────────────────────────────────────────┤
+  │                             │ HTTP 200，stat 是 OK，有 16               │
+  │ 直接用 curl 查證交所 0056   │ 列資料，最後一列 115/11/23 收盤           │
+  │                             │ 45.40，title 也能切出「元大高股息」       │
+  ├─────────────────────────────┼───────────────────────────────────────────┤
+  │ 直接用 curl 查櫃買 0056     │ HTTP 200，stat 是 ok，data                │
+  │                             │ 是空陣列，屬於正常的「查不到」            │
+  ├─────────────────────────────┼───────────────────────────────────────────┤
+  │ 啟動程式查                  │ 200，「元大高股息（上市）」，花 0.7       │
+  │ /holdings/lookup?code=0056  │ 秒，log 沒有任何警告                      │
+  └─────────────────────────────┴───────────────────────────────────────────┘
+
+  所以 0056 的資料格式沒有問題，解析程式也處理得了。
+
+  可能的原因（由可能到不可能）
+
+  1. 當下官方擋了請求，或暫時出錯。 證交所在短時間內請求太多時，會回 HTML
+     或直接斷線。今天你和我都測了不少代號，有可能剛好在那時被擋。
+     - 如果是這個原因，你的伺服器終端機裡會有一行 WARN，例如 證交所 STOCK_DAY 
+       0056 ...：回傳的是 HTML 或 連線失敗或 HTTP 錯誤。
+  2. 瀏覽器收到的不是 JSON。 例如你執行的程式還是加這個功能之前的版本，那時沒有
+     /holdings/lookup，伺服器會回 HTML 的 404 頁面。
+     - JavaScript 讀不懂就會顯示「暫時無法確認」。如果是這個原因，所有代號都會顯
+       示「暫時無法確認」，不會只有 0056。
+  3. 查詢超過 8 秒。這個機率很低，官方平常 0.1～0.7 秒就回應。
+
+  想請你提供
+
+  1. 伺服器終端機裡，出現「暫時無法確認」前後有沒有 WARN
+     的行？有的話請整行貼給我。可以搜尋 0056。
+  2. 那時候輸入其他代號（例如 2330）正常嗎？還是全部都顯示「暫時無法確認」？
+  3. 方便的話，在瀏覽器按 F12 → Network（網路）分頁，再輸入一次 0056，點
+     lookup?code=0056 那一列，告訴我 Status 和 Response 的內容。
+  4. 現在再試一次 0056（先清空欄位，再輸入），還會出現嗎？「連不上」的結果不會被
+     記住，每次都會重查。
+
+  建議加的 debug 資訊（要你同意才改）
+
+  現在的寫法有一個缺點：畫面只顯示「暫時無法確認」，看不出真正的原因。建議加兩處
+  ，加了之後也可以一直保留：
+
+  ┌─────────────────┬───────────────────────────────────────────────────────┐
+  │      檔案       │                        加什麼                         │
+  ├─────────────────┼───────────────────────────────────────────────────────┤
+  │                 │ 判斷成「無法確認」時寫一行                            │
+  │ MarketResolver  │ WARN，列出兩邊各自的結果，例如 查詢 0056              │
+  │                 │ 無法確認：證交所=UNAVAILABLE、櫃買=NOT_FOUND          │
+  ├─────────────────┼───────────────────────────────────────────────────────┤
+  │ holdings.html   │ 顯示「暫時無法確認」時，用 console.warn 把 HTTP       │
+  │ 的 script       │ 狀態碼和回應內容印到瀏覽器 Console，例如 lookup 0056  │
+  │                 │ 失敗：status=503 {...}                                │
+  └─────────────────┴───────────────────────────────────────────────────────┘
+
+  這樣下次再發生，看伺服器 log 和瀏覽器 Console 就能知道是哪一邊出了什麼問題。
+
+  這件事確認原因之後，如果是程式造成的，修好後依格式寫一筆
+  TESTLOG。如果是官方暫時擋請求，TESTLOG 就記「怎麼判斷不是程式問題」。
+
+✻ Cooked for 1m 22s · done 下午1:41
+
+※ recap: 我們在做第 3 題：輸入代號時，欄位旁顯示名稱和市場，目前在查 0056 為什麼顯示「暫時無法確認」，我這邊重現不出來。下一步請你貼出當時伺服器終端機的 WARN 訊息，或告訴我是否同意加 debug log。
+
+> message: "暫時無法連線官方網站確認代號，請稍後再試"                           
+  看起來我暫時被封鎖了                                                          
+
+● 先確認一下現在從這台電腦查證交所和櫃買會不會被擋，各送一個請求：
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● 0056 的「暫時無法確認」：很可能是被官方暫時擋住，還差一步確認
+
+  結論
+
+  - 你看到的錯誤訊息，代表伺服器確實去查了官方，結論是「無法確認」。所以問題不在
+    JavaScript，也不是程式版本太舊。
+  - 程式的反應符合設計：顯示「請稍後再試」，沒有出現錯誤頁，也沒有儲存資料。
+  - 我剛才各送一個請求，兩邊都正常回 200 和
+    JSON。如果剛才真的被擋，現在已經解除了。
+
+  為什麼說「很可能」，還不能確定
+
+  光看這個訊息，只知道官方那邊出了狀況，還分不出是哪一種：
+  - 被封鎖：回 403 或 HTML
+  - 逾時
+  - 官方自己出錯：回 500
+
+  伺服器終端機裡應該會有一行 WARN 寫出真正的原因。請在終端機搜尋
+  0056，看是哪一種：
+  - 回傳的是 HTML，可能被擋或官方維護中，或 403 Forbidden → 確定是被封鎖
+  - Read timed out 或 Connect timed out → 逾時，比較像官方當時很慢
+  - 500 → 官方自己出錯
+
+  找到那一行貼給我，就能確定原因，TESTLOG 也有依據可以寫。
+
+  這件事帶出一個還沒做的規則
+
+  CLAUDE.md 2.1 第 4 條寫著：「被擋時（403 或回傳
+  HTML）整個市場先冷卻一段時間再試」。目前的程式沒有這個冷卻機制：被擋之後，使用
+  者每輸入一個代號，還是會再去打官方，可能讓封鎖時間變得更長。
+
+  建議（還沒實作，要你同意）：
+
+  ┌──────────────┬───────────────────────────────────────────────────────────┐
+  │     項目     │                           內容                            │
+  ├──────────────┼───────────────────────────────────────────────────────────┤
+  │ 做法         │ 某個市場回 403 或 HTML 時，記下「冷卻到幾點」，冷卻期間這 │
+  │              │ 個市場不送請求，直接當成 UNAVAILABLE                      │
+  ├──────────────┼───────────────────────────────────────────────────────────┤
+  │ 冷卻時間     │ 建議 5 分鐘，放在設定檔 quote.blocked-cooldown=5m         │
+  ├──────────────┼───────────────────────────────────────────────────────────┤
+  │ 影響         │ 證交所冷卻時，上櫃股票還是查得到（櫃買 FOUND              │
+  │              │ 就判斷為上櫃）；上市股票會顯示「請稍後再試」，和現在一樣  │
+  ├──────────────┼───────────────────────────────────────────────────────────┤
+  │              │ QuoteHttp（分辨「被擋」和一般失敗）、兩支                 │
+  │ 修改的檔案   │ client、QuoteProperties、兩個                             │
+  │              │ application.properties，再加上測試                        │
+  ├──────────────┼───────────────────────────────────────────────────────────┤
+  │ 不受冷卻影響 │ 逾時和 500 不冷卻，只有明確被擋才冷卻                     │
+  └──────────────┴───────────────────────────────────────────────────────────┘
+
+  之後做背景排程時，這個冷卻機制也會用到，所以現在先做不會浪費。
+
+  可以 commit 嗎？
+
+  - 目前的程式行為正確，0056
+    本身也沒有問題（我自己測過正常）。所以我認為現在的內容可以照之前建議的方式 
+    commit。
+  - 冷卻機制另外再開一個 commit，建議訊息：fix: 第3題 官方擋請求時暫停查詢該市場
+    5 分鐘，避免延長封鎖
+  - 如果你想確定原因後再 commit，就先找出上面那行 WARN。
+
+  TESTLOG 草稿（確認原因後再定稿）
+
+  ## T-01 輸入 0056 時欄位旁顯示「暫時無法確認」
+  - 怎麼發現：在新增表單輸入 0056
+  - 怎麼重現：短時間內連續查詢多個代號後輸入
+  0056（無法穩定重現，官方解除後就恢復正常）
+  - 預期／實際：預期顯示「元大高股息（上市）」；實際顯示「暫時無法確認」，查詢網
+  址回 503 QUOTE_UNAVAILABLE
+  - 原因：（待補伺服器 
+  log）證交所暫時擋下請求，程式依設計顯示「請稍後再試」，沒有錯誤頁、沒有存資料
+  - 修好的 commit：（冷卻機制的 commit 編號）
+
+  要我做冷卻機制的話，請回覆「同意」，也告訴我冷卻時間要不要用 5 分鐘。
+
+✻ Baked for 28s · done 下午1:53
+
+> 阿沒事，是之前環境變數沒清除掉的緣故，現在替我檢查3-1是否可以進行commit，以及 
+  檢查是否有相關文件需要更新                                                    
+
+● 知道了，原因是前面驗證「連不上」時設的 TWSE_BASE_URL、TPEX_BASE_URL
+  沒有清掉。我上一則推測「很可能是被官方擋住」是錯的，這筆可以記進 REVIEW.md。
+
+  接著檢查 3-1 能不能 commit，以及哪些文件要更新。
+
+  Ran 1 shell command, recalled 1 memory (ctrl+o to expand)
+
+● 沒有發現密碼或 token，V1__create_holding.sql 也沒有被改動，data/ 已在
+  .gitignore 中排除。接下來我會從頭建置並跑完整測試，確認目前狀態。 · summary
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● 3-1 可以 commit 了
+
+  結論
+
+  可以 commit。 檢查結果：
+  - 從頭建置（./mvnw clean test），92 個測試全部通過（失敗 0、錯誤 0）
+  - V1__create_holding.sql 沒有被改到
+  - 程式碼和設定檔裡沒有密碼或
+    token（唯一相關的是測試用的空白資料庫密碼，原本就有）
+  - data/ 已經被 .gitignore 排除，本機資料庫不會被 commit
+  - 目前在 feature/q3-market-resolver 分支
+
+  文件：README 要更新，草稿在下面；TESTLOG 要不要記由你決定，草稿也在下面。
+
+  commit 指令（由你執行，依序做）
+
+  # 1. 測試資料
+  git add src/test/resources/quotes
+  git commit -m "test: 第3題 加入證交所、櫃買官方 API 實測回應作為測試資料" -m
+  "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+
+  # 2. 官方 API client、MarketResolver、設定
+  git add src/main/java/io/hsiaopingkuo/stockholdings/quote
+  src/test/java/io/hsiaopingkuo/stockholdings/quote
+  src/main/java/io/hsiaopingkuo/stockholdings/config/QuoteConfig.java
+  src/main/java/io/hsiaopingkuo/stockholdings/config/QuoteProperties.java
+  src/main/java/io/hsiaopingkuo/stockholdings/entity/Market.java src/main/java/i
+  o/hsiaopingkuo/stockholdings/exception/MarketUnavailableException.java src/mai
+  n/java/io/hsiaopingkuo/stockholdings/exception/StockCodeNotFoundException.java
+  src/main/resources/application.properties
+  src/test/resources/application.properties
+  git commit -m "feat: 第3題 證交所、櫃買逐檔 API client 與 
+  MarketResolver，主機網址可由環境變數更換" -m "Co-Authored-By: Claude Opus 5.5 
+  <noreply@anthropic.com>"
+
+  # 3. 套用到新增持股、畫面、即時提示
+  git add src
+  git commit -m "feat: 第3題 
+  新增持股時自動判斷上市上櫃並存入名稱，輸入代號時即時顯示名稱與市場" -m
+  "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+  - 第 2 個 commit 只靠自己的檔案就能編譯：它沒有用到第 3 個 commit
+    才加入的檔案。
+  - 每個指令後可以先執行 git status，確認加進去的檔案是否正確。
+  - README 更新後另外開一個 docs: commit，等你同意草稿再處理。
+
+  ---
+
+  README 草稿（需要你回覆「同意」才寫入）
+
+  修改三個地方，其他內容不動。
+
+  ① 「使用方式」的「新增」改成：
+  - **新增**：輸入股票代號、張數、買進價後按「新增」。**新增持股需要能連上網路**
+  （要向證交所、櫃買中心確認代號）。
+    - 股票代號：必填，只能是英文字母或數字，最多 10
+  個字；前後空白會自動去掉，英文字母會轉成大寫（例如 `00631l` 存成 `00631L`）
+    - 輸入代號後（停止輸入 0.5
+  秒，或離開欄位），欄位旁會顯示股票名稱與市場，例如「台積電（上市）」
+    - 系統會自動判斷上市或上櫃，並存下股票名稱
+    - 上市、上櫃都查不到（例如打錯代號、興櫃股票）：顯示「查無此股票代號：9999（
+  上市、上櫃都找不到）」，資料不儲存
+    -
+  官方網站連不上：顯示「暫時無法連線官方網站確認代號，請稍後再試」，資料不儲存
+    - 張數：1～999 的整數（1 張 = 1,000 股）
+    - 買進價：每股價格，大於 0，最多兩位小數
+  - 清單會顯示每筆的名稱與市場（上市／上櫃）。
+  （原本的「同一個股票代號只能有一筆」「修改」「刪除」維持不變。）
+
+  ② 新增一節「更換行情主機」，放在「使用方式」後面：
+  ## 更換行情主機
+
+  股票資料來自證交所（上市）與櫃買中心（上櫃）。主機網址可以用環境變數換成自己的
+  測試伺服器，**路徑和參數不變**。
+
+  | 環境變數 | 預設值 | 實際呼叫的網址 |
+  |---|---|---|
+  | `TWSE_BASE_URL` | `https://www.twse.com.tw` | `{TWSE_BASE_URL}/rwd/zh/afterT
+  rading/STOCK_DAY?date=20261124&stockNo=2330&response=json` |
+  | `TPEX_BASE_URL` | `https://www.tpex.org.tw` | `{TPEX_BASE_URL}/www/zh-tw/aft
+  erTrading/tradingStock?code=6488&date=2026/11/24&response=json` |
+
+  Mac／Linux（只對這一次啟動有效）：
+  ```bash
+  TWSE_BASE_URL=http://localhost:9000 TPEX_BASE_URL=http://localhost:9000 ./mvnw
+  spring-boot:run
+  ```
+
+  Windows PowerShell：
+  ```powershell
+  $env:TWSE_BASE_URL="http://localhost:9000";
+  $env:TPEX_BASE_URL="http://localhost:9000"; .\mvnw.cmd spring-boot:run
+  ```
+  注意：PowerShell 設定的環境變數，在**同一個視窗會一直有效**。要改回官方網站時
+  ，先清掉再啟動（或開一個新視窗）：
+  ```powershell
+  Remove-Item Env:TWSE_BASE_URL, Env:TPEX_BASE_URL
+  ```
+
+  其他行情設定在 `src/main/resources/application.properties`：
+
+  | 設定 | 預設 | 說明 |
+  |---|---|---|
+  | `quote.connect-timeout` | 3s | 建立連線的上限 |
+  | `quote.read-timeout` | 5s | 等待回應的上限 |
+  | `quote.lookup-timeout` | 8s | 同時查上市、上櫃的整體上限（按下新增後 10
+  秒內一定有結果） |
+  | `quote.lookup-cache-ttl` | 10m | 查過的代號記住多久，避免短時間重複查詢官方
+  |
+
+  ③ 「專案架構」的目錄說明改成：
+  src/main/java/io/hsiaopingkuo/stockholdings/
+  ├── StockHoldingsApplication.java   程式進入點
+  ├── config/                         台北時區 Clock、行情 API 
+  設定（主機網址、逾時）
+  ├── controller/                     
+  網頁：首頁、持股清單（新增／修改／刪除、代號即時查詢）
+  ├── dto/                            表單欄位與檢查規則、JSON 回應格式
+  ├── entity/                         持股資料（Holding）、上市／上櫃（Market）
+  ├── exception/                      重複代號、找不到持股、查無代號、官方連不上
+  ├── quote/                          
+  證交所、櫃買逐檔查詢，判斷上市或上櫃（MarketResolver）
+  ├── repository/                     資料庫存取
+  └── service/HoldingService.java     
+  持股的業務規則（代號正規化、同代號只能一筆、判斷市場）
+  src/main/resources/
+  ├── application.properties          埠號、資料庫、行情主機與逾時設定
+  ├── messages.properties             表單型別錯誤的中文訊息
+  ├── db/migration/                   Flyway 資料表（V1 建立持股表、V2 
+  加上名稱與市場）
+  └── templates/                      畫面（首頁、持股清單、修改持股）
+
+  ---
+
+  TESTLOG（要不要記由你決定）
+
+  這次的原因是操作環境，不是程式錯誤。不過它是你實際操作時發現的問題，而且修正方
+  式是 README 補上「清除環境變數」的說明，所以我建議記下來。目前 repo 裡還沒有
+  TESTLOG.md，記的話會新建這個檔案。
+
+  ## T-01 測過更換行情主機後，輸入 0056 顯示「暫時無法確認」
+  - 怎麼發現：驗證「官方連不上」後，在同一個 PowerShell 視窗重新啟動，輸入 0056
+  - 怎麼重現：1. 在 PowerShell 設定 `$env:TWSE_BASE_URL="http://localhost:9"`、`
+  $env:TPEX_BASE_URL="http://localhost:9"` 並啟動 2.
+  關掉程式，在同一個視窗再執行 `.\mvnw.cmd spring-boot:run` 3. 輸入 0056
+  - 預期／實際：預期顯示「元大高股息（上市）」；實際顯示「暫時無法確認」，查詢回
+  503
+  - 原因：環境變數在同一個 PowerShell
+  視窗仍然有效，程式還是連到不存在的主機；程式本身的行為正確
+  - 修好的 commit：（README 補上清除環境變數方法的 docs commit 編號）
+
+  REVIEW.md 可以記的「AI 犯過的錯」（你整理後提供給我，我再寫草稿）
+
+  1. QuoteConfig 多寫了一段沒有用途的 @interface Unused，寫完自己發現後刪除。
+  2. 查詢網址回傳代號那行，寫成沒有道理的三元運算式，還呼叫了不存在的
+     normalized() 方法，自己發現後修正。
+  3. 錯誤回應的內部類別取名 Error，會和 java.lang.Error 撞名，改成 Detail。
+  4. 0056
+     的問題，推測「很可能是被官方擋住」，實際原因是環境變數沒有清掉，推測錯誤。
+
+  其他提醒
+
+  - ai-log：用 /export 匯出放進 ai-log/，commit 前檢查有沒有密碼或 token。
+  - 合併回 master 之後：依 CLAUDE.md 第 5 節，在另一個資料夾重新 clone，照
+    README 從頭啟動一次。
+  - CLAUDE.md 
+    規則例外：「即時提示可以查官方」那段草稿你還沒回覆，要寫入的話告訴我。
+  - SECURITY.md 這次不需要，打 v1.0.0 前再處理。
+
+  建議（未實作）
+
+  - 啟動時把行情主機網址印在 log，例如 行情主機：TWSE=http://localhost:9、TPEX=.
+    ..。這次的問題如果有這一行，一眼就能看出來。
+  - 被擋時暫停查詢該市場一段時間：CLAUDE.md 2.1 第 4
+    條規定的冷卻機制，目前還沒做，可以在做背景排程時一起處理。
+
+✻ Brewed for 1m 49s · done 下午2:02
+
+※ recap: 第 3 題第一小步（自動判斷上市上櫃，加上輸入代號時即時顯示名稱和市場）已經完成，92 個測試全部通過，可以 commit 了。下一步請你依我給的指令分 3 個 commit，再回覆 README 草稿要不要「同意」。
+
+> 好，替我更新testlog以及review.md                                              
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Write(TESTLOG.md)
+  ⎿  Wrote 10 lines to TESTLOG.md
+       1 # TESTLOG
+       2 
+       3 實際操作時發現的問題（單元測試抓到的不記在這裡）。
+       4 
+       5 ## T-01 測過更換行情主機後，輸入 0056 顯示「暫時無法確認」
+       6 - 怎麼發現：驗證「官方連不上」後，在同一個 PowerShell 視窗重新啟
+         動，輸入 0056
+       7 - 怎麼重現：1. 在 PowerShell 設定 `$env:TWSE_BASE_URL="http://lo
+         calhost:9"`、`$env:TPEX_BASE_URL="http://localhost:9"` 並啟動 2.
+          關掉程式，在同一個視窗再執行 `.\mvnw.cmd spring-boot:run` 3. 輸
+     … +4 lines (ctrl+o to expand)
+
+● TESTLOG 已寫入，REVIEW.md 先給草稿
+
+  TESTLOG.md：已寫入
+
+  新建了 TESTLOG.md，內容就是你上一則同意的 T-01 草稿。
+
+  不過「修好的 commit」這一欄暫時是空的，原因有兩個：
+  - 這筆問題的修正方式是更新 README，但 README 草稿你還沒回覆「同意」。
+  - 目前 3-1 的程式也還沒 commit。
+
+  README 寫入並 commit 之後，我再把 commit 編號補進這一欄。
+
+  REVIEW.md：先給草稿
+
+  CLAUDE.md 規定 REVIEW.md 只能先給草稿，你確認後才寫入。這個檔案目前是空的，我
+  也還沒給過完整草稿，所以先列在下面。
+
+  我只知道這次對話的內容，不知道你和其他人怎麼分工，也不知道第 1、2
+  題的討論細節。所以「分工」和前兩題先留空，等你提供資料再補，我不會自己編內容。
+
+  # REVIEW
+
+  ## 分工
+  （待補：與他人的討論與分工）
+
+  ## 與 AI（Claude Code）的協作方式
+  - AI 先提案（做法、要改的檔案），我回覆「同意」後才動手。
+  - 規格和取捨由我決定；AI
+  負責實作程式與單元測試，完成後回報驗證方式與測試結果。
+  - commit、push、打 tag 由我執行；README、TESTLOG、REVIEW 等文件由 AI
+  先給草稿，我確認後才寫入。
+
+  ## 第 3 題第一小步：新增持股時判斷上市／上櫃
+
+  ### 我做的決定
+  | 項目 | 決定 |
+  |---|---|
+  | V2 migration | 加上 `ck_holding_market` CHECK 約束（只允許 TWSE、TPEX 或
+  NULL） |
+  | 股票名稱 | 新增時從官方取得並存進資料庫，之後不自動更新 |
+  | 畫面 | 清單與修改頁顯示名稱、市場；市場顯示「上市／上櫃」 |
+  | 舊資料 | 第 2 題留下的資料沒有名稱和市場，顯示「—」，這一步不補 |
+  | 興櫃股票 | 當成「查無此股票代號」 |
+  | 證交所看不懂的 stat | 當成「無法確認」，不當成「查不到」，避免誤判代號不存在
+  |
+  | 輸入代號時的即時提示 | 先做「查官方加 10
+  分鐘快取」（A）；之後做批次行情時，改成查本地資料（B） |
+  | 即時提示的觸發時機 | 停止輸入 0.5 秒後，或游標離開欄位時 |
+
+  ### AI 犯過的錯
+  | # | 錯誤 | 怎麼發現 | 處理 |
+  |---|---|---|---|
+  | 1 | `QuoteConfig` 多寫了一段沒有用途的 `@interface Unused` | AI
+  寫完後自己發現 | 刪除 |
+  | 2 | 查詢網址回傳代號那行，寫成沒有道理的三元運算式，還呼叫了不存在的
+  `normalized()` 方法 | AI 寫完後自己發現 | 改成共用
+  `HoldingService.normalizeCode` |
+  | 3 | 錯誤回應的內部類別取名 `Error`，會和 Java 內建的 `java.lang.Error` 撞名
+  | AI 寫完後自己發現 | 改名為 `Detail` |
+  | 4 | 0056 顯示「暫時無法確認」時，AI
+  推測「很可能是被官方擋住」，實際原因是環境變數沒有清掉（見 TESTLOG T-01） |
+  我自己找到原因 | 推測錯誤；AI 建議之後在啟動時把行情主機網址印在
+  log，方便發現設定錯誤 |
+
+  要你決定
+
+  1. 草稿內容可以的話，請回覆「同意」，我再寫入 REVIEW.md。
+  2. 「分工」和第 1、2 題的討論，要現在提供資料一起寫，還是先留「待補」？
+  3. README 草稿（上一則訊息裡那份）也還在等你回覆「同意」。寫入後就能補上
+     TESTLOG 的 commit 編號。
+
+✻ Cooked for 42s · done 下午2:08
+
+> review.md                                                                     
+  新增一個內容，怡同協助測試API更新時間                                         
+  STOCK_DAY    13:50:06                                                         
+  MI_INDEX    13:53:25                                                          
+  otc    14:02:06                                                               
+  分工部分有甚麼需要討論的?                                                     
+  readm可以更新了                                                               
+
+● README 你同意了，現在寫入。
+
+● Update(README.md)
+  ⎿  Added 6 lines, removed 1 line
+      23 
+      24  打開 http://localhost:8080 ，點「持股清單」（或直接打開 http://
+          localhost:8080/holdings ）：
+      25 
+      26 -- **新增**：輸入股票代號、張數、買進價後按「新增」。           
+      26 +- **新增**：輸入股票代號、張數、買進價後按「新增」。**新增持股 
+         +需要能連上網路**（要向證交所、櫃買中心確認代號）。             
+      27    - 股票代號：必填，只能是英文字母或數字，最多 10 個字；前後空
+          白會自動去掉，英文字母會轉成大寫（例如 `00631l` 存成 `00631L`）
+      28 +  - 輸入代號後（停止輸入 0.5 秒，或離開欄位），欄位旁會顯示股票
+         +名稱與市場，例如「台積電（上市）」                             
+      29 +  - 系統會自動判斷上市或上櫃，並存下股票名稱                   
+      30 +  - 上市、上櫃都查不到（例如打錯代號、興櫃股票）：顯示「查無此 
+         +股票代號：9999（上市、上櫃都找不到）」，資料不儲存             
+      31 +  - 官方網站連不上：顯示「暫時無法連線官方網站確認代號，請稍後 
+         +再試」，資料不儲存                                             
+      32    - 張數：1～999 的整數（1 張 = 1,000 股）
+      33    - 買進價：每股價格，大於 0，最多兩位小數
+      34 +- 清單會顯示每筆的名稱與市場（上市／上櫃）。                   
+      35  - **同一個股票代號只能有一筆**：重複新增會顯示「2330 已在持股中
+          」，資料不儲存。
+      36  - **修改**：按該筆的「修改」，只能改張數和買進價，股票代號不能
+          改。
+      37  - **刪除**：按「刪除」，確認後刪除。
+
+● Update(README.md)
+  ⎿  Added 32 lines
+      38 
+      39  輸入有誤時，錯誤訊息會顯示在該欄位旁邊，資料不會儲存。
+      40 
+      41 +## 更換行情主機                                                
+      42 +                                                               
+      43 +股票資料來自證交所（上市）與櫃買中心（上櫃）。主機網址可以用環 
+         +境變數換成自己的測試伺服器，**路徑和參數不變**。               
+      44 +                                                               
+      45 +| 環境變數 | 預設值 | 實際呼叫的網址 |                         
+      46 +|---|---|---|                                                  
+      47 +| `TWSE_BASE_URL` | `https://www.twse.com.tw` | `{TWSE_BASE_URL
+         +}/rwd/zh/afterTrading/STOCK_DAY?date=20261124&stockNo=2330&resp
+         +onse=json` |                                                   
+      48 +| `TPEX_BASE_URL` | `https://www.tpex.org.tw` | `{TPEX_BASE_URL
+         +}/www/zh-tw/afterTrading/tradingStock?code=6488&date=2026/11/24
+         +&response=json` |                                              
+      49 +                                                               
+      50 +Mac／Linux（只對這一次啟動有效）：                             
+      51 +```bash                                                        
+      52 +TWSE_BASE_URL=http://localhost:9000 TPEX_BASE_URL=http://localh
+         +ost:9000 ./mvnw spring-boot:run                                
+      53 +```                                                            
+      54 +                                                               
+      55 +Windows PowerShell：                                           
+      56 +```powershell                                                  
+      57 +$env:TWSE_BASE_URL="http://localhost:9000"; $env:TPEX_BASE_URL=
+         +"http://localhost:9000"; .\mvnw.cmd spring-boot:run            
+      58 +```                                                            
+      59 +注意：PowerShell 設定的環境變數，在**同一個視窗會一直有效**。要
+         +改回官方網站時，先清掉再啟動（或開一個新視窗）：               
+      60 +```powershell                                                  
+      61 +Remove-Item Env:TWSE_BASE_URL, Env:TPEX_BASE_URL               
+      62 +```                                                            
+      63 +                                                               
+      64 +其他行情設定在 `src/main/resources/application.properties`：   
+      65 +                                                               
+      66 +| 設定 | 預設 | 說明 |                                         
+      67 +|---|---|---|                                                  
+      68 +| `quote.connect-timeout` | 3s | 建立連線的上限 |              
+      69 +| `quote.read-timeout` | 5s | 等待回應的上限 |                 
+      70 +| `quote.lookup-timeout` | 8s | 同時查上市、上櫃的整體上限（按 
+         +下新增後 10 秒內一定有結果） |                                 
+      71 +| `quote.lookup-cache-ttl` | 10m | 查過的代號記住多久，避免短時
+         +間重複查詢官方 |                                               
+      72 +                                                               
+      73  ## 專案架構
+      74 
+      75  | 項目 | 使用技術 |
+
+● Update(README.md)
+  ⎿  Added 9 lines, removed 8 lines
+       84  ```
+       85  src/main/java/io/hsiaopingkuo/stockholdings/
+       86  ├── StockHoldingsApplication.java   程式進入點
+       87 -├── config/ClockConfig.java         全系統共用的台北時區 Clock
+       88 -├── controller/                     網頁：首頁、持股清單（新增
+          -／修改／刪除）                                                
+       89 -├── dto/                            表單欄位與檢查規則        
+       90 -├── entity/Holding.java             持股資料                  
+       91 -├── exception/                      重複代號、找不到持股      
+       87 +├── config/                         台北時區 Clock、行情 API  
+          +設定（主機網址、逾時）                                        
+       88 +├── controller/                     網頁：首頁、持股清單（新增
+          +／修改／刪除、代號即時查詢）                                  
+       89 +├── dto/                            表單欄位與檢查規則、JSON  
+          +回應格式                                                      
+       90 +├── entity/                         持股資料（Holding）、上市 
+          +／上櫃（Market）                                              
+       91 +├── exception/                      重複代號、找不到持股、查無
+          +代號、官方連不上                                              
+       92 +├── quote/                          證交所、櫃買逐檔查詢，判斷
+          +上市或上櫃（MarketResolver）                                  
+       93  ├── repository/                     資料庫存取
+       93 -└── service/HoldingService.java     持股的業務規則（代號正規化
+          -、同代號只能一筆）                                            
+       94 +└── service/HoldingService.java     持股的業務規則（代號正規化
+          +、同代號只能一筆、判斷市場）                                  
+       95  src/main/resources/
+       95 -├── application.properties          埠號、資料庫設定          
+       96 +├── application.properties          埠號、資料庫、行情主機與逾
+          +時設定                                                        
+       97  ├── messages.properties             表單型別錯誤的中文訊息
+       97 -├── db/migration/                   Flyway 資料表（V1__create_
+          -holding.sql）                                                 
+       98 +├── db/migration/                   Flyway 資料表（V1 建立持股
+          +表、V2 加上名稱與市場）                                       
+       99  └── templates/                      畫面（首頁、持股清單、修改
+           持股）
+      100  ```
+      101 
+
+● README 已更新，REVIEW.md 草稿加上怡同的測試
+
+  README.md：已寫入
+
+  照你同意的草稿改了三處，其他內容沒有動：
+  1. 「使用方式」的「新增」：補上需要網路、即時提示、自動判斷市場，以及兩種錯誤
+     訊息
+  2. 新增「更換行情主機」一節：寫了兩個環境變數、Mac／Linux 和 PowerShell
+     的啟動指令、怎麼清掉環境變數，以及其他行情設定
+  3. 「專案架構」的目錄說明
+
+  commit 順序（TESTLOG 要寫 README 那個 commit 的編號，所以 README 要先
+  commit）：
+  1. 先做上一則的 3 個程式 commit
+  2. 接著 commit README：
+  git add README.md
+  git commit -m "docs: 第3題 README 
+  補上自動判斷上市上櫃、即時提示與更換行情主機的方法" -m "Co-Authored-By: Claude
+  Opus 5.5 <noreply@anthropic.com>"
+  3. 把 README commit 的編號告訴我（git log --oneline -1 可以看到），我補進
+     TESTLOG
+  4. 最後把 TESTLOG 和 REVIEW 一起 commit
+
+  REVIEW.md：新增的內容（草稿）
+
+  加在原本草稿的「第 3 題」底下：
+
+  ### 協助測試：官方 API 每天什麼時候有當天資料
+  怡同協助實測三支 API 開始出現當天資料的時間：
+
+  | API | 用途 | 當天資料出現時間 |
+  |---|---|---|
+  | STOCK_DAY | 證交所逐檔（上市） | 13:50:06 |
+  | MI_INDEX | 證交所全市場收盤行情（批次） | 13:53:25 |
+  | otc | 櫃買全市場收盤行情（批次） | 14:02:06 |
+
+  用途：決定背景排程從幾點開始抓當天收盤價。
+
+  這段寫入前，有兩件事想確認：
+  1. 測試日期是哪一天？ 是今天 2026-11-24
+     嗎？時間會隨日期不同，寫上日期比較有說服力。
+  2. 櫃買逐檔（tradingStock）有測嗎？ 有的話一起補上，四支 API 就齊全了。
+
+  這組數字對之後的排程有幫助：
+  - CLAUDE.md 2.1 原本規劃 13:07 開始、每 10 分鐘查一次。
+  - 照怡同測的時間，資料最早 13:50 左右才出現，最晚 14:02（otc）。所以
+    13:07～13:47 的幾次查詢一定拿不到當天資料。
+  - 做排程時可以考慮改成 13:57 才開始。這等做排程那一步再決定，現在不用改。
+
+  分工要討論的事
+
+  REVIEW.md 要寫的是「我和他人的討論與分工：誰做了哪些部分」。目前我知道的只有你
+  、AI、怡同三方，下面這些要請你提供或決定：
+
+  ┌─────┬─────────────────────────────────┬─────────────────────────────────┐
+  │  #  │              問題               │          為什麼要確認           │
+  ├─────┼─────────────────────────────────┼─────────────────────────────────┤
+  │     │ 還有其他人參與嗎？（例如討論規  │                                 │
+  │ 1   │ 格、review 程式碼、幫忙在另一台 │ 「分工」要列完整                │
+  │     │ 電腦試啟動）                    │                                 │
+  ├─────┼─────────────────────────────────┼─────────────────────────────────┤
+  │ 2   │ 怡同還有參與其他部分嗎？ 例如第 │ 寫成「誰做了什麼、在哪一題」    │
+  │     │  1、2 題，或只有這次測 API 時間 │                                 │
+  ├─────┼─────────────────────────────────┼─────────────────────────────────┤
+  │     │ 怡同同意在公開 repo             │                                 │
+  │ 3   │ 出現名字嗎？ 要寫全名、只寫名字 │ repo 是公開的，最好先問過本人   │
+  │     │ ，還是用代稱（例如「同學        │                                 │
+  │     │ A」）？                         │                                 │
+  ├─────┼─────────────────────────────────┼─────────────────────────────────┤
+  │     │                                 │ 這次草稿只有第 3 題；如果有，要 │
+  │ 4   │ 第 1、2                         │ 補上，或明確寫「第 1、2         │
+  │     │ 題有沒有和別人討論過的內容？    │ 題由我和 AI                     │
+  │     │                                 │ 完成，沒有與他人討論」          │
+  ├─────┼─────────────────────────────────┼─────────────────────────────────┤
+  │     │ 你自己做了哪些部分？            │                                 │
+  │ 5   │ 例如：讀題、和 AI 討論規格並做  │ 主考官想知道哪些是你自己的判斷  │
+  │     │ 決定、手動測試、commit          │ ，不只是 AI 寫的程式            │
+  │     │ 與合併、匯出 ai-log             │                                 │
+  ├─────┼─────────────────────────────────┼─────────────────────────────────┤
+  │     │ 和 AI 的分工寫到多細？          │ 草稿目前是「原則加上第 3        │
+  │ 6   │ 只寫原則（AI 實作、你決定與驗證 │ 題的決定清單」                  │
+  │     │ ），還是每題列出你做的決定？    │                                 │
+  └─────┴─────────────────────────────────┴─────────────────────────────────┘
+
+  你回覆這些之後，我把完整的 REVIEW.md 草稿整理給你，你回覆「同意」我再寫入。
+
+✻ Brewed for 48s · done 下午2:12
+
+> 怡同用Wynn取代，第一二題只有和claude進行討論，但我每次都會關掉視窗，所以沒有  
+  紀錄                                                                          
+
+● 先看一下 ai-log/ 裡的兩個檔案。git 紀錄裡有「第1題 AI 對話紀錄」「第2題 AI
+  對話紀錄」兩個 commit，裡面可能還有前兩題的討論內容。
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● 紀錄其實有留下來：ai-log/ 裡就是第 1 題、第 2 題的 /export
+  對話紀錄。我把裡面你回答過的問題（你做的決定）找出來：
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● 第 2 題的 git 紀錄裡有一個「補上漏掉的 migration」的修正
+  commit，也查一下是怎麼回事：
+
+  Searched for 2 patterns, ran 1 shell command (ctrl+o to expand)
+● REVIEW.md 草稿（已把怡同改成 Wynn）
+
+  先說一個好消息：前兩題其實有紀錄
+
+  ai-log/ 裡的兩個檔案，就是你第 1、2 題用 /export 匯出的對話紀錄，也都已經
+  commit 了。關掉視窗不影響已經匯出的檔案。
+
+  我從裡面找出你當時的決定，以及 AI
+  自己回報的錯誤，整理進下面的草稿。每一筆都有出處，沒有編造的內容。
+
+  還要你補三件事（草稿裡標「待補」）
+
+  1. Wynn 是哪一天測的？ 有沒有測櫃買逐檔（tradingStock）？
+  2. 第 2 題的修正 commit f39bbc6「補上漏掉的持股資料表 
+     migration」是怎麼發生的？ 這件事發生在第 2
+     題的對話匯出之後，紀錄裡查不到。我想確認是 AI 漏掉，還是 commit
+     時漏加檔案。如果是 AI 的錯，要記進「AI 犯過的錯」。
+  3. 第 1 題原本選了改用 main，後來決定維持 master，理由是「不影響，用 master
+     就好」，這樣寫對嗎？
+
+  草稿
+
+  # REVIEW
+
+  ## 分工
+
+  | 參與者 | 負責的部分 |
+  |---|---|
+  | 我（開發者） | 讀題、和 AI
+  討論規格並做所有設計決定、手動驗證每一題、commit／開分支／PR／合併、匯出 AI
+  對話紀錄（ai-log/）、確認所有文件內容 |
+  | Claude Code（AI） | 依我同意的提案撰寫程式與單元測試、提出 commit
+  訊息與文件草稿、回報驗證方式與測試結果 |
+  | Wynn | 協助實測官方 API 每天開始有當天資料的時間（第 3 題） |
+
+  除了上表，沒有和其他人討論或分工。第 1、2 題只和 Claude Code 討論，對話紀錄在
+  `ai-log/`。
+
+  ### 和 AI 的協作規則
+  - AI 先提案（做法、要改的檔案），我回覆「同意」後才動手。
+  - AI 不自己 commit、push 或打 tag。
+  - README、TESTLOG、REVIEW 等文件，AI 只能先給草稿，我確認後才寫入。
+  - 完整規則見 `CLAUDE.md`。
+
+  ## 第 1 題：專案骨架、首頁顯示台北時間
+
+  ### 我做的決定
+  | 項目 | 決定 |
+  |---|---|
+  | 作答分支 | 維持 master（題目寫 main，但不影響評分） |
+  | 清單頁網址 | 另開 `/holdings` |
+  | 收盤價怎麼快取（為第 3 題先規劃） | 存進資料庫，由背景排程更新 |
+  | README | 只寫啟動說明和專案架構，不放太繁瑣的事前準備 |
+  | commit 訊息 | 英文類型開頭加中文描述，例如 `feat: 第1題 …` |
+  | 首頁時間 | 加上 JavaScript，讓時間每秒自動更新 |
+
+  ### AI 犯過的錯
+  | # | 錯誤 | 處理 |
+  |---|---|---|
+  | 1 | README 草稿裡 Windows cmd 更換埠號的指令寫錯：`&&`
+  前面的空白會被當成埠號的一部分 | 修正指令 |
+  | 2 |
+  最終確認時，第一次驗證打到的是我原本開著的伺服器，差點把結果當成這次啟動的 |
+  發現 log 沒有啟動紀錄後，改用 8090 埠重新驗證 |
+
+  ## 第 2 題：持股新增、修改、刪除
+
+  ### 我做的決定
+  | 項目 | 決定 |
+  |---|---|
+  | 時間欄位 | holding 表加上 created_at、updated_at（題目沒要求，但之後很難補）
+  |
+  | 修改持股 | 股票代號不能改，只能改張數和買進價 |
+  | 代號格式 | 除了必填，另外限制只能是英文字母或數字 |
+  | V1 migration | 只建 holding 表 |
+  | 首頁 | 加上連到持股清單的連結（直接連結，不經過 controller 導向） |
+  | 開發流程 | 每題開分支，推上 GitHub 後開 PR 合併 |
+  | README | 每題驗證通過後才更新 |
+
+  ### AI 犯過的錯
+  （待補：`f39bbc6` 補上漏掉的 V1 migration，原因待確認）
+
+  ## 第 3 題第一小步：新增持股時判斷上市／上櫃
+
+  ### 我做的決定
+  | 項目 | 決定 |
+  |---|---|
+  | V2 migration | 加上 `ck_holding_market` CHECK 約束（只允許 TWSE、TPEX 或
+  NULL） |
+  | 股票名稱 | 新增時從官方取得並存進資料庫，之後不自動更新 |
+  | 畫面 | 清單與修改頁顯示名稱、市場；市場顯示「上市／上櫃」 |
+  | 舊資料 | 第 2 題留下的資料沒有名稱和市場，顯示「—」，這一步不補 |
+  | 興櫃股票 | 當成「查無此股票代號」 |
+  | 證交所看不懂的 stat | 當成「無法確認」，不當成「查不到」，避免誤判代號不存在
+  |
+  | 輸入代號時的即時提示 | 先做「查官方加 10
+  分鐘快取」；之後做批次行情時，改成查本地資料 |
+  | 即時提示的觸發時機 | 停止輸入 0.5 秒後，或游標離開欄位時 |
+
+  ### 協助測試：官方 API 每天什麼時候有當天資料
+  Wynn 協助實測（測試日期：待補），三支 API 開始出現當天資料的時間：
+
+  | API | 用途 | 當天資料出現時間 |
+  |---|---|---|
+  | STOCK_DAY | 證交所逐檔（上市） | 13:50:06 |
+  | MI_INDEX | 證交所全市場收盤行情（批次） | 13:53:25 |
+  | otc | 櫃買全市場收盤行情（批次） | 14:02:06 |
+
+  用途：決定背景排程從幾點開始抓當天收盤價。
+
+  ### AI 犯過的錯
+  | # | 錯誤 | 怎麼發現 | 處理 |
+  |---|---|---|---|
+  | 1 | `QuoteConfig` 多寫了一段沒有用途的 `@interface Unused` | AI
+  寫完後自己發現 | 刪除 |
+  | 2 | 查詢網址回傳代號那行，寫成沒有道理的三元運算式，還呼叫了不存在的
+  `normalized()` 方法 | AI 寫完後自己發現 | 改成共用
+  `HoldingService.normalizeCode` |
+  | 3 | 錯誤回應的內部類別取名 `Error`，會和 Java 內建的 `java.lang.Error` 撞名
+  | AI 寫完後自己發現 | 改名為 `Detail` |
+  | 4 | 0056 顯示「暫時無法確認」時，AI
+  推測「很可能是被官方擋住」，實際原因是環境變數沒有清掉（見 TESTLOG T-01） |
+  我自己找到原因 | 推測錯誤；AI 建議之後在啟動時把行情主機網址印在
+  log，方便發現設定錯誤 |
+
+  請補上面三件事，或直接回覆「同意，待補先留著」。確認後我再寫入 REVIEW.md。
+
+✻ Worked for 56s · done 下午2:19
+
+> 1. Wynn 是今天11/24測的                                                       
+     Wynn問你說的是哪個，他側的是這六個                                         
+     證交所的：                                                                 
+     STOCK_DAY 單股的收盤價                                                     
+     STOCK_DAY_ALL                                                              
+     MI_INDEX                                                                   
+                                                                                
+  櫃買中心：                                                                    
+  afterTrading/tradingStock                                                     
+  afterTrading/otc                                                              
+  afterTrading/dailyQuotes                                                      
+
+● Wynn 測的 API：還差三支的時間
+
+  我原本問的是哪一支
+
+  本專案會用到四支 API：
+
+  ┌────────────────────────────────┬───────────┬──────────────┐
+  │              用途              │  證交所   │   櫃買中心   │
+  ├────────────────────────────────┼───────────┼──────────────┤
+  │ 逐檔：新增持股時判斷上市／上櫃 │ STOCK_DAY │ tradingStock │
+  ├────────────────────────────────┼───────────┼──────────────┤
+  │ 批次：之後背景排程抓收盤價     │ MI_INDEX  │ otc          │
+  └────────────────────────────────┴───────────┴──────────────┘
+
+  上次的表格只有 STOCK_DAY、MI_INDEX、otc 三支的時間，少了
+  tradingStock，所以我才問有沒有測。
+
+  想請 Wynn 提供
+
+  Wynn 測了六支，建議六支都記進 REVIEW。除了我們會用的四支，另外兩支的時間也有用
+  ：可以佐證「為什麼不用那兩支」。
+
+  1. 另外三支當天資料出現的時間：STOCK_DAY_ALL、tradingStock、dailyQuotes。
+  2. STOCK_DAY_ALL 和 dailyQuotes 的完整網址，或至少主機名稱。
+     這兩支在不同主機上有不同版本，例如證交所有
+     www.twse.com.tw/exchangeReport/STOCK_DAY_ALL 和 openapi.twse.com.tw/v1/exch
+     angeReport/STOCK_DAY_ALL，更新時間可能不一樣。CLAUDE.md 裡記錄的是 openapi
+     版：11/23 週一 16:4x 還停在上一個交易日的資料。
+
+  更新後的表格（草稿，？ 等 Wynn 提供）
+
+  ### 協助測試：官方 API 每天什麼時候有當天資料
+  Wynn 在 2026-11-24 實測六支官方 API 開始出現當天資料的時間：
+
+  | 來源 | API | 用途 | 本專案是否使用 | 當天資料出現時間 |
+  |---|---|---|---|---|
+  | 證交所 | STOCK_DAY | 逐檔（上市） | 是：判斷上市／上櫃、批次失敗時備援 | 
+  13:50:06 |
+  | 證交所 | MI_INDEX | 全市場收盤行情 | 是：背景排程主要來源 | 13:53:25 |
+  | 證交所 | STOCK_DAY_ALL（主機：？） | 全市場收盤行情 | 否 | ？ |
+  | 櫃買中心 | tradingStock | 逐檔（上櫃） | 是：判斷上市／上櫃、批次失敗時備援
+  | ？ |
+  | 櫃買中心 | otc | 全市場收盤行情 | 是：背景排程主要來源 | 14:02:06 |
+  | 櫃買中心 | dailyQuotes（主機：？） | 全市場收盤行情 | 否 | ？ |
+
+  用途：決定背景排程從幾點開始抓當天收盤價。
+
+  上次還沒回覆的兩件事
+
+  2. 第 2 題的修正 commit f39bbc6「補上漏掉的 migration」，是 AI 漏掉還是 commit
+     時漏加檔案？
+  3. 第 1 題維持 master 的理由，寫「不影響評分，用 master 就好」可以嗎？
+
+  三支 API 的時間和主機補齊、這兩題回覆之後，我再給你完整的 REVIEW.md
+  草稿。你回覆「同意」後我才寫入。
+
+✻ Baked for 16s · done 下午2:27
+
+> Wynn回覆                                                                      
+  STOCK_DAY_ALL    14:27:38    仍是 11/23，2330 收盤價 2,030 元                 
+  tradingStock    14:27:38    仍是 11/23，6488 收盤價 460.50 元                 
+  dailyQuotes    14:27:49    日期標示 11/24，但行情表仍空白                     
+                                                                                
+  你的意思是還需要請他幫忙測嗎? 還是現在這些資料就可以了                        
+
+● 這些資料就夠了，不用再請 Wynn 測
+
+  為什麼夠了
+
+  ┌───────────────┬──────────────────────────────────────────────────────────┐
+  │      API      │                       能得到的結論                       │
+  ├───────────────┼──────────────────────────────────────────────────────────┤
+  │ MI_INDEX、otc │ 背景排程主要靠這兩支，已經知道當天資料出現的時間（13:53  │
+  │               │ 、14:02），排程要從幾點開始抓可以決定了                  │
+  ├───────────────┼──────────────────────────────────────────────────────────┤
+  │ STOCK_DAY     │ 13:50 就有當天資料，備援也沒問題                         │
+  ├───────────────┼──────────────────────────────────────────────────────────┤
+  │               │ 14:27 還是 11/23 的資料。CLAUDE.md 記錄 11/23 16:40      │
+  │ tradingStock  │ 實測時已有當天資料，所以大約在 14:27～16:40              │
+  │               │ 之間更新。它主要用來判斷上市／上櫃（哪個月的資料都可以） │
+  │               │ ，以及批次失敗時的備援，不需要知道精確時間               │
+  ├───────────────┼──────────────────────────────────────────────────────────┤
+  │ STOCK_DAY_ALL │ 14:27 還是 11/23 的資料，佐證不採用它是對的              │
+  ├───────────────┼──────────────────────────────────────────────────────────┤
+  │ dailyQuotes   │ 本專案不用                                               │
+  └───────────────┴──────────────────────────────────────────────────────────┘
+
+  不過這三筆的意義和前三筆不一樣：
+  - 前三筆是「當天資料開始出現的時間」。
+  - 後三筆是「在 14:27 查看時的狀態」。
+
+  所以表格要改成「測試時間」加「結果」兩欄，不然看的人會以為 tradingStock 在
+  14:27 才更新。
+
+  dailyQuotes 的結果有提醒作用
+
+  dailyQuotes「日期已經是 11/24，但行情表還是空的」。這代表不能只看日期就認定拿
+  到了當天資料，還要確認資料列不是空的。之後做批次行情時要注意這點。CLAUDE.md
+  2.1 規定「找不到收盤行情表就算失敗」，方向一致。這筆可以順便寫進 REVIEW。
+
+  更新後的段落（草稿）
+
+  ### 協助測試：官方 API 每天什麼時候有當天資料
+  Wynn 在 2026-11-24（週二）實測六支官方 API：
+
+  | 來源 | API | 本專案是否使用 | 測試時間 | 結果 |
+  |---|---|---|---|---|
+  | 證交所 | STOCK_DAY（逐檔） | 是：判斷上市／上櫃、批次失敗時備援 | 13:50:06 |
+  開始有 11/24 的資料 |
+  | 證交所 | MI_INDEX（全市場） | 是：背景排程主要來源 | 13:53:25 | 開始有 11/24
+  的資料 |
+  | 櫃買中心 | otc（全市場） | 是：背景排程主要來源 | 14:02:06 | 開始有 11/24
+  的資料 |
+  | 證交所 | STOCK_DAY_ALL（全市場） | 否 | 14:27:38 | 仍是 11/23（2330 收盤價
+  2,030 元） |
+  | 櫃買中心 | tradingStock（逐檔） | 是：判斷上市／上櫃、批次失敗時備援 |
+  14:27:38 | 仍是 11/23（6488 收盤價 460.50 元） |
+  | 櫃買中心 | dailyQuotes（全市場） | 否 | 14:27:49 | 日期已標示
+  11/24，但行情表仍空白 |
+
+  結論：
+  - 背景排程從 14:00 左右開始抓，MI_INDEX 和 otc 應該都已經有當天資料。
+  - tradingStock 比批次 API 晚更新（11/23 實測 16:40 已有當天資料），只當備援。
+  - dailyQuotes 日期已經換了，但資料還是空的：判斷有沒有拿到當天資料時，除了日期
+  ，還要確認資料列不是空的。
+  - STOCK_DAY_ALL 更新較慢，不採用。
+
+  還差兩件事，就能給完整的 REVIEW.md 草稿
+
+  2. 第 2 題的修正 commit f39bbc6「補上漏掉的 migration」，是 AI 漏掉還是 commit
+     時漏加檔案？
+  3. 第 1 題維持 master 的理由，寫「不影響評分，用 master 就好」可以嗎？
+
+✻ Baked for 19s · done 下午2:32
+
+> 1. 是我漏掉的f39bbc6，不用理會                                                
+  2. 維持master不用理會                                                         
+     替我更新review                                                             
+
+● Write(REVIEW.md)
+  ⎿  Wrote 91 lines to REVIEW.md
+      1 # REVIEW
+      2 
+      3 ## 分工
+      4 
+      5 | 參與者 | 負責的部分 |
+      6 |---|---|
+      7 | 我（開發者） | 讀題、和 AI 討論規格並做所有設計決定、手動驗證每
+        一題、commit／開分支／PR／合併、匯出 AI 對話紀錄（ai-log/）、確認
+        所有文件內容 |
+      8 | Claude Code（AI） | 依我同意的提案撰寫程式與單元測試、提出 comm
+     … +84 lines (~3 KB) (ctrl+o to expand)
+
+  Wrote 2 memories (ctrl+o to expand)
+
+● REVIEW.md 已寫入
+
+  照你的兩個回覆調整了草稿：
+  - 第 1 題「作答分支」只寫「維持 master」，沒有寫理由。
+  - 第 2 題的「AI 犯過的錯」寫「這一題沒有需要記錄的錯誤」。f39bbc6 不記錄。
+  - 其他內容和上一份草稿相同：分工、前兩題的決定、Wynn 的六支 API 實測和結論、第
+    3 題 AI 犯的四個錯。
+
+  另外我在自己的記憶裡記下：協助者一律寫「Wynn」，前兩題的紀錄在
+  ai-log/。以後的對話也會照這樣寫。
+
+  接下來的 commit 順序（由你執行）
+
+  1. 程式的 3 個 commit（指令在之前「3-1 可以 commit 了」那則訊息）
+  2. README：
+  git add README.md
+  git commit -m "docs: 第3題 README 
+  補上自動判斷上市上櫃、即時提示與更換行情主機的方法" -m "Co-Authored-By: Claude
+  Opus 5.5 <noreply@anthropic.com>"
+  3. 把 README commit 的編號告訴我（git log --oneline -1），我補進 TESTLOG
+     的「修好的 commit」
+  4. TESTLOG 和 REVIEW 一起 commit：
+  git add TESTLOG.md REVIEW.md
+  git commit -m "docs: 第3題 新增 TESTLOG（T-01）與 REVIEW 分工、決定和 AI 
+  犯過的錯" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+  5. 用 /export 匯出這次對話放進 ai-log/，檢查沒有密碼或 token 後 commit。
+  6. 推上 GitHub、開 PR 合併回 master。之後在另一個資料夾重新 clone，照 README
+     從頭啟動一次。
+
+✻ Worked for 39s · done 下午2:35
+
+※ recap: 第 3 題第一步（自動判斷上市／上櫃、即時提示）已完成，92 個測試全過，README、TESTLOG、REVIEW 也已寫入。下一步請你依序執行 3 個程式 commit 和 README 的 commit，再把 README commit 的編號告訴我，我補進 TESTLOG。
+
+> readme編號7211b95c                                                            
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● README 的 commit 確認了，但 git log 裡沒有看到前面 3 個程式
+  commit，先確認一下程式碼的狀態：
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Update(TESTLOG.md)
+  ⎿  Added 1 line, removed 1 line
+       7  - 怎麼重現：1. 在 PowerShell 設定 `$env:TWSE_BASE_URL="http://l
+          ocalhost:9"`、`$env:TPEX_BASE_URL="http://localhost:9"` 並啟動
+          2. 關掉程式，在同一個視窗再執行 `.\mvnw.cmd spring-boot:run` 3.
+           輸入 0056
+       8  - 預期／實際：預期顯示「元大高股息（上市）」；實際顯示「暫時無
+          法確認」，查詢回 503
+       9  - 原因：環境變數在同一個 PowerShell 視窗仍然有效，程式還是連到
+          不存在的主機；程式本身的行為正確
+      10 -- 修好的 commit：（README 補上清除環境變數方法的 docs commit，c
+         -ommit 後補上編號）                                             
+      10 +- 修好的 commit：`7211b95`（docs: 第3題 README 補上自動判斷上市
+         +上櫃、即時提示與更換行情主機的方法；新增清除環境變數的說明）   
+
+● TESTLOG 的「修好的 commit」已經補上 7211b95。
+
+  不過要提醒你：3 個程式 commit 還沒做。git log 裡 README commit 直接接在第 2
+  題的合併後面，程式碼（quote/、V2 migration、Controller 等）都還沒 commit。
+
+  先 commit README 不會壞事，只是 README 描述的功能要等程式 commit
+  之後才真的存在。推上 GitHub、開 PR 之前，記得把下面都 commit 完：
+
+  # 1. 測試資料
+  git add src/test/resources/quotes
+  git commit -m "test: 第3題 加入證交所、櫃買官方 API 實測回應作為測試資料" -m
+  "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+
+  # 2. 官方 API client、MarketResolver、設定
+  git add src/main/java/io/hsiaopingkuo/stockholdings/quote
+  src/test/java/io/hsiaopingkuo/stockholdings/quote
+  src/main/java/io/hsiaopingkuo/stockholdings/config/QuoteConfig.java
+  src/main/java/io/hsiaopingkuo/stockholdings/config/QuoteProperties.java
+  src/main/java/io/hsiaopingkuo/stockholdings/entity/Market.java src/main/java/i
+  o/hsiaopingkuo/stockholdings/exception/MarketUnavailableException.java src/mai
+  n/java/io/hsiaopingkuo/stockholdings/exception/StockCodeNotFoundException.java
+  src/main/resources/application.properties
+  src/test/resources/application.properties
+  git commit -m "feat: 第3題 證交所、櫃買逐檔 API client 與 
+  MarketResolver，主機網址可由環境變數更換" -m "Co-Authored-By: Claude Opus 5.5 
+  <noreply@anthropic.com>"
+
+  # 3. 套用到新增持股、畫面、即時提示
+  git add src
+  git commit -m "feat: 第3題 
+  新增持股時自動判斷上市上櫃並存入名稱，輸入代號時即時顯示名稱與市場" -m
+  "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+
+  # 4. TESTLOG 和 REVIEW
+  git add TESTLOG.md REVIEW.md
+  git commit -m "docs: 第3題 新增 TESTLOG（T-01）與 REVIEW 分工、決定和 AI 
+  犯過的錯" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+
+  全部 commit 完之後：
+  1. 用 /export 匯出這次對話放進 ai-log/，檢查沒有密碼或 token 後 commit。
+  2. 推上 GitHub、開 PR 合併回 master。
+  3. 在另一個資料夾重新 clone，照 README 從頭啟動一次。
+
+✻ Cooked for 18s · done 下午2:43
+
+※ recap: 我們在做第 3 題第一小步（自動判斷上市／上櫃、即時顯示名稱），程式和文件都完成了，README 也已經 commit。下一步：照上一則訊息的指令，依序做完 3 個程式 commit 和 TESTLOG／REVIEW 的 commit。
+
+> 我剛剛commit第一個，剩下的分別commit的部分，請你替我完成，但是不加-m          
+  "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"這段，可以理解嗎?    
+
+● 可以理解：剩下的 commit 由我執行，訊息裡不加 Co-Authored-By
+  那一行。先確認你剛才 commit 的內容：
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● 第 2 個 commit 的檔案已經加進暫存區，內容與規劃一致，接下來直接提交。 
+  · summary
+
+  Committed 49360ff (ctrl+o to expand)
+
+● 先確認這個 commit 單獨拿出來也能編譯、測試會過：用 git worktree（同一個 repo
+  的另一份工作目錄）把它放到暫存資料夾跑測試，不影響你的工作目錄。
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● 第 2 個 commit 單獨也能編譯，73 個測試全部通過。移除暫存的 worktree，接著做第
+  3 個 commit：
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● 暫存區目前只有程式檔案，REVIEW.md 和 TESTLOG.md 還沒加入；LF/CRLF 警告來自
+  .gitattributes 的換行設定，第 2 題也是同樣情況。V2 是 SQL migration，Flyway
+  逐行計算檢查碼，換行符號不同不會有影響。 · summary
+
+  Committed 3b18619, 76c9ec9 (ctrl+o to expand)
+
+● 剩下的三個 commit 我已經做好了，訊息裡都沒有加 Co-Authored-By。只有
+  commit，沒有 push。
+
+  ┌─────────┬────────────────────────────────────────────────────────────────┐
+  │ commit  │                              內容                              │
+  ├─────────┼────────────────────────────────────────────────────────────────┤
+  │ fe680b9 │ test: 測試資料（你 commit 的）                                 │
+  ├─────────┼────────────────────────────────────────────────────────────────┤
+  │ 49360ff │ feat: 證交所、櫃買逐檔 API client 與                           │
+  │         │ MarketResolver，主機網址可由環境變數更換（18 個檔案）          │
+  ├─────────┼────────────────────────────────────────────────────────────────┤
+  │ 3b18619 │ feat: 新增持股時自動判斷上市上櫃並存入名稱，輸入代號時即時顯示 │
+  │         │ 名稱與市場（11 個檔案）                                        │
+  ├─────────┼────────────────────────────────────────────────────────────────┤
+  │ 76c9ec9 │ docs: 新增 TESTLOG（T-01）與 REVIEW 分工、決定和 AI 犯過的錯   │
+  └─────────┴────────────────────────────────────────────────────────────────┘
+
+  README 的 7211b95 排在最前面，順序和原本規劃的不同，但不影響結果。
+
+  驗證：
+  - 我另外把 49360ff 單獨拿出來（放在暫存資料夾）跑測試：可以編譯，73
+    個測試全部通過。所以它單獨也是能建置的狀態。
+  - 最後的 3b18619 和 76c9ec9，內容和先前跑過的 92
+    個測試全部通過的版本完全相同。
+  - 現在工作目錄是乾淨的，沒有漏掉沒 commit 的檔案。
+
+  接下來由你做：
+  1. 用 /export 匯出這次對話放進 ai-log/，檢查沒有密碼或 token 後 commit。
+  2. 推上 GitHub，開 PR 合併回 master：git push -u origin 
+     feature/q3-market-resolver
+  3. 合併後在另一個資料夾重新 clone，照 README 從頭啟動一次。
+
+✻ Crunched for 1m 19s · done 下午2:49
