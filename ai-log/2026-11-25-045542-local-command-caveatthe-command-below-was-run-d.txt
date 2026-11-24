@@ -1,0 +1,476 @@
+ ▐▛███▛█   Claude Code v2.1.329
+▝▜██████▀  Opus 5.5 · Claude Pro
+ ▝▝   ▝▝   C:\TKA102_JavaApp\Workspace_for_practice\stock-holdings
+
+
+> /clear                                                                        
+
+> 【規則】先讀 CLAUDE.md，全程遵守。先提方案等「同意」才動手。commit            
+  由我執行。V1～V5 不能改。                                                     
+                                                                                
+  【背景】朋友實測發現：同一天「先賣光、再用 App 1.0                            
+  買回」時，平均成本和已實現損益算錯。                                          
+  例子（0050）：1.0 轉入買 3,000 股 @140.55 → 同一天在 2.0 全部賣出 @146 →      
+  同一天用 App 1.0 買回 2,000 股 @145。buy_price 算成 142.53，應該是 145.21。   
+  原因：HoldingReplayCalculator 的 TRADE_ORDER 是「同一天先買後賣」，新買的     
+  2,000 股被排到賣出前面。                                                      
+  設計文件「第6題設計決定.md」第 9 節 A                                         
+  已經改成「同一天先處理除權息，再依輸入順序（id）處理交易」，只讀這一段。      
+                                                                                
+  【開始前】從最新的 master 開分支 fix/q6-same-day-order。                      
+                                                                                
+  【要做的】                                                                    
+  1. 重播順序改成：日期 → 同一天先除權息 → 交易依 id。                          
+  2. 超賣的錯誤訊息：如果同一天有買進排在這筆賣出後面，加上說明「同一天的交易依 
+  輸入順序計算，請先輸入買進，或修改日期」。                                    
+  3. 測試：                                                                     
+     - 新增：朋友的例子，buy_price 要是                                         
+  145.21，而且之前那次賣出的已實現損益不受新買進影響。                          
+     - 現有的「同一天先買後賣不算超賣_即使賣出的id比較小」：規則改了，預期改成  
+  「被當成超賣擋下」，並改測試名稱。這是我同意的修改。                          
+     -                                                                          
+  其他測試的預期值不能改；如果還有別的測試因此失敗，先停下來告訴我是哪一個。    
+       開發途中只跑相關的測試類別，用 ./mvnw -q；全部測試由我自己跑。           
+                                                                                
+  【回覆格式】                                                                  
+  - 提案：用表格，控制在 30 行內，只寫做法、會改的檔案、需要我決定的問題。      
+  - 完成回報：只寫跟提案不一樣的地方、需要我決定的事、commit 訊息。             
+                                                                                
+  【規則再提醒】先提方案等「同意」；只改重播順序和錯誤訊息；設計文件和驗收報告  
+  不 commit；main 和 test 一起 commit。                                         
+
+  Searched for 6 patterns, read 5 files (ctrl+o to expand)
+
+● 先確認寫入（新增賣出交易）時的超賣檢查走哪條路，錯誤訊息才知道要改哪裡。
+
+  Searched for 4 patterns, read 2 files (ctrl+o to expand)
+
+● 我看完了 HoldingReplayCalculator、OversellException、設計文件 §9 A
+  和相關測試，也用 ProfitCalculator
+  的手續費、證交稅規則驗算過朋友的例子：現行算法正好得到 142.53，改成依 id
+  排序後是 145.21（成本 290,413 ÷ 2,000 股）。以下是提案。
+
+  提案：fix/q6-same-day-order
+
+  ┌──────────┬───────────────────────────────────────────────────────────────┐
+  │   項目   │                             做法                              │
+  ├──────────┼───────────────────────────────────────────────────────────────┤
+  │ 0.       │ 等你同意後，先 git switch master && git pull，再 git switch   │
+  │ 開分支   │ -c fix/q6-same-day-order                                      │
+  ├──────────┼───────────────────────────────────────────────────────────────┤
+  │ 1.       │ HoldingReplayCalculator.TRADE_ORDER 改成「日期 →              │
+  │ 重播順序 │ id」，拿掉「先買後賣」那一層。迴圈本來就是同一天先處理除權息  │
+  │          │ 、再處理交易，這部分不用動                                    │
+  ├──────────┼───────────────────────────────────────────────────────────────┤
+  │          │ 處理一筆賣出時，如果同一天、排在它後面還有買進，就傳一個旗標  │
+  │ 2.       │ 給 applySell。超賣時 OversellException                        │
+  │ 錯誤訊息 │ 帶著這個旗標，訊息後面加上「；同一天的交易依輸入順序計算，請  │
+  │          │ 先輸入買進，或修改日期」                                      │
+  ├──────────┼───────────────────────────────────────────────────────────────┤
+  │ 3a.      │ 0050，同一天三筆：id1 買 3,000 @140.55、id2 賣 3,000          │
+  │ 新增測試 │ @146、id3 買 2,000 @145。預期：股數 2,000、總成本             │
+  │          │ 290,413、平均成本 145.21、已實現 14,688（和沒有 id3 時一樣）  │
+  ├──────────┼───────────────────────────────────────────────────────────────┤
+  │ 3b.      │ 同一天先買後賣不算超賣_即使賣出的id比較小 改名為 同一天先輸入 │
+  │ 修改測試 │ 賣出再輸入買進_依id順序被當成超賣擋下，預期改成丟出           │
+  │          │ OversellException，訊息要包含新加的說明                       │
+  ├──────────┼───────────────────────────────────────────────────────────────┤
+  │ 3c.      │ 預期值都不改                                                  │
+  │ 其他測試 │                                                               │
+  └──────────┴───────────────────────────────────────────────────────────────┘
+
+  會改的檔案
+  - src/main/java/.../calc/HoldingReplayCalculator.java
+  - src/main/java/.../calc/OversellException.java（加一個建構子參數和 getter）
+  - src/main/java/.../calc/TradeInput.java（只改 @param id
+    的註解：原本寫「同一天同方向時依 id 排序」）
+  - src/test/java/.../calc/HoldingReplayCalculatorTest.java
+
+  開發中會跑的測試（./mvnw -q）：HoldingReplayCalculatorTest、V1CompatibilityTes
+  t、HoldingApiV1TradeTest、TradeRepositoryTest、DividendSyncServiceTest。這幾個
+  類別都有建立賣出交易。如果除了 3b
+  之外還有測試失敗，我會先停下來告訴你是哪一個。
+
+  需要你決定的問題
+
+  1. 新訊息目前使用者看不到。 OversellException 的訊息只會寫進
+     log：清單顯示「資料異常」，API 回 DATA_ERROR 的固定訊息。2.0 也還沒有輸入賣
+     出的流程，會自己檢查超賣、顯示訊息給使用者的地方都還不存在。這次我只改 calc
+     層的訊息，等之後做「輸入賣出」時再接到畫面。這樣可以嗎？
+  2. 訊息要出現在哪些情況？ 我打算只在「同一天、排在後面有買進」時才加上說明（你
+     的需求就是這樣寫的）；如果一律加上，會干擾其他原因造成的超賣。請確認。
+
+  同意後我就開分支開始改。
+
+✻ Sautéed for 56s · done 上午4:44
+
+> 同意，兩點都照你的建議：                                                      
+  1. 這次只改 calc 層的訊息，第 5 階段做輸入賣出時再接到畫面和 API。            
+  2. 只在「同一天、排在後面還有買進」時加上說明。                               
+                                                                                
+  完成後只回報：跟提案不一樣的地方、需要我決定的事、commit                      
+  訊息。全部測試由我自己跑。                                                    
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\calc\HoldingReplayCalculato
+        r.java)
+  ⎿  Added 3 lines, removed 2 lines
+      22 
+      23    private static final BigDecimal THOUSAND = new BigDecimal("10
+          00");
+      24 
+      25 -  /** 同一天：先買進、再賣出；同方向依 id。日期相同時才看後面的
+         -條件。 */                                                      
+      25 +  /**                                                          
+      26 +   * 同一天依輸入順序（id），不分買賣：「先賣光、再買回」時，新
+         +買的成本才不會混進前一輪（設計決定 8 A）。                     
+      27 +   */                                                          
+      28    private static final Comparator<TradeInput> TRADE_ORDER = Com
+          parator.comparing(TradeInput::date)
+      27 -      .thenComparing(TradeInput::side)                         
+      29        .thenComparingLong(TradeInput::id);
+      30 
+      31    private HoldingReplayCalculator() {
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\calc\HoldingReplayCalculato
+        r.java)
+  ⎿  Added 7 lines, removed 2 lines
+      64      for (LocalDate date : dates) {
+      65        // 同一天先處理除權息：這時的股數只含「早於除權息日」的交
+          易，當天買的領不到、當天賣的領得到
+      66        ledger.applyDividendDay(eventsByDate.getOrDefault(date, L
+          ist.of()));
+      67 -      for (TradeInput t : tradesByDate.getOrDefault(date, List.
+         -of())) {                                                       
+      67 +      List<TradeInput> dayTrades = tradesByDate.getOrDefault(da
+         +te, List.of());                                                
+      68 +      for (int i = 0; i < dayTrades.size(); i++) {             
+      69 +        TradeInput t = dayTrades.get(i);                       
+      70          if (t.side() == TradeSide.BUY) {
+      71            ledger.applyBuy(t);
+      72          } else {
+      71 -          ledger.applySell(t);                                 
+      73 +          // 同一天排在後面還有買進：超賣時要提醒使用者是順序的
+         +問題，不是股數真的不夠                                         
+      74 +          boolean sameDayBuyAfter = dayTrades.subList(i + 1, da
+         +yTrades.size()).stream()                                       
+      75 +              .anyMatch(later -> later.side() == TradeSide.BUY)
+         +;                                                              
+      76 +          ledger.applySell(t, sameDayBuyAfter);                
+      77          }
+      78        }
+      79      }
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\calc\HoldingReplayCalculato
+        r.java)
+  ⎿  Added 8 lines, removed 3 lines
+      157        shares += t.shares();
+      158      }
+      159 
+      160 -    /** 賣出：按比例扣成本，差額記為已實現損益。 */           
+      161 -    void applySell(TradeInput t) {                            
+      160 +    /**                                                       
+      161 +     * 賣出：按比例扣成本，差額記為已實現損益。               
+      162 +     *                                                        
+      163 +     * @param sameDayBuyAfter 同一天、排在這筆後面還有買進；只
+          +用在超賣時的錯誤訊息                                          
+      164 +     */                                                       
+      165 +    void applySell(TradeInput t, boolean sameDayBuyAfter) {   
+      166        // 每一筆賣出都檢查，所以「中間某個時間點超賣」也會被擋
+           ，即使最後總數是正的
+      167        if (t.shares() > shares) {
+      164 -        throw new OversellException(t.id(), t.date(), shares, 
+          -t.shares(), unavailableStockEventSeen);                       
+      168 +        throw new OversellException(t.id(), t.date(), shares, 
+          +t.shares(), unavailableStockEventSeen,                        
+      169 +            sameDayBuyAfter);                                 
+      170        }
+      171        BigDecimal amount = tradeAmount(t.price(), t.shares());
+      172        BigDecimal fee = ProfitCalculator.fee(amount);
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\calc\HoldingReplayCalculato
+        r.java)
+  ⎿  Added 1 line, removed 1 line
+      48        throw new IllegalArgumentException("收盤價必須大於 0：" +
+           closePrice);
+      49      }
+      50 
+      51 -    // TreeMap 依日期排序；同一天的事件保留傳入順序，交易另外依
+         - TRADE_ORDER 排                                                
+      51 +    // TreeMap 依日期排序；同一天的事件保留傳入順序，交易另外依
+         + TRADE_ORDER（id）排                                           
+      52      Map<LocalDate, List<DividendEventInput>> eventsByDate = new
+           TreeMap<>();
+      53      for (DividendEventInput e : events) {
+      54        eventsByDate.computeIfAbsent(e.exDate(), d -> new ArrayLi
+          st<>()).add(e);
+
+● Now OversellException:
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\calc\OversellException.java
+        )
+  ⎿  Added 10 lines, removed 3 lines
+      13    private final long heldShares;
+      14    private final long sellShares;
+      15    private final boolean mayMissStockDividend;
+      16 +  private final boolean sameDayBuyAfter;                       
+      17 
+      18    /**
+      19     * @param heldShares           賣出前持有的股數
+      20     * @param mayMissStockDividend 這筆賣出之前，有可能含配股的事
+          件「無法取得」，所以配股可能沒有算進持股
+      21 +   * @param sameDayBuyAfter      同一天、排在這筆賣出後面還有買
+         +進（同一天依輸入順序計算，買進還沒算進來）                     
+      22     */
+      23    public OversellException(long tradeId, LocalDate tradeDate, l
+          ong heldShares, long sellShares,
+      22 -      boolean mayMissStockDividend) {                          
+      23 -    super(buildMessage(tradeId, tradeDate, heldShares, sellShar
+         -es, mayMissStockDividend));                                    
+      24 +      boolean mayMissStockDividend, boolean sameDayBuyAfter) { 
+      25 +    super(buildMessage(tradeId, tradeDate, heldShares, sellShar
+         +es, mayMissStockDividend, sameDayBuyAfter));                   
+      26      this.tradeId = tradeId;
+      27      this.tradeDate = tradeDate;
+      28      this.heldShares = heldShares;
+      29      this.sellShares = sellShares;
+      30      this.mayMissStockDividend = mayMissStockDividend;
+      31 +    this.sameDayBuyAfter = sameDayBuyAfter;                    
+      32    }
+      33 
+      34    private static String buildMessage(long tradeId, LocalDate tr
+          adeDate, long heldShares, long sellShares,
+      32 -      boolean mayMissStockDividend) {                          
+      35 +      boolean mayMissStockDividend, boolean sameDayBuyAfter) { 
+      36      String message = "交易 id " + tradeId + "（" + tradeDate +
+          "）賣出 " + sellShares + " 股，但當時只持有 " + heldShares
+      37          + " 股";
+      38      if (mayMissStockDividend) {
+      39        message += "；有除權資料無法取得，配股可能未計入";
+      40      }
+      41 +    // 只在真的是順序造成時才說明，其他原因的超賣不要被這句話誤
+         +導                                                             
+      42 +    if (sameDayBuyAfter) {                                     
+      43 +      message += "；同一天的交易依輸入順序計算，請先輸入買進， 
+         +或修改日期";                                                   
+      44 +    }                                                          
+      45      return message;
+      46    }
+      47 
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\calc\OversellException.java
+        )
+  ⎿  Added 4 lines
+      64    public boolean isMayMissStockDividend() {
+      65      return mayMissStockDividend;
+      66    }
+      67 +                                                               
+      68 +  public boolean isSameDayBuyAfter() {                         
+      69 +    return sameDayBuyAfter;                                    
+      70 +  }                                                            
+      71  }
+
+  Read 1 file (ctrl+o to expand)
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\calc\TradeInput.java)
+  ⎿  Added 1 line, removed 1 line
+       6  /**
+       7   * 重播用的一筆交易（第 6 題）。計算核心不碰資料庫，所以不直接
+          用 Entity，由 service 轉成這個 record。
+       8   *
+       9 - * @param id     交易 id：同一天同方向時依 id 排序，超賣時也用 
+         -它指出是哪一筆                                                 
+       9 + * @param id     交易 id：同一天不分買賣都依 id（輸入順序）排序
+         +，超賣時也用它指出是哪一筆                                     
+      10   * @param shares 股數，可以是零股
+      11   * @param price  每股成交價
+      12   */
+
+● Update(src\test\java\io\hsiaopingkuo\stockholdings\calc\HoldingReplayCalculato
+        rTest.java)
+  ⎿  Added 31 lines, removed 6 lines
+      152    // ---------- 4. 超賣 ----------
+      153 
+      154    @Test
+      155 -  void 同一天先買後賣不算超賣_即使賣出的id比較小() {          
+      156 -    HoldingReplayResult r = HoldingReplayCalculator.replay("23
+          -30",                                                          
+      157 -        List.of(sell(1, "2025-06-10", 1000, "1000.00"), buy(2,
+          - "2025-06-10", 1000, "1000.00")), NO_EVENTS,                  
+      158 -        null);                                                
+      155 +  void 同一天先輸入賣出再輸入買進_依id順序被當成超賣擋下() {  
+      156 +    List<TradeInput> trades = List.of(sell(1, "2025-06-10", 10
+          +00, "1000.00"),                                               
+      157 +        buy(2, "2025-06-10", 1000, "1000.00"));               
+      158 
+      160 -    assertThat(r.totalShares()).isZero();                     
+      161 -    assertThat(r.realizedPnl()).isEqualByComparingTo("-5850");
+      159 +    assertThatThrownBy(() -> HoldingReplayCalculator.replay("2
+          +330", trades, NO_EVENTS, null))                               
+      160 +        .isInstanceOfSatisfying(OversellException.class, e -> 
+          +{                                                             
+      161 +          assertThat(e.getTradeId()).isEqualTo(1);            
+      162 +          assertThat(e.getHeldShares()).isZero();             
+      163 +          assertThat(e.isSameDayBuyAfter()).isTrue();         
+      164 +          assertThat(e.getMessage()).contains("同一天的交易依 
+          +輸入順序計算，請先輸入買進，或修改日期");                     
+      165 +        });                                                   
+      166    }
+      167 
+      168    @Test
+      169 +  void 同一天先賣光再買回_新買進的成本不混進前一輪() {        
+      170 +    // 朋友實測：1.0 轉入 3,000 股 → 同一天在 2.0 全部賣出 →  
+          +同一天用 App 1.0 買回 2,000 股                                
+      171 +    List<TradeInput> sellOut = List.of(buy(1, "2025-06-10", 30
+          +00, "140.55"),                                                
+      172 +        sell(2, "2025-06-10", 3000, "146.00"));               
+      173 +    List<TradeInput> buyBack = new ArrayList<>(sellOut);      
+      174 +    buyBack.add(buy(3, "2025-06-10", 2000, "145.00"));        
+      175 +                                                              
+      176 +    HoldingReplayResult before = HoldingReplayCalculator.repla
+          +y("0050", sellOut, NO_EVENTS, null);                          
+      177 +    HoldingReplayResult r = HoldingReplayCalculator.replay("00
+          +50", buyBack, NO_EVENTS, null);                               
+      178 +                                                              
+      179 +    // 成本 421,650 + 600 = 422,250；賣出淨收 438,000 - 624 - 
+          +438（ETF 0.1%）= 436,938                                      
+      180 +    assertThat(before.realizedPnl()).isEqualByComparingTo("146
+          +88");                                                         
+      181 +    // 買回不影響之前那次賣出的已實現損益                     
+      182 +    assertThat(r.realizedPnl()).isEqualByComparingTo(before.re
+          +alizedPnl());                                                 
+      183 +    assertThat(r.totalShares()).isEqualTo(2000);              
+      184 +    // 290,000 + 413 = 290,413；290,413 ÷ 2,000 = 145.2065 → 1
+          +45.21（舊順序會算成 142.53）                                  
+      185 +    assertThat(r.totalCost()).isEqualByComparingTo("290413"); 
+      186 +    assertThat(r.averageCost()).isEqualTo(bd("145.21"));      
+      187 +  }                                                           
+      188 +                                                              
+      189 +  @Test                                                       
+      190    void 中間某個時間點超賣要被擋_即使最後總數是正的() {
+      191      List<TradeInput> trades = List.of(buy(1, "2025-06-02", 100
+           0, "100.00"), sell(2, "2025-06-03", 1000, "100.00"),
+      192          sell(3, "2025-06-04", 500, "100.00"), buy(4, "2025-06-
+           05", 2000, "100.00"));
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● 輸出裡是測試刻意製造的鎖逾時 log，改看 surefire 報告確認結果：
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● 重播順序和錯誤訊息都改好了，在 fix/q6-same-day-order
+  分支。我跑的五個相關測試類別共 66 個測試全部通過；全部測試留給你跑。
+
+  跟提案不一樣的地方
+
+  - 沒有。四個檔案都照提案改：計算順序、超賣訊息、TradeInput 的註解、測試。
+  - 測試名稱補充一下：改名的那個叫
+    同一天先輸入賣出再輸入買進_依id順序被當成超賣擋下，新增的那個叫
+    同一天先賣光再買回_新買進的成本不混進前一輪。
+  - 除了你同意修改的那一個，沒有其他測試失敗，其他測試的預期值也都沒改。
+
+  需要你決定的事
+
+  - 這個錯誤是朋友實際操作時發現的，算 TESTLOG 要記的問題。你 commit 之後告訴我
+    commit 編號，我再提 TESTLOG 草稿給你確認。
+  - 這次改的是計算規則，不影響安裝、啟動和設定方式，所以 README 不用更新。
+  - 提醒：ai-log 記得放；第6題設計決定.md 和驗收報告不要加進 commit。
+
+  commit 訊息
+
+  fix: 第6題 
+  同一天的交易改依輸入順序重播，先賣光再買回時平均成本與已實現損益不再算錯
+
+  建議只加這次改的四個檔案：
+
+  git add 
+  src/main/java/io/hsiaopingkuo/stockholdings/calc/HoldingReplayCalculator.java 
+  src/main/java/io/hsiaopingkuo/stockholdings/calc/OversellException.java 
+  src/main/java/io/hsiaopingkuo/stockholdings/calc/TradeInput.java src/test/java
+  /io/hsiaopingkuo/stockholdings/calc/HoldingReplayCalculatorTest.java
+
+✻ Cooked for 1m 37s · done 上午4:47
+
+> 已 commit，請提 TESTLOG 草稿                                                  
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● TESTLOG 草稿如下（commit
+  e7aa947）。有兩個地方我不知道，用【】標出來，請你補上或確認。
+
+  ## T-07 同一天先賣光、再用 App 1.0
+  買回時，平均成本和已實現損益算錯（【Wynn／Qiao】實測時發現）
+  - 怎麼發現：【Wynn／Qiao】實際操作 0050，同一天先賣光、再用 App 1.0 買回
+  - 怎麼重現：1. 用 App 1.0 新增 0050、3 張、140.55（轉入一筆 3,000 股的買進）
+  2. 同一天在 2.0 把 3,000 股全部賣出，價格 146【賣出的實際操作方式】 3.
+  同一天再用 App 1.0 買進 2,000 股，價格 145 4. 打開清單看 0050 的平均成本（App
+  1.0 的 buy_price）
+  - 預期／實際：預期平均成本 145.21（290,413 ÷ 2,000），已實現損益維持 
+  14,688；實際平均成本是 142.53，已實現損益也被新買進的成本影響
+  - 原因：重播時同一天固定「先買後賣」，買回的 2,000 
+  股被排到賣出前面，新買的成本混進前一輪一起按比例扣掉
+  - 修好的 commit：`e7aa947`（fix: 第6題 
+  同一天的交易改依輸入順序重播，先賣光再買回時平均成本與已實現損益不再算錯）
+
+  要你補的地方
+
+  1. 是哪位朋友？ 依照之前的慣例，標題和「怎麼發現」只寫代稱（Wynn 或 Qiao）。
+  2. 在 2.0 是怎麼賣出的？ 目前 2.0 還沒有輸入賣出的畫面和 API（要到第 5
+     階段才做），所以我猜不到第 2
+     步實際怎麼操作，例如是不是直接改資料庫。請告訴我實際的做法，我照實寫進去。
+
+  另外，「已實現損益也被新買進的成本影響」是我用舊的排序規則推算出來的：舊規則會
+  算成 9,340，正確是
+  14,688。如果朋友當時沒有看已實現損益，這句可以刪掉，只留平均成本。
+
+  你確認以上幾點後，我再寫進 TESTLOG.md。
+
+✻ Brewed for 16s · done 上午4:50
+
+>  Qiao發現的，我不確定他是怎麼發現，所以也不用替他猜，照目前有的內容更新就好   
+  Read 1 file (ctrl+o to expand)
+
+● Update(TESTLOG.md)
+  ⎿  Added 7 lines
+      43  - 預期／實際：預期顯示 10.00，並提示「2026-11-23 無成交，顯示 2
+          026-11-20 收盤價」；實際顯示「未取得」（批次 API 改成 404、只走
+          逐檔時顯示正確）
+      44  - 原因：批次只有某一天的資料，那天是 "--" 時，行情快取只有最近
+          交易日、沒有收盤價；只有逐檔查詢會往前找有成交的日子，批次成功
+          時不走逐檔；新增時快取已經有 2363 這一列，就不再查官方
+      45  - 修好的 commit：`6c6c833`（fix: 第3題 批次那天沒有成交或缺行情
+          的持股，改用逐檔補查前一個有成交日的收盤價（一天一次））、`31be
+          995`（fix: 第3題 新增持股時快取沒有收盤價，只對該市場逐檔補查，
+          失敗仍照常新增）
+      46 +                                                               
+      47 +## T-07 同一天先賣光、再用 App 1.0 買回時，平均成本和已實現損益
+         +算錯（Qiao 實測時發現）                                        
+      48 +- 怎麼發現：Qiao 實測時發現                                    
+      49 +- 怎麼重現：1. 0050 有一筆從 1.0 轉入的買進：3,000 股、140.55 2
+         +. 同一天在 2.0 把 3,000 股全部賣出，價格 146 3. 同一天用 App 1.
+         +0 買進 2,000 股，價格 145 4. 看 0050 的平均成本（App 1.0 的 buy
+         +_price）                                                       
+      50 +- 預期／實際：預期平均成本 145.21（290,413 ÷ 2,000），已實現損 
+         +益維持 14,688；實際平均成本是 142.53，已實現損益也算錯         
+      51 +- 原因：重播時同一天固定「先買後賣」，買回的 2,000 股被排到賣出
+         +前面，新買的成本混進前一輪一起按比例扣掉                       
+      52 +- 修好的 commit：`e7aa947`（fix: 第6題 同一天的交易改依輸入順序
+         +重播，先賣光再買回時平均成本與已實現損益不再算錯）             
+
+● T-07 已經加到 TESTLOG.md 最後面，照你說的只寫目前知道的內容：
+
+  - 怎麼發現：只寫「Qiao 實測時發現」，沒有猜他怎麼操作。
+  - 第 2 步「在 2.0 賣出」：只寫賣了什麼、價格多少，不寫怎麼操作。
+  - 已實現損益：照你一開始給的背景寫「也算錯」，不寫我推算出來的 9,340。
+
+  commit 訊息：
+
+  docs: TESTLOG 新增 T-07 第6題 同一天先賣光再買回時成本算錯
+
+  git add TESTLOG.md
+
+✻ Worked for 13s · done 上午4:51
+
+※ recap: 我們在修第 6 題同一天先賣光再買回時成本算錯的問題；程式修正已 commit（e7aa947），TESTLOG T-07 也寫好了。下一步請你執行 git add TESTLOG.md 並用我提的 docs 訊息 commit。
