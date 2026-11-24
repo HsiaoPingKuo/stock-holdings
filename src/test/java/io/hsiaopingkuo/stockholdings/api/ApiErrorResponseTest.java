@@ -5,6 +5,8 @@ import static org.hamcrest.Matchers.containsString;
 import static org.mockito.BDDMockito.given;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -62,6 +64,13 @@ class ApiErrorResponseTest {
 				.andExpect(header().string("Allow", containsString("GET"))), "METHOD_NOT_ALLOWED");
 		assertErrorFormat(mockMvc.perform(patch("/api/v1/summary"))
 				.andExpect(status().isMethodNotAllowed()), "METHOD_NOT_ALLOWED");
+		// 清單路徑只支援 GET、POST；單筆路徑只支援 GET、PUT、DELETE
+		assertErrorFormat(mockMvc.perform(put("/api/v1/holdings"))
+				.andExpect(status().isMethodNotAllowed())
+				.andExpect(header().string("Allow", containsString("POST"))), "METHOD_NOT_ALLOWED");
+		assertErrorFormat(mockMvc.perform(post("/api/v1/holdings/1"))
+				.andExpect(status().isMethodNotAllowed())
+				.andExpect(header().string("Allow", containsString("DELETE"))), "METHOD_NOT_ALLOWED");
 	}
 
 	@Test
