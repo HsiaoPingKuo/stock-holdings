@@ -28,9 +28,13 @@ Windows PowerShell 的最後一行改成 `.\mvnw.cmd spring-boot:run`。
   - 快取沒有時才向證交所、櫃買中心確認代號，**這時需要能連上網路**
   - 股票代號：必填，只能是英文字母或數字，最多 10 個字；前後空白會自動去掉，英文字母會轉成大寫（例如 `00631l` 存成 `00631L`）
   - 輸入代號後（停止輸入 0.5 秒，或離開欄位），欄位旁會顯示股票名稱與市場，例如「台積電（上市）」
+    - 這只是提示，文字比按下新增後的錯誤訊息短：官方連不上時顯示「暫時無法確認」，查不到時顯示「查無此股票代號」
+    - 修改或清空代號時，舊的提示會立刻清掉
   - 系統會自動判斷上市或上櫃，並存下股票名稱
   - 上市、上櫃都查不到（例如打錯代號、興櫃股票）：顯示「查無此股票代號：9999（上市、上櫃都找不到）」，資料不儲存
-  - 官方網站連不上：顯示「暫時無法連線官方網站確認代號，請稍後再試」，資料不儲存
+  - 官方網站連不上、回應太慢，或同時查詢官方的人太多：顯示「暫時無法連線官方網站確認代號，請稍後再試」，資料不儲存
+  - 上市、上櫃都查到，而且最近交易日相同，無法判斷是哪一個市場：顯示「無法判斷 1234 是上市或上櫃，請聯絡管理者」，資料不儲存（重試也不會好，需要人工確認）
+  - 按下新增後最多約 9 秒一定會有結果（官方很慢時也一樣），不會一直轉圈
   - 張數：1～999 的整數（1 張 = 1,000 股）
   - 買進價：每股價格，大於 0，最多兩位小數
 - 清單會顯示每筆的名稱、市場（上市／上櫃）、收盤價與收盤價日期（見下方「清單的收盤價怎麼顯示」）。
@@ -84,19 +88,65 @@ $env:TWSE_BASE_URL="http://localhost:9000"; $env:TPEX_BASE_URL="http://localhost
 Remove-Item Env:TWSE_BASE_URL, Env:TPEX_BASE_URL, Env:TWSE_HOLIDAY_URL -ErrorAction SilentlyContinue
 ```
 
+Windows 命令提示字元（cmd）：每個 `set` 各寫一行，再另起一行啟動。不要寫成 `set X=值 && 指令`，`&&` 前面的空格會被算進變數值。
+```bat
+set TWSE_BASE_URL=http://localhost:9000
+set TPEX_BASE_URL=http://localhost:9000
+.\mvnw.cmd spring-boot:run
+```
+cmd 設定的環境變數一樣在**同一個視窗會一直有效**。要改回官方網站時，先清掉再啟動（或開一個新視窗）：
+```bat
+set TWSE_BASE_URL=
+set TPEX_BASE_URL=
+set TWSE_HOLIDAY_URL=
+```
+
 其他行情設定在 `src/main/resources/application.properties`：
 
 | 設定 | 預設 | 說明 |
 |---|---|---|
 | `quote.connect-timeout` | 3s | 建立連線的上限 |
 | `quote.read-timeout` | 5s | 等待回應的上限 |
-| `quote.lookup-timeout` | 8s | 同時查上市、上櫃的整體上限（按下新增後 10 秒內一定有結果） |
+| `quote.lookup-timeout` | 8s | 同時查上市、上櫃的上限；剩下的時間預算比較少時，以剩下的為準 |
+| `quote.request-budget`<br>（環境變數 `QUOTE_REQUEST_BUDGET`） | 9s | 新增持股、即時提示的時間預算，從收到請求開始算，排隊等候也算在內（題目要求 10 秒內看到結果，留 1 秒給寫入資料庫和網路） |
+| `quote.max-concurrent-lookups`<br>（環境變數 `QUOTE_MAX_CONCURRENT_LOOKUPS`） | 4 | 同時查官方的代號數上限，至少 1；新增持股、即時提示、背景補查舊持股共用 |
+| `quote.lookup-min-remaining`<br>（環境變數 `QUOTE_LOOKUP_MIN_REMAINING`） | 2s | 剩下的時間少於這個值就不查官方，直接回「暫時無法確認」 |
 | `quote.lookup-cache-ttl` | 10m | 查過的代號記住多久，避免短時間重複查詢官方 |
 | `quote.refresh.start-time`／`slowdown-time`／`end-time` | 13:40／14:30／15:40 | 背景排程的時段（台北時間） |
 | `quote.refresh.fast-interval`／`slow-interval` | 60s／10m | 快速、慢速時段每一輪的間隔 |
 | `quote.refresh.per-request-delay-min`／`max` | 3200ms／5800ms | 逐檔查詢時，請求之間的隨機等待 |
 | `quote.refresh.cooldown` | 30m | 被官方擋下後暫停多久 |
 | `quote.refresh.startup-lookback-days` | 10 | 啟動時今天沒有資料，最多往前找幾天 |
+
+上面三個有標示環境變數的設定，可以不改檔案直接調整。時間的寫法是 `9s`（秒）或 `500ms`（毫秒）。
+`QUOTE_REQUEST_BUDGET` 要小於 10 秒才符合題目要求，`QUOTE_LOOKUP_MIN_REMAINING` 要小於 `QUOTE_REQUEST_BUDGET`。
+以下範例把同時查詢上限改成 8：
+
+Mac／Linux（只對這一次啟動有效）：
+```bash
+QUOTE_MAX_CONCURRENT_LOOKUPS=8 ./mvnw spring-boot:run
+```
+
+Windows PowerShell：
+```powershell
+$env:QUOTE_MAX_CONCURRENT_LOOKUPS="8"; .\mvnw.cmd spring-boot:run
+```
+改回預設值（同一個視窗會一直有效，或開新視窗）：
+```powershell
+Remove-Item Env:QUOTE_REQUEST_BUDGET, Env:QUOTE_MAX_CONCURRENT_LOOKUPS, Env:QUOTE_LOOKUP_MIN_REMAINING -ErrorAction SilentlyContinue
+```
+
+Windows 命令提示字元（cmd）：先 `set`，再另起一行啟動（不要寫成 `set X=值 && 指令`）。
+```bat
+set QUOTE_MAX_CONCURRENT_LOOKUPS=8
+.\mvnw.cmd spring-boot:run
+```
+改回預設值（同一個視窗會一直有效，或開新視窗）：
+```bat
+set QUOTE_REQUEST_BUDGET=
+set QUOTE_MAX_CONCURRENT_LOOKUPS=
+set QUOTE_LOOKUP_MIN_REMAINING=
+```
 
 ## 專案架構
 
@@ -116,8 +166,9 @@ src/main/java/io/hsiaopingkuo/stockholdings/
 ├── controller/                     網頁：首頁、持股清單（新增／修改／刪除、代號即時查詢）
 ├── dto/                            表單欄位與檢查規則、JSON 回應格式、清單的一列（含收盤價）
 ├── entity/                         持股（Holding）、行情快取（Quote）、上市／上櫃（Market）
-├── exception/                      重複代號、找不到持股、查無代號、官方連不上
-├── quote/                          官方 API：批次與逐檔行情、休市日表、判斷上市或上櫃（MarketResolver）
+├── exception/                      重複代號、找不到持股、查無代號、官方連不上、無法判斷上市或上櫃
+├── quote/                          官方 API：批次與逐檔行情、休市日表、判斷上市或上櫃（MarketResolver，
+                                    含同一代號共用查詢、同時查詢上限與時間預算）
 ├── repository/                     資料庫存取
 └── service/                        業務規則：持股（HoldingService）、行情快取（QuoteService）、
                                     背景更新（QuoteRefreshService 一輪的流程、QuoteRefreshScheduler 排程）
