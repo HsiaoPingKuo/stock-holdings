@@ -72,16 +72,27 @@ class RefreshScheduleTest {
 	}
 
 	@Test
-	void 下一輪會超過1540_改到隔天1340() {
-		assertThat(schedule.nextRun(taipei(11, 24, 15, 35), state)).isEqualTo(taipei(11, 25, 13, 40));
+	void 下一輪會超過1540_還沒拿到資料_照排進延長時段() {
+		assertThat(schedule.nextRun(taipei(11, 24, 15, 35), state)).isEqualTo(taipei(11, 24, 15, 45));
 	}
 
 	@Test
-	void 到了1540停止_下一輪是隔天1340() {
+	void 到了1540還沒拿到資料_繼續執行_間隔變成20分鐘() {
 		ZonedDateTime now = taipei(11, 24, 15, 40);
 
-		assertThat(schedule.shouldRun(now, state)).isFalse();
-		assertThat(schedule.nextRun(now, state)).isEqualTo(taipei(11, 25, 13, 40));
+		assertThat(schedule.shouldRun(now, state)).isTrue();
+		assertThat(schedule.nextRun(now, state)).isEqualTo(taipei(11, 24, 16, 0));
+	}
+
+	@Test
+	void 週二1600市場今天還沒拿到資料_排程繼續跑_不會等到隔天1340() {
+		// G-03：官方延遲到 16:00 才公布，或服務中斷到 16:00 才恢復
+		ZonedDateTime now = taipei(11, 24, 16, 0);
+
+		assertThat(schedule.shouldRun(now, state)).isTrue();
+		assertThat(schedule.nextRun(now, state)).isEqualTo(taipei(11, 24, 16, 20));
+		// 延長時段到 23:40 為止
+		assertThat(schedule.nextRun(taipei(11, 24, 23, 30), state)).isEqualTo(taipei(11, 25, 13, 40));
 	}
 
 	@Test
@@ -94,10 +105,10 @@ class RefreshScheduleTest {
 	}
 
 	@Test
-	void 週六週日不執行_週五收盤後下一輪是週一1340() {
+	void 週六週日不執行_週五1540還沒拿到資料仍在當天繼續_週末排到週一1340() {
 		assertThat(schedule.shouldRun(taipei(11, 28, 14, 0), state)).isFalse();
 		assertThat(schedule.shouldRun(taipei(11, 29, 14, 0), state)).isFalse();
-		assertThat(schedule.nextRun(taipei(11, 27, 15, 40), state)).isEqualTo(taipei(11, 30, 13, 40));
+		assertThat(schedule.nextRun(taipei(11, 27, 15, 40), state)).isEqualTo(taipei(11, 27, 16, 0));
 		assertThat(schedule.nextRun(taipei(11, 28, 10, 0), state)).isEqualTo(taipei(11, 30, 13, 40));
 	}
 
@@ -111,10 +122,10 @@ class RefreshScheduleTest {
 	}
 
 	@Test
-	void 冷卻結束時已過1540_排到隔天1340() {
+	void 冷卻結束時已過1540_還沒拿到資料_排在冷卻結束時() {
 		ZonedDateTime now = taipei(11, 24, 15, 20);
 		state.startCooldown(now.plusMinutes(30).toInstant());
 
-		assertThat(schedule.nextRun(now, state)).isEqualTo(taipei(11, 25, 13, 40));
+		assertThat(schedule.nextRun(now, state)).isEqualTo(taipei(11, 24, 15, 50));
 	}
 }

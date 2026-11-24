@@ -40,17 +40,20 @@ public record QuoteProperties(Host twse, Host tpex, Duration connectTimeout, Dur
 	 * @param enabled             排程開關（測試時關掉，避免跑測試時發出請求）
 	 * @param startTime           每個交易日開始查詢的時間（收盤 13:30、盤後最晚 13:33，官方約 13:50 後公布）
 	 * @param slowdownTime        過了這個時間改成慢速（應付官方延遲公布）
-	 * @param endTime             過了這個時間當天停止
+	 * @param endTime             過了這個時間，只剩今天還沒拿到資料或還有待補查的市場繼續跑（改用延長時段的間隔）
+	 * @param lateEndTime         延長時段結束的時間：過了就停到下一個平日（G-03）
 	 * @param fastInterval        快速時段每一輪的間隔
 	 * @param fastJitter          快速間隔的隨機加減範圍（避免每次都在整數秒送出）
 	 * @param slowInterval        慢速時段，以及批次失敗改用逐檔時的間隔
+	 * @param lateInterval        延長時段每一輪的間隔（G-03）
 	 * @param perRequestDelayMin  逐檔查詢（和啟動時往前找）每個請求之間最少等多久
 	 * @param perRequestDelayMax  每個請求之間最多等多久
 	 * @param cooldown            被官方擋下後，這個市場暫停多久
 	 * @param startupLookbackDays 伺服器啟動時，今天沒有資料最多往前找幾天
 	 */
 	public record Refresh(boolean enabled, LocalTime startTime, LocalTime slowdownTime, LocalTime endTime,
-			Duration fastInterval, Duration fastJitter, Duration slowInterval, Duration perRequestDelayMin,
-			Duration perRequestDelayMax, Duration cooldown, int startupLookbackDays) {
+			LocalTime lateEndTime, Duration fastInterval, Duration fastJitter, Duration slowInterval,
+			Duration lateInterval, Duration perRequestDelayMin, Duration perRequestDelayMax, Duration cooldown,
+			int startupLookbackDays) {
 	}
 }

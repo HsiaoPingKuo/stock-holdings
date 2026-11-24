@@ -25,8 +25,9 @@ final class RefreshTestSupport {
 
 	/** 和 application.properties 相同的設定。 */
 	static final QuoteProperties.Refresh SETTINGS = new QuoteProperties.Refresh(true, LocalTime.of(13, 40),
-			LocalTime.of(14, 30), LocalTime.of(15, 40), Duration.ofSeconds(60), Duration.ofSeconds(5),
-			Duration.ofMinutes(10), Duration.ofMillis(3200), Duration.ofMillis(5800), Duration.ofMinutes(30), 10);
+			LocalTime.of(14, 30), LocalTime.of(15, 40), LocalTime.of(23, 40), Duration.ofSeconds(60),
+			Duration.ofSeconds(5), Duration.ofMinutes(10), Duration.ofMinutes(20), Duration.ofMillis(3200),
+			Duration.ofMillis(5800), Duration.ofMinutes(30), 10);
 
 	private RefreshTestSupport() {
 	}
