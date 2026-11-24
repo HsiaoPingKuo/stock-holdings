@@ -1,5 +1,6 @@
 package io.hsiaopingkuo.stockholdings.controller;
 
+import java.util.List;
 import java.util.regex.Pattern;
 
 import org.springframework.beans.propertyeditors.StringTrimmerEditor;
@@ -21,8 +22,10 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseBody;
 import org.springframework.web.servlet.mvc.support.RedirectAttributes;
 
+import io.hsiaopingkuo.stockholdings.calc.SummaryCalculator;
 import io.hsiaopingkuo.stockholdings.dto.ErrorResponse;
 import io.hsiaopingkuo.stockholdings.dto.HoldingCreateForm;
+import io.hsiaopingkuo.stockholdings.dto.HoldingListItem;
 import io.hsiaopingkuo.stockholdings.dto.StockLookupResponse;
 import io.hsiaopingkuo.stockholdings.dto.HoldingUpdateForm;
 import io.hsiaopingkuo.stockholdings.entity.Holding;
@@ -164,7 +167,11 @@ public class HoldingController {
 
 	private String showList(Model model) {
 		// 第 3 題：收盤價來自資料庫的行情快取，這裡不會呼叫官方；官方連不上時清單照常顯示
-		model.addAttribute("holdings", holdingService.findAllForList());
+		List<HoldingListItem> holdings = holdingService.findAllForList();
+		model.addAttribute("holdings", holdings);
+		// 第 4 題：總計用清單每一列已經算好的盈虧加總，頁首的數字和下面每一列一定對得上
+		model.addAttribute("summary",
+				SummaryCalculator.summarize(holdings.stream().map(HoldingListItem::profit).toList()));
 		return "holdings";
 	}
 }

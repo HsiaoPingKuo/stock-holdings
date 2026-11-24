@@ -1,0 +1,1337 @@
+ ▐▛███▛█   Claude Code v2.1.329
+▝▜██████▀  Opus 5.5 · Claude Pro
+ ▝▝   ▝▝   C:\TKA102_JavaApp\Workspace_for_practice\stock-holdings
+
+
+> /clear                                                                        
+
+> 【規則】                                                                      
+  請先讀 CLAUDE.md。這次只做「提案」，不要修改任何檔案。                        
+  列出做法、要新增或修改的檔案、建議的 commit 拆法，等我回覆「同意」才動手。    
+                                                                                
+  【任務資料開始】                                                              
+  第 4 題：算盈虧，並寫單元測試（分支 feature/q4-profit-calculation，從目前的   
+  master 開出）。                                                               
+                                                                                
+  ■ 題目原文                                                                    
+  盈虧的意思是「假設現在用收盤價全部賣出，淨賺多少」。規則：                    
+  - 手續費：成交金額 × 0.1425%，無條件捨去到元，每筆最低 20                     
+  元；買進、賣出各收一次                                                        
+  - 證交稅：只有賣出收。一般股票 0.3%，ETF（代號 00 開頭）0.1%；無條件捨去到元  
+  - 盈虧：賣出金額 − 賣出手續費 − 證交稅 − 買進金額 − 買進手續費                
+  - 收益率：盈虧 ÷（買進金額 ＋ 買進手續費）× 100，四捨五入到小數第二位         
+    要求：                                                                      
+  1.                                                                            
+  清單每一筆顯示盈虧和收益率，頁面最上面顯示總計。台股慣例紅色是賺、綠色是虧。  
+  2. 寫單元測試，至少涵蓋下面三個例子。測試不可以真的連到證交所或櫃買中心。     
+     | 例子           | 代號 | 張數 | 買進價  | 收盤價  | 盈虧    | 收益率  |   
+     | 一般股票       | 2330 | 1    | 1000.00 | 1100.00 | 93,708  | 9.36%   |   
+     | ETF            | 0050 | 2    | 150.00  | 145.50  | −10,132 | −3.37%  |   
+     | 手續費低於 20 元 | 2363 | 1    | 10.00   | 10.50   | 429     | 4.28%   | 
+                                                                                
+  ■ 這一步不做                                                                  
+  - App API（第 5 題）。但計算類別要設計成第 5 題可以直接共用，不要網頁和 API   
+  各寫一套。                                                                    
+                                                                                
+  ■ 1. 計算類別（放在 calc 套件，不碰資料庫、不連網）                           
+  - 輸入：代號、股數（張數 × 1000）、買進價、收盤價                             
+  - 輸出：買進金額、買進手續費、賣出金額、賣出手續費、證交稅、                  
+          成本（買進金額 + 買進手續費）、市值（收盤價 × 股數）、盈虧、收益率    
+  - 規則細節：                                                                  
+    - 一律用 BigDecimal，不可以用 double、float                                 
+    - 「無條件捨去到元」用 RoundingMode.DOWN                                    
+    - 手續費先捨去到元，再套用「最低 20 元」（例：14.25 → 14 → 20）             
+    - 收益率用 RoundingMode.HALF_UP，保留兩位小數（負數也照 HALF_UP，例：−3.375 
+  → −3.38）                                                                     
+    - ETF 判斷：代號以 "00" 開頭                                                
+    - 盈虧、手續費、證交稅、成本、市值都是整數（元）                            
+                                                                                
+  ■ 2. 總計（同樣放在 calc，照 App API 規格的總計規則，第 5 題 /api/v1/summary  
+  會共用）                                                                      
+  - 總成本：每筆（買進金額 + 買進手續費）加總，「沒有收盤價的也算進去」         
+  - 市值：每筆（收盤價 × 股數）加總，沒有收盤價的不算                           
+  - 盈虧：每筆盈虧加總，沒有收盤價的不算                                        
+  - 收益率：盈虧 ÷ 總成本 × 100，四捨五入到小數第二位（HALF_UP）                
+  - 取不到收盤價的筆數                                                          
+  - 沒有任何持股時：總成本 0，收益率不可以做除法，回 0.00                       
+                                                                                
+  ■ 3. 清單頁                                                                   
+  - 盈虧、收益率每次讀清單時即時計算，不存進資料庫。                            
+  - 收盤價用第 3 題的 quote.close_price（當天無成交時就是前一個有成交日的收盤價 
+  ，照原本的提示顯示）。                                                        
+  - 每筆新增兩欄：盈虧、收益率                                                  
+    - 金額加千分位（93,708、-10,132），收益率加 %（9.36%、-3.37%）              
+    - 沒有收盤價：盈虧、收益率兩格都顯示「—」（收盤價那格照第 3                 
+  題顯示「未取得」）                                                            
+  - 頁面最上面顯示總計：總成本、市值、盈虧、收益率；有取不到收盤價的持股時，    
+    另外顯示「N 筆未取得收盤價，不計入市值與盈虧」                              
+  - 顏色：盈虧 > 0 紅色，< 0 綠色，= 0                                          
+  不上色；收益率跟著盈虧的顏色。總計的盈虧、收益率也套用。                      
+                                                                                
+  ■ 4. 單元測試（不可以連網）                                                   
+  計算類別：                                                                    
+  1. 題目三個例子，逐項檢查：買進手續費、賣出手續費、證交稅、盈虧、收益率       
+     - 2330：手續費 1,425／1,567、證交稅 3,300、盈虧 93,708、收益率 9.36        
+     - 0050：手續費 427／414、證交稅 291、盈虧 -10,132、收益率 -3.37            
+     - 2363：手續費 20／20、證交稅 31、盈虧 429、收益率 4.28                    
+  2. 只有一邊手續費低於 20 元                                                   
+  3. 收益率負數的四捨五入                                                       
+     總計：                                                                     
+  4. 有一筆沒有收盤價 → 不算進市值、盈虧，但算進總成本；取不到收盤價的筆數 = 1  
+  5. 沒有任何持股 → 總成本 0、收益率 0.00，不會出錯                             
+     清單頁：                                                                   
+  6. 盈虧為正、負時有對應的顏色 class；沒有收盤價時盈虧、收益率顯示「—」        
+  7. 總計顯示在頁面上，且數字與計算類別一致                                     
+                                                                                
+  ■ 5. 文件（只提出草稿，我確認後才寫入）                                       
+  - README：補上盈虧計算規則摘要、總計的算法、沒有收盤價時的顯示                
+    【任務資料結束】                                                            
+                                                                                
+  【規則】再提醒一次：                                                          
+  - 先提案：做法、新增／修改的檔案、commit 拆法（格式：feat: 第4題              
+  …），等我回覆「同意」才動手。                                                 
+  - 只做「第 4 題」，範圍外的功能列在「建議（未實作）」。                       
+  - 不要自己 commit；README、TESTLOG、REVIEW 只提出草稿。                       
+  - 完成後回報：改了哪些檔案、我怎麼驗證（含手動驗證步驟）、./mvnw test         
+  結果、還沒做的部分。                                                          
+
+  Searched for 1 pattern, read 1 file, ran 2 shell commands (ctrl+o to expand)
+
+● 第 4 題提案：算盈虧並寫單元測試
+
+  結論： 計算規則只寫在 calc 套件，網頁和第 5 題的 API 共用同一份。清單每一列在
+  從資料庫讀出來時就把盈虧算好，總計再用這些結果加總。預計分 3 個程式
+  commit，README 另外 1 個 docs commit。
+
+  我先手算過題目的三個例子，用這套規則都算得出題目的答案：
+
+  例子: 2330
+  買進金額／手續費: 1,000,000／1,425
+  賣出金額／手續費: 1,100,000／1,567（1567.5 捨去）
+  證交稅: 3,300
+  盈虧: 93,708
+  收益率: 93,708 ÷ 1,001,425 = 9.357…→ 9.36
+  ────────────────────────────────────────
+  例子: 0050
+  買進金額／手續費: 300,000／427
+  賣出金額／手續費: 291,000／414
+  證交稅: 291
+  盈虧: −10,132
+  收益率: −10,132 ÷ 300,427 = −3.372…→ −3.37
+  ────────────────────────────────────────
+  例子: 2363
+  買進金額／手續費: 10,000／14.25→14→20
+  賣出金額／手續費: 10,500／14.96→14→20
+  證交稅: 31
+  盈虧: 429
+  收益率: 429 ÷ 10,020 = 4.281…→ 4.28
+
+  目前在 feature/q4-profit-calculation，這個分支和 master 一樣停在
+  e058e2f，不用另外開分支。
+
+  ---
+
+  一、做法
+
+  1. 計算類別（calc，不碰資料庫、不連網）
+
+  ProfitResult（record：只裝資料的不可變類別）
+  - 欄位：買進金額、買進手續費、賣出金額、賣出手續費、證交稅、成本、市值、盈虧、
+    收益率，全部是 BigDecimal。
+  - 沒有收盤價時，只有買進金額、買進手續費、成本有值，其他欄位是 null。
+  - 另外提供 hasClosePrice()，判斷有沒有收盤價。
+  - 這樣設計的原因：
+    - 總計要把「沒有收盤價的成本」也算進去，所以每一筆都要有成本。
+    - 第 5 題的 JSON 要輸出 null 欄位，這個型別可以直接對上。
+
+  ProfitCalculator（只有 static 方法，沒有狀態）
+  - calculate(String code, long shares, BigDecimal buyPrice, BigDecimal 
+    closePrice)：closePrice 可以是 null。
+  - returnRate(BigDecimal profit, BigDecimal cost)：設成
+    public，總計也用它，收益率的規則只寫一次。成本是 0 時直接回 0.00，不做除法。
+  - 費率常數用 new BigDecimal("0.001425") 這種字串寫法。用 double 寫法（new 
+    BigDecimal(0.001425)）會帶進浮點誤差。
+  - 捨入規則：
+
+  ┌────────┬─────────────────────────────────────────────────────────────────┐
+  │  項目  │                             怎麼算                              │
+  ├────────┼─────────────────────────────────────────────────────────────────┤
+  │ 手續費 │ 金額 × 0.001425 → setScale(0, DOWN) → 跟 20                     │
+  │        │ 取大的（先捨去、再套最低 20 元）                                │
+  ├────────┼─────────────────────────────────────────────────────────────────┤
+  │ 證交稅 │ 代號 startsWith("00") 用 0.001，其他用 0.003 → setScale(0,      │
+  │        │ DOWN)                                                           │
+  ├────────┼─────────────────────────────────────────────────────────────────┤
+  │ 收益率 │ 盈虧 × 100 ÷ 成本，用 divide(成本, 2, HALF_UP) 一步算到兩位小數 │
+  └────────┴─────────────────────────────────────────────────────────────────┘
+
+  - 收益率一步算完的原因：先除再乘 100 會多一次捨入，可能讓答案差 0.01。
+  - 買進、賣出金額直接用「價格 × 股數」，不另外捨入。價格最多兩位小數（資料庫是
+    DECIMAL(12,2)），股數又是 1000 的倍數，算出來一定是整數。
+  - 輸入不合理時丟 IllegalArgumentException：股數 ≤ 0、價格 ≤ 0、代號空白。
+
+  2. 總計（calc）
+
+  PortfolioSummary（record）
+  - 欄位：總成本、市值、盈虧、收益率、未取得收盤價的筆數。
+
+  SummaryCalculator.summarize(List<ProfitResult>)
+  - 總成本：每一筆的成本都加進去。
+  - 市值、盈虧：只加有收盤價的。
+  - 收益率：呼叫 ProfitCalculator.returnRate(盈虧, 總成本)。
+  - 沒有持股時：總成本、市值、盈虧都是 0，收益率是 0.00，不會出錯。
+
+  3. 清單頁
+
+  HoldingListItem
+  - 多一個 ProfitResult profit 欄位。
+  - 另外加一個 9 個參數的建構子，給 Repository 的查詢語法（JPQL 的 select new 
+    …）使用。建構子裡呼叫 ProfitCalculator，股數 = 張數 × 1000，沒有收盤價時傳
+    null。
+  - 效果：每次讀清單都即時計算，不存進資料庫。第 5 題的 API
+    拿到同一個物件，數字就會跟網頁一致。
+
+  HoldingController.showList()
+  - 多放一個 summary 到 model：用 SummaryCalculator 加總清單每一列的 profit。
+
+  holdings.html
+  - 總計區塊：放在標題和提示訊息下面、「新增持股」上面。
+    - 顯示總成本、市值、盈虧、收益率。
+    - 有取不到收盤價的持股時，多顯示「N 筆未取得收盤價，不計入市值與盈虧」。
+    - 沒有持股時也顯示，內容是 0／0／0／0.00%。
+  - 清單在「收盤價日期」後面新增兩欄：盈虧、收益率。
+    - 金額用 #numbers.formatInteger(x, 1, 'COMMA')，顯示成 93,708、-10,132。
+    - 收益率用 formatDecimal(..., 2, 'POINT') 再加 %。
+    - 沒有收盤價時，兩格都顯示「—」。
+  - 顏色：
+    - 新增 CSS class gain（紅）和 loss（綠），由盈虧的正負決定；等於 0 不上色。
+    - 收益率跟著盈虧的顏色，總計也一樣。
+    - 不沿用現有的 .error，因為它代表「錯誤」，意思不同。
+
+  ---
+
+  二、新增／修改的檔案
+
+  ┌───────────────────────────────────────┬──────────────────────────────────┐
+  │                 檔案                  │               動作               │
+  ├───────────────────────────────────────┼──────────────────────────────────┤
+  │ calc/ProfitResult.java                │ 新增                             │
+  ├───────────────────────────────────────┼──────────────────────────────────┤
+  │ calc/ProfitCalculator.java            │ 新增                             │
+  ├───────────────────────────────────────┼──────────────────────────────────┤
+  │ calc/PortfolioSummary.java            │ 新增                             │
+  ├───────────────────────────────────────┼──────────────────────────────────┤
+  │ calc/SummaryCalculator.java           │ 新增                             │
+  ├───────────────────────────────────────┼──────────────────────────────────┤
+  │ dto/HoldingListItem.java              │ 修改：加 profit 欄位和 9         │
+  │                                       │ 個參數的建構子                   │
+  ├───────────────────────────────────────┼──────────────────────────────────┤
+  │ controller/HoldingController.java     │ 修改：showList 加入總計          │
+  ├───────────────────────────────────────┼──────────────────────────────────┤
+  │ templates/holdings.html               │ 修改：總計區塊、兩個新欄位、顏色 │
+  │                                       │  class                           │
+  ├───────────────────────────────────────┼──────────────────────────────────┤
+  │ test/.../calc/ProfitCalculatorTest.ja │ 新增                             │
+  │ va                                    │                                  │
+  ├───────────────────────────────────────┼──────────────────────────────────┤
+  │ test/.../calc/SummaryCalculatorTest.j │ 新增                             │
+  │ ava                                   │                                  │
+  ├───────────────────────────────────────┼──────────────────────────────────┤
+  │ test/.../controller/HoldingController │ 修改：加入第 6、7 項測試         │
+  │ Test.java                             │                                  │
+  └───────────────────────────────────────┴──────────────────────────────────┘
+
+  不新增 migration，也不改資料表。Repository 的查詢語法不用改：它照樣呼叫 9
+  個參數的建構子，現有的 HoldingRepositoryTest 可以順便驗證這一點。
+
+  三、單元測試
+
+  ProfitCalculatorTest
+  1. 題目三個例子各一個測試，逐項檢查：買進、賣出手續費、證交稅、盈虧、收益率（
+     也順便檢查成本、市值）。
+  2. 只有一邊手續費低於 20 元：
+     - 只有買進低於 20 元：1 張、買 14.00、收 15.00 → 手續費 20／21、證交稅
+       45、盈虧 914、收益率 6.52
+     - 只有賣出低於 20 元：1 張、買 15.00、收 14.00 → 手續費 21／20、證交稅
+       42、盈虧 −1,083、收益率 −7.21
+  3. 收益率負數的四捨五入：
+     - returnRate(-3375, 100000) → −3.38（題目的例子）
+     - returnRate(-125, 100000) → −0.13。這個值才分得出 HALF_UP 和
+       HALF_EVEN／DOWN：後兩者都會得到 −0.12。
+  4. 補充：
+     - 00631L 這類「00 開頭但有英文字母」的代號，也用 ETF 稅率。
+     - 沒有收盤價時只算成本，賣出相關的欄位都是 null。
+
+  SummaryCalculatorTest
+  5. 2330 和 0050 都有收盤價，另外一筆沒有收盤價：
+  - 沒有收盤價的那筆不算進市值、盈虧，但算進總成本。
+  - 未取得筆數 = 1。
+  6. 沒有持股：總成本 0、收益率 0.00，不會丟例外。
+
+  HoldingControllerTest（@WebMvcTest，Service 用假的）
+  7. 盈虧為正的列有 gain，為負的列有
+  loss；沒有收盤價的列，盈虧和收益率顯示「—」。
+  8. 2330 + 0050 的總計顯示在頁面上：
+  - 總成本 1,301,852、市值 1,391,000、盈虧 83,576、收益率 6.42%
+  - 盈虧帶 gain 顏色
+  - 數字也跟 SummaryCalculator 算出來的值比對
+  9. 有未取得收盤價的持股時，顯示「1 筆未取得收盤價，不計入市值與盈虧」。
+
+  四、Commit 拆法
+
+  1. feat: 第4題 盈虧計算類別（手續費、證交稅、盈虧、收益率）與單元測試
+  2. feat: 第4題 總計計算（總成本、市值、盈虧、收益率、未取得筆數）與單元測試
+  3. feat: 第4題 清單頁顯示每筆盈虧、收益率與頁首總計（紅賺綠虧）
+  4. docs: 第4題 README 補上盈虧計算規則、總計算法與沒有收盤價時的顯示：等全部驗
+     證完，我先給草稿，你同意後才寫入。
+
+  每個 commit 前都會跑 ./mvnw test，全部通過才交給你 commit。
+
+  五、不需要問主考官
+
+  題目已經寫清楚所有捨入規則、ETF
+  的判斷方式和沒有收盤價時的處理，這一題目前沒有要問主考官的問題。
+
+  建議（未實作）
+
+  - 清單也顯示每筆的「成本」「市值」欄位：題目只要求盈虧和收益率，所以這次不加。
+  - 所有持股都沒有收盤價時，總計會是盈虧 0、收益率
+    0.00%，可能讓人誤以為「沒賺沒賠」。目前照規格做，靠「N
+    筆未取得收盤價」的提示說明；要不要另外處理由你決定。
+
+  請回覆「同意」，我就從第 1 個 commit 開始做。
+
+✻ Sautéed for 2m 18s · done 下午7:34
+
+※ recap: 我在做第 4 題（盈虧計算與清單頁總計），已經交出提案，還沒改任何檔案。請你看完提案後回覆「同意」，我就從第 1 個 commit（盈虧計算類別與單元測試）開始做。
+
+> 1. 同意，清單不加「成本」「市值」欄位。                                       
+  2. 全部持股都沒有收盤價時，網頁另外處理：                                     
+     - 計算類別照規格不變（市值 0、盈虧 0、收益率 0.00），第 5 題的 App API     
+  會直接使用這些數字，                                                          
+       規格沒有允許 null。                                                      
+     - 只改網頁顯示：持股數 > 0                                                 
+  且「全部」都沒有收盤價時，總計的市值、盈虧、收益率顯示「—」，                 
+       總成本照常顯示，提示改成「所有持股都還沒取得收盤價」。                   
+     - 只有部分沒有收盤價時，維持原本做法：顯示數字，並提示「N                  
+  筆未取得收盤價，不計入市值與盈虧」。                                          
+     - 沒有任何持股時，總計顯示 0（沒有持股本來就是 0，不會誤導）。             
+     - 補測試：全部沒有收盤價 → 網頁總計顯示「—」；部分沒有 → 顯示數字和提示。  
+                                                                                
+  以上同意，請開始實作。                                                        
+
+  Listed 1 directory (ctrl+o to expand)
+
+● Commit 1：計算類別。
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\calc\ProfitResult.java)
+  ⎿  Wrote 22 lines to
+     src\main\java\io\hsiaopingkuo\stockholdings\calc\ProfitResult.java
+       1 package io.hsiaopingkuo.stockholdings.calc;
+       2 
+       3 import java.math.BigDecimal;
+       4 
+       5 /**
+       6  * 一筆持股「假設用收盤價全部賣出」的計算結果（第 4 題）。金額都
+         是整數元，收益率是百分比、兩位小數。
+       7  *
+       8  * 沒有收盤價時，只有買進那一邊（買進金額、買進手續費、成本）有
+         值，其餘欄位是 null：
+     … +14 lines (ctrl+o to expand)
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\calc\ProfitCalculator.java)
+  ⎿  Wrote 104 lines to
+     src\main\java\io\hsiaopingkuo\stockholdings\calc\ProfitCalculator.java
+       1 package io.hsiaopingkuo.stockholdings.calc;
+       2 
+       3 import java.math.BigDecimal;
+       4 import java.math.RoundingMode;
+       5 
+       6 /**
+       7  * 盈虧計算規則（第 4 題）：假設現在用收盤價全部賣出，淨賺多少。
+       8  * 網頁清單和第 5 題的 App API 都呼叫這裡，規則只有一份。不碰資
+         料庫、不連網，所以只有 static 方法。
+       9  *
+     … +95 lines (ctrl+o to expand)
+
+● Write(src\test\java\io\hsiaopingkuo\stockholdings\calc\ProfitCalculatorTest.ja
+       va)
+  ⎿  Wrote 157 lines to src\test\java\io\hsiaopingkuo\stockholdings\calc\Pr
+     ofitCalculatorTest.java
+       1 package io.hsiaopingkuo.stockholdings.calc;
+       2 
+       3 import static org.assertj.core.api.Assertions.assertThat;
+       4 import static org.assertj.core.api.Assertions.assertThatThrownBy
+         ;
+       5 
+       6 import java.math.BigDecimal;
+       7 
+       8 import org.junit.jupiter.api.Test;
+       9 
+     … +148 lines (ctrl+o to expand)
+
+  Listed 1 directory, ran 1 shell command (ctrl+o to expand)
+
+● Commit 2：總計。
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\calc\PortfolioSummary.java)
+  ⎿  Wrote 23 lines to
+     src\main\java\io\hsiaopingkuo\stockholdings\calc\PortfolioSummary.java
+       1 package io.hsiaopingkuo.stockholdings.calc;
+       2 
+       3 import java.math.BigDecimal;
+       4 
+       5 /**
+       6  * 全部持股的總計（第 4 題；第 5 題 /api/v1/summary 共用）。
+       7  * 數字照 App API 規格的總計規則，不會是 null：沒有收盤價的持股
+         只算進總成本。
+       8  *
+       9  * @param totalCost         每筆成本加總，沒有收盤價的也算
+     … +14 lines (ctrl+o to expand)
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\calc\SummaryCalculator.java)
+  ⎿  Wrote 39 lines to src\main\java\io\hsiaopingkuo\stockholdings\calc\Sum
+     maryCalculator.java
+       1 package io.hsiaopingkuo.stockholdings.calc;
+       2 
+       3 import java.math.BigDecimal;
+       4 import java.util.List;
+       5 
+       6 /**
+       7  * 總計規則（第 4 題；第 5 題 /api/v1/summary 共用）。
+       8  * 輸入是每一筆已經算好的 {@link ProfitResult}，這裡只負責加總，
+         不重算單筆，兩邊的數字才一定對得上。
+       9  */
+     … +30 lines (ctrl+o to expand)
+
+● Write(src\test\java\io\hsiaopingkuo\stockholdings\calc\SummaryCalculatorTest.j
+       ava)
+  ⎿  Wrote 79 lines to src\test\java\io\hsiaopingkuo\stockholdings\calc\Sum
+     maryCalculatorTest.java
+       1 package io.hsiaopingkuo.stockholdings.calc;
+       2 
+       3 import static org.assertj.core.api.Assertions.assertThat;
+       4 
+       5 import java.math.BigDecimal;
+       6 import java.util.List;
+       7 
+       8 import org.junit.jupiter.api.Test;
+       9 
+      10 /** 總計規則（第 4 題）。單筆的數字由 ProfitCalculator 算，這裡
+     … +70 lines (~3 KB) (ctrl+o to expand)
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Commit 3：清單頁。先改 HoldingListItem。
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\dto\HoldingListItem.java)
+  ⎿  Added 17 lines, removed 1 line
+       3  import java.math.BigDecimal;
+       4  import java.time.LocalDate;
+       5 
+       6 +import io.hsiaopingkuo.stockholdings.calc.ProfitCalculator;    
+       7 +import io.hsiaopingkuo.stockholdings.calc.ProfitResult;        
+       8  import io.hsiaopingkuo.stockholdings.entity.Market;
+       9 
+      10  /**
+     ...
+      15   * @param closePrice      最近一個有成交日的收盤價；沒有行情或
+          從沒成交過是 null（畫面顯示「未取得」）
+      16   * @param closeDate       closePrice 是哪一天
+      17   * @param latestTradeDate 官方已公布的最近交易日；比 closeDate
+          晚代表那天沒有成交
+      18 + * @param profit          第 4 題：用收盤價全部賣出的盈虧；沒有
+         +收盤價時只有成本，盈虧、收益率是 null                          
+      19   */
+      20  public record HoldingListItem(Long id, String code, String name
+          , Market market, int lots, BigDecimal buyPrice,
+      18 -    BigDecimal closePrice, LocalDate closeDate, LocalDate lates
+         -tTradeDate) {                                                  
+      21 +    BigDecimal closePrice, LocalDate closeDate, LocalDate lates
+         +tTradeDate, ProfitResult profit) {                             
+      22 
+      23 +  /**                                                          
+      24 +   * 給 HoldingRepository.findAllForList 的查詢（select new ...
+         +）用：資料庫只提供前 9 個欄位，                                
+      25 +   * 盈虧在這裡當場算好，不存進資料庫，每次讀清單都是用最新的收
+         +盤價計算。                                                     
+      26 +   * 網頁和第 5 題的 API 都拿這個物件，盈虧只會算一次、兩邊數字
+         +一定相同。                                                     
+      27 +   */                                                          
+      28 +  public HoldingListItem(Long id, String code, String name, Mar
+         +ket market, int lots, BigDecimal buyPrice,                     
+      29 +      BigDecimal closePrice, LocalDate closeDate, LocalDate lat
+         +estTradeDate) {                                                
+      30 +    this(id, code, name, market, lots, buyPrice, closePrice, cl
+         +oseDate, latestTradeDate,                                      
+      31 +        // 和 hasClosePrice() 同一個判斷：收盤價和收盤日要同時 
+         +有，畫面顯示「未取得」的列就不會算出盈虧                       
+      32 +        ProfitCalculator.calculate(code, lots * 1000L, buyPrice
+         +,                                                              
+      33 +            closePrice != null && closeDate != null ? closePric
+         +e : null));                                                    
+      34 +  }                                                            
+      35 +                                                               
+      36    /** 有沒有收盤價可以顯示。 */
+      37    public boolean hasClosePrice() {
+      38      return closePrice != null && closeDate != null;
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\controller\HoldingControlle
+        r.java)
+  ⎿  Added 5 lines, removed 1 line
+      164 
+      165    private String showList(Model model) {
+      166      // 第 3 題：收盤價來自資料庫的行情快取，這裡不會呼叫官方；
+           官方連不上時清單照常顯示
+      167 -    model.addAttribute("holdings", holdingService.findAllForLi
+          -st());                                                        
+      167 +    List<HoldingListItem> holdings = holdingService.findAllFor
+          +List();                                                       
+      168 +    model.addAttribute("holdings", holdings);                 
+      169 +    // 第 4 題：總計用清單每一列已經算好的盈虧加總，頁首的數字
+          +和下面每一列一定對得上                                        
+      170 +    model.addAttribute("summary",                             
+      171 +        SummaryCalculator.summarize(holdings.stream().map(Hold
+          +ingListItem::profit).toList()));                              
+      172      return "holdings";
+      173    }
+      174  }
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\controller\HoldingControlle
+        r.java)
+  ⎿  Added 1 line
+      1  package io.hsiaopingkuo.stockholdings.controller;
+      2 
+      3 +import java.util.List;                                          
+      4  import java.util.regex.Pattern;
+      5 
+      6  import org.springframework.beans.propertyeditors.StringTrimmerEd
+         itor;
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\controller\HoldingControlle
+        r.java)
+  ⎿  Added 2 lines
+      22  import org.springframework.web.bind.annotation.ResponseBody;
+      23  import org.springframework.web.servlet.mvc.support.RedirectAttr
+          ibutes;
+      24 
+      25 +import io.hsiaopingkuo.stockholdings.calc.SummaryCalculator;   
+      26  import io.hsiaopingkuo.stockholdings.dto.ErrorResponse;
+      27  import io.hsiaopingkuo.stockholdings.dto.HoldingCreateForm;
+      28 +import io.hsiaopingkuo.stockholdings.dto.HoldingListItem;      
+      29  import io.hsiaopingkuo.stockholdings.dto.StockLookupResponse;
+      30  import io.hsiaopingkuo.stockholdings.dto.HoldingUpdateForm;
+      31  import io.hsiaopingkuo.stockholdings.entity.Holding;
+
+  Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+● 官方或主考官的測試伺服器若回傳收盤價 0.00，計算類別會拋出例外導致清單頁
+  500，我已把「是否有收盤價」統一改為收盤價大於 0 才算有。 · summary
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\dto\HoldingListItem.java)
+  ⎿  Added 13 lines, removed 3 lines
+      28    public HoldingListItem(Long id, String code, String name, Mar
+          ket market, int lots, BigDecimal buyPrice,
+      29        BigDecimal closePrice, LocalDate closeDate, LocalDate lat
+          estTradeDate) {
+      30      this(id, code, name, market, lots, buyPrice, closePrice, cl
+          oseDate, latestTradeDate,
+      31 -        // 和 hasClosePrice() 同一個判斷：收盤價和收盤日要同時 
+         -有，畫面顯示「未取得」的列就不會算出盈虧                       
+      31 +        // 和 hasClosePrice() 同一個判斷：畫面顯示「未取得」的 
+         +列，就不會算出盈虧                                             
+      32          ProfitCalculator.calculate(code, lots * 1000L, buyPrice
+          ,
+      33 -            closePrice != null && closeDate != null ? closePric
+         -e : null));                                                    
+      33 +            isUsableClose(closePrice, closeDate) ? closePrice :
+         + null));                                                       
+      34    }
+      35 
+      36    /** 有沒有收盤價可以顯示。 */
+      37    public boolean hasClosePrice() {
+      38 -    return closePrice != null && closeDate != null;            
+      38 +    return isUsableClose(closePrice, closeDate);               
+      39    }
+      40 
+      41 +  /**                                                          
+      42 +   * 收盤價和收盤日都要有，而且收盤價要大於 0。                
+      43 +   * 第 4 題加上「大於 0」：外部（例如測試伺服器）若回傳 0.00，
+         +計算類別會拒絕，清單頁會整頁錯誤；                             
+      44 +   * 0 元不是真的收盤價，當成「未取得」處理。                  
+      45 +   * 寫成 static：上面的建構子在 this(...) 之前不能呼叫物件自己
+         +的方法。                                                       
+      46 +   */                                                          
+      47 +  private static boolean isUsableClose(BigDecimal closePrice, L
+         +ocalDate closeDate) {                                          
+      48 +    return closePrice != null && closeDate != null && closePric
+         +e.signum() > 0;                                                
+      49 +  }                                                            
+      50 +                                                               
+      51    /** 最近交易日沒有成交，顯示的是更早一天的收盤價（畫面要加提
+          示）。 */
+      52    public boolean showsEarlierClose() {
+      53      return hasClosePrice() && latestTradeDate != null && closeD
+          ate.isBefore(latestTradeDate);
+● 接著改 holdings.html：加上總計區塊、兩個新欄位和顏色。
+
+● Update(src\main\resources\templates\holdings.html)
+  ⎿  Added 3 lines
+      16      .hint.muted { color: #888; }
+      17      .hint.error { color: #c00; }
+      18      form.inline { display: inline; }
+      19 +    /* 第 4 題：台股慣例紅色是賺、綠色是虧；不沿用 .error，那是
+         +「錯誤」的意思 */                                              
+      20 +    .gain { color: #d00; }                                     
+      21 +    .loss { color: #080; }                                     
+      22    </style>
+      23  </head>
+      24  <body>
+
+● Update(src\main\resources\templates\holdings.html)
+  ⎿  Added 26 lines
+      28    <p class="message" th:if="${message}" th:text="${message}">已
+          新增 2330</p>
+      29    <p class="error" th:if="${errorMessage}" th:text="${errorMess
+          age}">找不到這筆持股</p>
+      30 
+      31 +  <!-- 第 4 題：總計。數字由 SummaryCalculator 算好，這裡只負責
+         +格式和顏色。                                                   
+      32 +       trend：盈虧 > 0 是 gain（紅）、< 0 是 loss（綠）、= 0 不
+         +上色；收益率跟著盈虧的顏色。                                   
+      33 +       全部持股都沒有收盤價時，市值、盈虧、收益率還算不出來，顯
+         +示「—」不上色（計算類別照規格仍是 0） -->                      
+      34 +  <h2>總計</h2>                                                
+      35 +  <table id="summary"                                          
+      36 +      th:with="s=${summary}, unknown=${summary.allMissingClose(
+         +)},                                                            
+      37 +        trend=${summary.allMissingClose() ? '' : (summary.profi
+         +t.signum() > 0 ? 'gain' : (summary.profit.signum() < 0 ? 'loss'
+         + : ''))}">                                                     
+      38 +    <thead>                                                    
+      39 +      <tr><th>總成本</th><th>市值</th><th>盈虧</th><th>收益率</
+         +th></tr>                                                       
+      40 +    </thead>                                                   
+      41 +    <tbody>                                                    
+      42 +      <tr>                                                     
+      43 +        <td id="summary-total-cost" class="num" th:text="${#num
+         +bers.formatInteger(s.totalCost, 1, 'COMMA')}">1,301,852</td>   
+      44 +        <td id="summary-market-value" class="num"              
+      45 +            th:text="${unknown} ? '—' : ${#numbers.formatIntege
+         +r(s.marketValue, 1, 'COMMA')}">1,391,000</td>                  
+      46 +        <td id="summary-profit" class="num" th:classappend="${t
+         +rend}"                                                         
+      47 +            th:text="${unknown} ? '—' : ${#numbers.formatIntege
+         +r(s.profit, 1, 'COMMA')}">83,576</td>                          
+      48 +        <td id="summary-return-rate" class="num" th:classappend
+         +="${trend}"                                                    
+      49 +            th:text="${unknown} ? '—' : |${#numbers.formatDecim
+         +al(s.returnRate, 1, 'COMMA', 2, 'POINT')}%|">6.42%</td>        
+      50 +      </tr>                                                    
+      51 +    </tbody>                                                   
+      52 +  </table>                                                     
+      53 +  <p class="note" id="summary-note" th:if="${summary.allMissing
+         +Close()}">所有持股都還沒取得收盤價</p>                         
+      54 +  <p class="note" id="summary-note" th:if="${!summary.allMissin
+         +gClose() and summary.missingCloseCount > 0}"                   
+      55 +      th:text="|${summary.missingCloseCount} 筆未取得收盤價，不
+         +計入市值與盈虧|">1 筆未取得收盤價，不計入市值與盈虧</p>        
+      56 +                                                               
+      57    <h2>新增持股</h2>
+      58    <!-- 欄位用 text 而不是 number：檢查規則以伺服器為準，錯誤訊
+          息統一顯示在表單上 -->
+      59    <form th:action="@{/holdings}" th:object="${createForm}" meth
+          od="post">
+
+● Update(src\main\resources\templates\holdings.html)
+  ⎿  Added 5 lines, removed 2 lines
+      78    <p th:if="${#lists.isEmpty(holdings)}">目前沒有持股。</p>
+      79    <table th:unless="${#lists.isEmpty(holdings)}">
+      80      <thead>
+      81 -      <tr><th>股票代號</th><th>名稱</th><th>市場</th><th>張數</
+         -th><th>買進價</th><th>收盤價</th><th>收盤價日期</th><th>操作</t
+         -h></tr>                                                        
+      81 +      <tr><th>股票代號</th><th>名稱</th><th>市場</th><th>張數</
+         +th><th>買進價</th><th>收盤價</th><th>收盤價日期</th><th>盈虧</t
+         +h><th>收益率</th><th>操作</th></tr>                            
+      82      </thead>
+      83      <tbody>
+      84 -      <tr th:each="h : ${holdings}">                           
+      84 +      <!-- trend：這一列盈虧的顏色（同總計的規則）；沒有收盤價 
+         +時沒有盈虧，不上色 -->                                         
+      85 +      <tr th:each="h : ${holdings}"                            
+      86 +          th:with="p=${h.profit},                              
+      87 +            trend=${!h.profit.hasClosePrice() ? '' : (h.profit.
+         +profit.signum() > 0 ? 'gain' : (h.profit.profit.signum() < 0 ? 
+         +'loss' : ''))}">                                               
+      88          <td th:text="${h.code}">2330</td>
+      89          <!-- 第 2 題時存的舊資料沒有名稱和市場（NULL），顯示「—
+          」 -->
+      90          <td th:text="${h.name} ?: '—'">台積電</td>
+
+● Update(src\main\resources\templates\holdings.html)
+  ⎿  Added 5 lines
+      103            <small class="note" th:if="${h.showsEarlierClose()}"
+      104                th:text="|${h.latestTradeDate} 無成交，顯示 ${h.
+           closeDate} 收盤價|">2026-11-24 無成交，顯示 2026-11-23 收盤價<
+           /small>
+      105          </td>
+      106 +        <!-- 第 4 題：盈虧加千分位、收益率加 %；沒有收盤價時兩
+          +格都顯示「—」 -->                                             
+      107 +        <td class="num profit" th:classappend="${trend}"      
+      108 +            th:text="${p.hasClosePrice()} ? ${#numbers.formatI
+          +nteger(p.profit, 1, 'COMMA')} : '—'">93,708</td>              
+      109 +        <td class="num rate" th:classappend="${trend}"        
+      110 +            th:text="${p.hasClosePrice()} ? |${#numbers.format
+          +Decimal(p.returnRate, 1, 'COMMA', 2, 'POINT')}%| : '—'">9.36%<
+          +/td>                                                          
+      111          <td>
+      112            <a th:href="@{/holdings/{id}/edit(id=${h.id})}">修改
+           </a>
+      113            <form class="inline" th:action="@{/holdings/{id}/del
+           ete(id=${h.id})}" method="post"
+
+  Read 1 file (ctrl+o to expand)
+
+● Now add the controller tests (inserted after the Q3 "未取得" test).
+
+● Update(src\test\java\io\hsiaopingkuo\stockholdings\controller\HoldingControlle
+        rTest.java)
+  ⎿  Added 127 lines
+      120          .andExpect(content().string(not(containsString("無成交
+           ，顯示"))));
+      121    }
+      122 
+      123 +  // ===== 第 4 題：盈虧、收益率、總計 =====                  
+      124 +                                                              
+      125 +  /** 題目的例子：2330 賺錢、0050 虧錢（張數 2）。 */         
+      126 +  private static HoldingListItem tsmcGain() {                 
+      127 +    return row(1, "2330", "台積電", Market.TWSE, 1, "1000.00",
+          + "1100.00", NOV_23, NOV_23);                                  
+      128 +  }                                                           
+      129 +                                                              
+      130 +  private static HoldingListItem etfLoss() {                  
+      131 +    return row(2, "0050", "元大台灣50", Market.TWSE, 2, "150.0
+          +0", "145.50", NOV_23, NOV_23);                                
+      132 +  }                                                           
+      133 +                                                              
+      134 +  /** 沒有行情：成本 460,500 + 手續費 656 = 461,156。 */      
+      135 +  private static HoldingListItem gwNoQuote() {                
+      136 +    return rowWithoutQuote(3, "6488", "環球晶", Market.TPEX, 1
+          +, "460.50");                                                  
+      137 +  }                                                           
+      138 +                                                              
+      139 +  /** 和 controller 相同的算法，用來確認頁面數字和計算類別一致
+          +。 */                                                         
+      140 +  private static PortfolioSummary summaryOf(HoldingListItem...
+          + rows) {                                                      
+      141 +    return SummaryCalculator.summarize(List.of(rows).stream().
+          +map(HoldingListItem::profit).toList());                       
+      142 +  }                                                           
+      143 +                                                              
+      144    @Test
+      145 +  void 每筆盈虧為正是紅色_為負是綠色_收益率跟著盈虧的顏色() th
+          +rows Exception {                                              
+      146 +    given(holdingService.findAllForList()).willReturn(List.of(
+          +tsmcGain(), etfLoss()));                                      
+      147 +                                                              
+      148 +    mockMvc.perform(get("/holdings"))                         
+      149 +        .andExpect(status().isOk())                           
+      150 +        .andExpect(content().string(containsString("<th>盈虧</
+          +th><th>收益率</th>")))                                        
+      151 +        .andExpect(content().string(containsString("<td class=
+          +\"num profit gain\">93,708</td>")))                           
+      152 +        .andExpect(content().string(containsString("<td class=
+          +\"num rate gain\">9.36%</td>")))                              
+      153 +        .andExpect(content().string(containsString("<td class=
+          +\"num profit loss\">-10,132</td>")))                          
+      154 +        .andExpect(content().string(containsString("<td class=
+          +\"num rate loss\">-3.37%</td>")));                            
+      155 +  }                                                           
+      156 +                                                              
+      157 +  @Test                                                       
+      158 +  void 沒有收盤價時盈虧與收益率顯示破折號且不上色() throws Exc
+          +eption {                                                      
+      159 +    given(holdingService.findAllForList()).willReturn(List.of(
+          +gwNoQuote()));                                                
+      160 +                                                              
+      161 +    mockMvc.perform(get("/holdings"))                         
+      162 +        .andExpect(status().isOk())                           
+      163 +        .andExpect(content().string(containsString("<td>未取得
+          +</td>")))                                                     
+      164 +        .andExpect(content().string(containsString("<td class=
+          +\"num profit\">—</td>")))                                     
+      165 +        .andExpect(content().string(containsString("<td class=
+          +\"num rate\">—</td>")));                                      
+      166 +  }                                                           
+      167 +                                                              
+      168 +  @Test                                                       
+      169 +  void 收盤價是0時當成未取得_清單頁不會整頁錯誤() throws Excep
+          +tion {                                                        
+      170 +    // 外部回傳 0.00 時，計算類別會拒絕（價格必須大於 0），清 
+          +單要當成沒有收盤價，不能 500                                  
+      171 +    given(holdingService.findAllForList()).willReturn(List.of(
+      172 +        row(1, "2330", "台積電", Market.TWSE, 1, "1000.00", "0
+          +.00", NOV_23, NOV_23)));                                      
+      173 +                                                              
+      174 +    mockMvc.perform(get("/holdings"))                         
+      175 +        .andExpect(status().isOk())                           
+      176 +        .andExpect(content().string(containsString("<td>未取得
+          +</td>")))                                                     
+      177 +        .andExpect(content().string(containsString("<td class=
+          +\"num profit\">—</td>")));                                    
+      178 +  }                                                           
+      179 +                                                              
+      180 +  @Test                                                       
+      181 +  void 總計顯示在頁面上_數字與計算類別一致() throws Exception 
+          +{                                                             
+      182 +    given(holdingService.findAllForList()).willReturn(List.of(
+          +tsmcGain(), etfLoss()));                                      
+      183 +                                                              
+      184 +    mockMvc.perform(get("/holdings"))                         
+      185 +        .andExpect(status().isOk())                           
+      186 +        // 交給畫面的總計，就是計算類別用同樣幾筆算出來的結果 
+      187 +        .andExpect(model().attribute("summary", summaryOf(tsmc
+          +Gain(), etfLoss())))                                          
+      188 +        .andExpect(content().string(containsString("<td id=\"s
+          +ummary-total-cost\" class=\"num\">1,301,852</td>")))          
+      189 +        .andExpect(content().string(containsString("<td id=\"s
+          +ummary-market-value\" class=\"num\">1,391,000</td>")))        
+      190 +        .andExpect(content().string(containsString("<td id=\"s
+          +ummary-profit\" class=\"num gain\">83,576</td>")))            
+      191 +        .andExpect(content().string(containsString("<td id=\"s
+          +ummary-return-rate\" class=\"num gain\">6.42%</td>")))        
+      192 +        .andExpect(content().string(not(containsString("summar
+          +y-note"))));                                                  
+      193 +  }                                                           
+      194 +                                                              
+      195 +  @Test                                                       
+      196 +  void 總計虧損時是綠色() throws Exception {                  
+      197 +    given(holdingService.findAllForList()).willReturn(List.of(
+          +etfLoss()));                                                  
+      198 +                                                              
+      199 +    mockMvc.perform(get("/holdings"))                         
+      200 +        .andExpect(status().isOk())                           
+      201 +        .andExpect(content().string(containsString("<td id=\"s
+          +ummary-profit\" class=\"num loss\">-10,132</td>")))           
+      202 +        .andExpect(content().string(containsString("<td id=\"s
+          +ummary-return-rate\" class=\"num loss\">-3.37%</td>")));      
+      203 +  }                                                           
+      204 +                                                              
+      205 +  @Test                                                       
+      206 +  void 部分持股沒有收盤價_總計顯示數字並提示筆數() throws Exce
+          +ption {                                                       
+      207 +    given(holdingService.findAllForList()).willReturn(List.of(
+          +tsmcGain(), gwNoQuote()));                                    
+      208 +                                                              
+      209 +    mockMvc.perform(get("/holdings"))                         
+      210 +        .andExpect(status().isOk())                           
+      211 +        .andExpect(model().attribute("summary", summaryOf(tsmc
+          +Gain(), gwNoQuote())))                                        
+      212 +        // 總成本包含沒有收盤價的那筆：1,001,425 + 461,156    
+      213 +        .andExpect(content().string(containsString("<td id=\"s
+          +ummary-total-cost\" class=\"num\">1,462,581</td>")))          
+      214 +        .andExpect(content().string(containsString("<td id=\"s
+          +ummary-market-value\" class=\"num\">1,100,000</td>")))        
+      215 +        .andExpect(content().string(containsString("<td id=\"s
+          +ummary-profit\" class=\"num gain\">93,708</td>")))            
+      216 +        // 93,708 ÷ 1,462,581 × 100 = 6.407…                  
+      217 +        .andExpect(content().string(containsString("<td id=\"s
+          +ummary-return-rate\" class=\"num gain\">6.41%</td>")))        
+      218 +        .andExpect(content().string(containsString("1 筆未取得
+          +收盤價，不計入市值與盈虧")))                                  
+      219 +        .andExpect(content().string(not(containsString("所有持
+          +股都還沒取得收盤價"))));                                      
+      220 +  }                                                           
+      221 +                                                              
+      222 +  @Test                                                       
+      223 +  void 全部持股都沒有收盤價_總計的市值盈虧收益率顯示破折號_總 
+          +成本照常顯示() throws Exception {                             
+      224 +    given(holdingService.findAllForList()).willReturn(List.of(
+          +gwNoQuote()));                                                
+      225 +                                                              
+      226 +    mockMvc.perform(get("/holdings"))                         
+      227 +        .andExpect(status().isOk())                           
+      228 +        .andExpect(content().string(containsString("<td id=\"s
+          +ummary-total-cost\" class=\"num\">461,156</td>")))            
+      229 +        .andExpect(content().string(containsString("<td id=\"s
+          +ummary-market-value\" class=\"num\">—</td>")))                
+      230 +        // 不上色：不是「沒賺沒賠」，是還算不出來             
+      231 +        .andExpect(content().string(containsString("<td id=\"s
+          +ummary-profit\" class=\"num\">—</td>")))                      
+      232 +        .andExpect(content().string(containsString("<td id=\"s
+          +ummary-return-rate\" class=\"num\">—</td>")))                 
+      233 +        .andExpect(content().string(containsString("所有持股都
+          +還沒取得收盤價")))                                            
+      234 +        .andExpect(content().string(not(containsString("筆未取
+          +得收盤價，不計入市值與盈虧"))));                              
+      235 +  }                                                           
+      236 +                                                              
+      237 +  @Test                                                       
+      238 +  void 沒有任何持股_總計顯示0且不上色() throws Exception {    
+      239 +    given(holdingService.findAllForList()).willReturn(List.of(
+          +));                                                           
+      240 +                                                              
+      241 +    mockMvc.perform(get("/holdings"))                         
+      242 +        .andExpect(status().isOk())                           
+      243 +        .andExpect(content().string(containsString("<td id=\"s
+          +ummary-total-cost\" class=\"num\">0</td>")))                  
+      244 +        .andExpect(content().string(containsString("<td id=\"s
+          +ummary-market-value\" class=\"num\">0</td>")))                
+      245 +        .andExpect(content().string(containsString("<td id=\"s
+          +ummary-profit\" class=\"num\">0</td>")))                      
+      246 +        .andExpect(content().string(containsString("<td id=\"s
+          +ummary-return-rate\" class=\"num\">0.00%</td>")))             
+      247 +        .andExpect(content().string(not(containsString("summar
+          +y-note"))));                                                  
+      248 +  }                                                           
+      249 +                                                              
+      250 +  @Test                                                       
+      251    void 清單顯示名稱與市場_舊資料沒有時顯示破折號() throws Exce
+           ption {
+      252      given(holdingService.findAllForList()).willReturn(List.of(
+      253          rowWithoutQuote(1, "2330", "台積電", Market.TWSE, 1, "
+           1000.00"),
+
+● Update(src\test\java\io\hsiaopingkuo\stockholdings\controller\HoldingControlle
+        rTest.java)
+  ⎿  Added 1 line
+      15  import static org.springframework.test.web.servlet.result.MockM
+          vcResultMatchers.content;
+      16  import static org.springframework.test.web.servlet.result.MockM
+          vcResultMatchers.flash;
+      17  import static org.springframework.test.web.servlet.result.MockM
+          vcResultMatchers.jsonPath;
+      18 +import static org.springframework.test.web.servlet.result.MockM
+         +vcResultMatchers.model;                                        
+      19  import static org.springframework.test.web.servlet.result.MockM
+          vcResultMatchers.redirectedUrl;
+      20  import static org.springframework.test.web.servlet.result.MockM
+          vcResultMatchers.status;
+      21 
+
+● Update(src\test\java\io\hsiaopingkuo\stockholdings\controller\HoldingControlle
+        rTest.java)
+  ⎿  Added 2 lines
+      32  import org.springframework.test.util.ReflectionTestUtils;
+      33  import org.springframework.test.web.servlet.MockMvc;
+      34 
+      35 +import io.hsiaopingkuo.stockholdings.calc.PortfolioSummary;    
+      36 +import io.hsiaopingkuo.stockholdings.calc.SummaryCalculator;   
+      37  import io.hsiaopingkuo.stockholdings.dto.HoldingListItem;
+      38  import io.hsiaopingkuo.stockholdings.entity.Holding;
+      39  import io.hsiaopingkuo.stockholdings.entity.Market;
+
+● Also add a check to the repository test that the real JPQL query computes the
+  profit:
+
+● Update(src\test\java\io\hsiaopingkuo\stockholdings\repository\HoldingRepositor
+        yTest.java)
+  ⎿  Added 6 lines
+      140      assertThat(gw.closeDate()).isEqualTo(nov23);
+      141      assertThat(gw.latestTradeDate()).isEqualTo(nov24);
+      142      assertThat(gw.showsEarlierClose()).isTrue();
+      143 +                                                              
+      144 +    // 第 4 題：查詢走 9 個參數的建構子，盈虧在讀出來時就算好 
+          +（不存資料庫）                                                
+      145 +    assertThat(noQuote.profit().hasClosePrice()).isFalse();   
+      146 +    assertThat(noQuote.profit().cost()).isNotNull();          
+      147 +    assertThat(gw.profit().hasClosePrice()).isTrue();         
+      148 +    assertThat(gw.profit().marketValue()).isEqualByComparingTo
+          +(gw.closePrice().multiply(BigDecimal.valueOf(gw.lots() * 1000L
+          +)));                                                          
+      149    }
+      150 
+      151    @Test
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● 兩個測試類別都過了。接著跑全部測試：
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● 第 4 題完成：盈虧、收益率與總計
+
+  三個程式步驟都寫好了，./mvnw test 全部 235 個測試通過（新增 15 個計算測試、9
+  個清單頁測試）。我沒有 commit，下面列出拆成三個 commit 的指令，請你執行。
+
+  和提案不一樣的地方
+
+  1. PortfolioSummary 多了兩樣東西：持股筆數 holdingCount，和
+     allMissingClose()（有持股但全部都沒有收盤價）。這是為了做到你補充的「全部都
+     沒有收盤價時顯示—」。計算的數字照規格不變，第 5 題的 API 不用輸出這兩個。
+  2. hasClosePrice() 改成「收盤價要大於 
+     0」才算有，提案裡沒有這一項，請你決定要不要保留。
+     - 原因：計算類別不接受價格 ≤ 0。如果行情主機（例如主考官的測試伺服器）回傳
+       0.00，清單頁會整頁 500。
+     - 影響：會稍微改到第 3 題的行為，收盤價是 0.00 時改顯示「未取得」。
+     - 不想保留的話，我可以改回去，改用別的方式擋 500。
+  3. 多補了幾個測試：
+     - 收盤價是 0 時清單頁不出錯。
+     - 總計虧損時是綠色。
+     - HoldingRepositoryTest 確認真正的資料庫查詢有用 9 個參數的建構子算出盈虧。
+
+  改了哪些檔案
+
+  檔案: calc/ProfitResult.java（新）
+  內容: 單筆結果；沒有收盤價時賣出那邊和盈虧是 null
+  ────────────────────────────────────────
+  檔案: calc/ProfitCalculator.java（新）
+  內容: 手續費、證交稅、盈虧、收益率；returnRate() 總計也共用
+  ────────────────────────────────────────
+  檔案: calc/PortfolioSummary.java（新）
+  內容: 總計結果
+  ────────────────────────────────────────
+  檔案: calc/SummaryCalculator.java（新）
+  內容: 用每筆的 ProfitResult 加總
+  ────────────────────────────────────────
+  檔案: dto/HoldingListItem.java
+  內容: 多一個 profit 欄位；9 個參數的建構子當場計算
+  ────────────────────────────────────────
+  檔案: controller/HoldingController.java
+  內容: showList 多放 summary 給畫面
+  ────────────────────────────────────────
+  檔案: templates/holdings.html
+  內容: 頁首總計、「盈虧」「收益率」兩欄、gain（紅）／loss（綠）
+  ────────────────────────────────────────
+  檔案: 測試
+  內容: ProfitCalculatorTest（11 個）、SummaryCalculatorTest（4
+    個）、HoldingControllerTest（+9 個）、HoldingRepositoryTest（+4 行檢查）
+
+  建議的 commit 指令
+
+  git add src/main/java/io/hsiaopingkuo/stockholdings/calc/ProfitResult.java
+  src/main/java/io/hsiaopingkuo/stockholdings/calc/ProfitCalculator.java
+  src/test/java/io/hsiaopingkuo/stockholdings/calc/ProfitCalculatorTest.java
+  git commit -m "feat: 第4題 
+  盈虧計算類別（手續費、證交稅、盈虧、收益率）與單元測試"
+
+  git add src/main/java/io/hsiaopingkuo/stockholdings/calc/PortfolioSummary.java
+  src/main/java/io/hsiaopingkuo/stockholdings/calc/SummaryCalculator.java
+  src/test/java/io/hsiaopingkuo/stockholdings/calc/SummaryCalculatorTest.java
+  git commit -m "feat: 第4題 
+  總計計算（總成本、市值、盈虧、收益率、未取得筆數）與單元測試"
+
+  git add -A src
+  git commit -m "feat: 第4題 清單頁顯示每筆盈虧、收益率與頁首總計（紅賺綠虧）"
+
+  前兩個 commit 只有新增檔案，各自都能通過測試。
+
+  怎麼驗證
+
+  1. 跑 ./mvnw test（Windows 用 mvnw.cmd test），預期看到 Tests run: 235, 
+     Failures: 0 和 BUILD SUCCESS。
+  2. 啟動 ./mvnw spring-boot:run，打開 http://localhost:8080/holdings
+     - 頁面最上面有「總計」表格：總成本、市值、盈虧、收益率。
+     - 清單在「收盤價日期」後面多了「盈虧」「收益率」兩欄。賺錢是紅字、虧錢是綠
+       字，金額有千分位，收益率有 %。
+     - 對照數字：例如 2330、1 張、買進 1000，如果收盤價是 2,030.00，盈虧應該是
+       1,019,593，收益率 101.81%（收盤價不同時用 README 草稿的公式自己算）。
+     - 新增一筆買進價高於收盤價的持股，那一列和總計（總計整體虧損時）會變綠色。
+     - 刪光所有持股，總計顯示 0／0／0／0.00%，沒有顏色、沒有提示。
+  3. 「部分」或「全部」沒有收盤價的情況，在實際網站上不容易做出來，已經用
+     HoldingControllerTest 的四個測試涵蓋。
+
+  還沒做的部分
+
+  - README 還沒改。依我們的約定，等你驗證完第 4 題再提草稿。待補項目：
+    - 盈虧計算規則摘要
+    - 總計的算法
+    - 沒有收盤價時的顯示（部分沒有／全部沒有／沒有持股）
+  - App API 是第 5 題，這次不做。
+
+  題目結束前的提醒
+
+  - README：你驗證完告訴我，我再提草稿。
+  - TESTLOG：你手動操作時發現問題就告訴我，我修好、commit 後再提草稿。
+  - ai-log：記得用 /export 匯出這段對話放進 ai-log/，commit 前檢查有沒有密碼或
+    token。
+
+  建議（未實作）
+
+  無。
+
+✻ Cogitated for 5m 29s · done 下午7:44
+
+※ recap: 第 4 題（盈虧、收益率、總計）已實作完成，235 個測試全部通過，還沒 commit。下一步請你決定要不要保留「收盤價 0 當未取得」這項改動，再照我給的指令分三次 commit 並手動驗證清單頁。
+
+> 測試已通過，替我逐個commit，只要保留feat: 第4題 清單頁顯示每筆盈虧、收益率與  
+  頁首總計（紅賺綠虧)的中文就好，不加AI協作的說明，比較簡潔                     
+
+  Ran 1 shell command, wrote 2 memories (ctrl+o to expand)
+
+● 三個 commit 都建立在 feature/q4-profit-calculation
+  上了。訊息只有一行中文描述，沒有加 AI
+  協作說明（Co-Authored-By）。工作目錄是乾淨的，還沒合併、也還沒 push。
+
+  ┌─────────┬────────────────────────────────────────────────────────────────┐
+  │ commit  │                              訊息                              │
+  ├─────────┼────────────────────────────────────────────────────────────────┤
+  │ 7009de9 │ feat: 第4題                                                    │
+  │         │ 盈虧計算類別（手續費、證交稅、盈虧、收益率）與單元測試         │
+  ├─────────┼────────────────────────────────────────────────────────────────┤
+  │ 0b2bb9f │ feat: 第4題                                                    │
+  │         │ 總計計算（總成本、市值、盈虧、收益率、未取得筆數）與單元測試   │
+  ├─────────┼────────────────────────────────────────────────────────────────┤
+  │ c0bfcc2 │ feat: 第4題 清單頁顯示每筆盈虧、收益率與頁首總計（紅賺綠虧）   │
+  └─────────┴────────────────────────────────────────────────────────────────┘
+
+  - 你訊息裡第三則的結尾括號是半形 )，我照提案時的寫法改成全形 ），和前面的 （
+    成對。
+  - commit 時 git 出現「LF will be replaced by CRLF」的警告，意思是這台 Windows
+    會自動轉換換行字元。這是正常現象，不影響程式內容。
+  - 我把「代為 commit 時不加 AI 協作說明」記下來了，之後也會這樣做。
+
+  接下來：
+  1. 合併回 master（一般 merge，不要 squash）並 push：
+  git checkout master
+  git merge --no-ff feature/q4-profit-calculation
+  git push origin master
+     要我幫你執行的話，跟我說一聲。
+  2. 合併後在另一個資料夾重新 clone，照 README 從頭啟動一次。
+  3. README：你說測試已通過，要我提 README 草稿的話跟我說，內容是盈虧規則摘要、
+     總計算法、沒有收盤價時的顯示。我提出後，等你回「同意」才寫入。
+  4. TESTLOG：你手動操作時有發現問題就告訴我。
+  5. ai-log：記得用 /export 匯出這段對話放進 ai-log/，commit 前檢查有沒有密碼或
+     token。
+
+✻ Brewed for 25s · done 下午7:59
+
+> readme可以替我產生草稿了                                                      
+
+  Read 1 file (ctrl+o to expand)
+
+● README 第 4 題草稿
+
+  一共改 3 處：「使用方式」改寫一個項目，新增一節「盈虧怎麼算」，「專案架構」的
+  目錄說明補兩行。其他段落不動。
+
+  ---
+
+  修改 1：「使用方式」段落
+
+  原本：
+  - 清單會顯示每筆的名稱、市場（上市／上櫃）、收盤價與收盤價日期（見下方「清單的
+  收盤價怎麼顯示」）。
+
+  改成：
+  - 清單會顯示每筆的名稱、市場（上市／上櫃）、收盤價與收盤價日期（見下方「清單的
+  收盤價怎麼顯示」），
+    以及盈虧與收益率（見下方「盈虧怎麼算」）。
+  - 頁面最上面顯示全部持股的總計：總成本、市值、盈虧、收益率。
+  -
+  顏色照台股慣例：**紅色是賺、綠色是虧**，剛好打平不上色；收益率跟著盈虧的顏色。
+
+  ---
+
+  修改 2：新增一節「盈虧怎麼算」
+
+  放在「清單的收盤價怎麼顯示」後面、「更換行情主機」前面。
+
+  ## 盈虧怎麼算
+
+  盈虧的意思是「假設現在用收盤價全部賣出，淨賺多少」。每次打開清單時，用最新的收
+  盤價即時計算，不存進資料庫。
+
+  | 項目 | 規則 |
+  |---|---|
+  | 買進金額、賣出金額 | 買進價（或收盤價）× 股數（1 張 = 1,000 股） |
+  | 手續費 | 成交金額 × 0.1425%，**無條件捨去到元**，每筆最低 20
+  元；買進、賣出各收一次（先捨去再套最低：14.25 → 14 → 20） |
+  | 證交稅 | 只有賣出收。一般股票 0.3%，ETF（代號 `00` 開頭，例如
+  0050、00631L）0.1%；無條件捨去到元 |
+  | 成本 | 買進金額 + 買進手續費 |
+  | 盈虧 | 賣出金額 − 賣出手續費 − 證交稅 − 買進金額 − 買進手續費 |
+  | 收益率 | 盈虧 ÷ 成本 × 100，**四捨五入**到小數第二位（負數也一樣：−3.375% →
+  −3.38%） |
+
+  例子：2330、1 張、買進價 1,000.00、收盤價 1,100.00
+
+  - 買進 1,000,000，手續費 1,425；賣出 1,100,000，手續費 1,567（1,567.5
+  捨去），證交稅 3,300
+  - 盈虧 = 1,100,000 − 1,567 − 3,300 − 1,000,000 − 1,425 = **93,708**
+  - 收益率 = 93,708 ÷ 1,001,425 × 100 = 9.357… → **9.36%**
+
+  ### 總計
+
+  | 項目 | 算法 |
+  |---|---|
+  | 總成本 | 每筆成本加總，**沒有收盤價的也算進去**（買進的錢已經花出去了） |
+  | 市值 | 每筆「收盤價 × 股數」加總，沒有收盤價的不算 |
+  | 盈虧 | 每筆盈虧加總，沒有收盤價的不算 |
+  | 收益率 | 總盈虧 ÷ 總成本 × 100，四捨五入到小數第二位（不是把每筆收益率相加）
+  |
+
+  ### 沒有收盤價時怎麼顯示
+
+  | 情況 | 清單那一列 | 頁首總計 |
+  |---|---|---|
+  | 部分持股沒有收盤價 | 收盤價顯示「未取得」，盈虧、收益率顯示「—」 |
+  照常顯示數字，並提示「N 筆未取得收盤價，不計入市值與盈虧」 |
+  | 全部持股都沒有收盤價 | 同上 |
+  總成本照常顯示；市值、盈虧、收益率顯示「—」，提示「所有持股都還沒取得收盤價」
+  |
+  | 沒有任何持股 | — | 全部顯示 0（收益率 0.00%） |
+
+  ---
+
+  修改 3：「專案架構」的目錄說明
+
+  新增一行（放在 config/ 上面，照字母順序）：
+  ├── calc/                           盈虧計算規則（ProfitCalculator）與總計（Su
+  mmaryCalculator），不碰資料庫、不連網
+
+  dto/ 那一行改成：
+  ├── dto/                            表單欄位與檢查規則、JSON 
+  回應格式、清單的一列（含收盤價、盈虧）
+
+  ---
+
+  需要你確認的地方
+
+  1. 範例只放 2330 一個。題目的三個例子都寫在單元測試 ProfitCalculatorTest
+     裡，README 放一個比較好讀。要三個都放進 README 也可以。
+  2. 收盤價是 0.00 時當成「未取得」：這是我自己加上的防護，提案時沒有列出來。草
+     稿裡沒有寫，因為正常情況不會出現。要寫進「清單的收盤價怎麼顯示」也可以。
+
+  確認沒問題請回覆「同意」，我就寫進 README.md。建議的 commit 訊息是：
+
+  docs: 第4題 README 補上盈虧計算規則、總計算法與沒有收盤價時的顯示
+
+✻ Baked for 19s · done 下午8:02
+
+> 寫入readme，我自行commit                                                      
+
+● Update(README.md)
+  ⎿  Added 4 lines, removed 1 line
+      37    - 按下新增後最多約 9 秒一定會有結果（官方很慢時也一樣），不會
+          一直轉圈
+      38    - 張數：1～999 的整數（1 張 = 1,000 股）
+      39    - 買進價：每股價格，大於 0，最多兩位小數
+      40 -- 清單會顯示每筆的名稱、市場（上市／上櫃）、收盤價與收盤價日期 
+         -（見下方「清單的收盤價怎麼顯示」）。                           
+      40 +- 清單會顯示每筆的名稱、市場（上市／上櫃）、收盤價與收盤價日期 
+         +（見下方「清單的收盤價怎麼顯示」），                           
+      41 +  以及盈虧與收益率（見下方「盈虧怎麼算」）。                   
+      42 +- 頁面最上面顯示全部持股的總計：總成本、市值、盈虧、收益率。   
+      43 +- 顏色照台股慣例：**紅色是賺、綠色是虧**，剛好打平不上色；收益 
+         +率跟著盈虧的顏色。                                             
+      44  - **同一個股票代號只能有一筆**：重複新增會顯示「2330 已在持股中
+          」，資料不儲存。
+      45  - **修改**：按該筆的「修改」，只能改張數和買進價，股票代號不能
+          改。
+      46  - **刪除**：按「刪除」，確認後刪除。
+
+● Update(README.md)
+  ⎿  Added 36 lines
+       65  - 當天沒有成交：顯示前一個有成交日的收盤價，並標示「{最近交易
+           日} 無成交，顯示 {成交日} 收盤價」。
+       66  - 顯示「未取得」：還沒拿到這檔股票的行情（例如剛啟動、官方連不
+           上），或這檔股票一直沒有成交紀錄。
+       67 
+       68 +## 盈虧怎麼算                                                 
+       69 +                                                              
+       70 +盈虧的意思是「假設現在用收盤價全部賣出，淨賺多少」。每次打開清
+          +單時，用最新的收盤價即時計算，不存進資料庫。                  
+       71 +                                                              
+       72 +| 項目 | 規則 |                                               
+       73 +|---|---|                                                     
+       74 +| 買進金額、賣出金額 | 買進價（或收盤價）× 股數（1 張 = 1,000 
+          +股） |                                                        
+       75 +| 手續費 | 成交金額 × 0.1425%，**無條件捨去到元**，每筆最低 20
+          + 元；買進、賣出各收一次（先捨去再套最低：14.25 → 14 → 20） |  
+       76 +| 證交稅 | 只有賣出收。一般股票 0.3%，ETF（代號 `00` 開頭，例 
+          +如 0050、00631L）0.1%；無條件捨去到元 |                       
+       77 +| 成本 | 買進金額 + 買進手續費 |                              
+       78 +| 盈虧 | 賣出金額 − 賣出手續費 − 證交稅 − 買進金額 − 買進手續 
+          +費 |                                                          
+       79 +| 收益率 | 盈虧 ÷ 成本 × 100，**四捨五入**到小數第二位（負數也
+          +一樣：−3.375% → −3.38%） |                                    
+       80 +                                                              
+       81 +例子：2330、1 張、買進價 1,000.00、收盤價 1,100.00            
+       82 +                                                              
+       83 +- 買進 1,000,000，手續費 1,425；賣出 1,100,000，手續費 1,567（
+          +1,567.5 捨去），證交稅 3,300                                  
+       84 +- 盈虧 = 1,100,000 − 1,567 − 3,300 − 1,000,000 − 1,425 = **93,
+          +708**                                                         
+       85 +- 收益率 = 93,708 ÷ 1,001,425 × 100 = 9.357… → **9.36%**      
+       86 +                                                              
+       87 +### 總計                                                      
+       88 +                                                              
+       89 +| 項目 | 算法 |                                               
+       90 +|---|---|                                                     
+       91 +| 總成本 | 每筆成本加總，**沒有收盤價的也算進去**（買進的錢已 
+          +經花出去了） |                                                
+       92 +| 市值 | 每筆「收盤價 × 股數」加總，沒有收盤價的不算 |        
+       93 +| 盈虧 | 每筆盈虧加總，沒有收盤價的不算 |                     
+       94 +| 收益率 | 總盈虧 ÷ 總成本 × 100，四捨五入到小數第二位（不是把
+          +每筆收益率相加） |                                            
+       95 +                                                              
+       96 +### 沒有收盤價時怎麼顯示                                      
+       97 +                                                              
+       98 +| 情況 | 清單那一列 | 頁首總計 |                              
+       99 +|---|---|---|                                                 
+      100 +| 部分持股沒有收盤價 | 收盤價顯示「未取得」，盈虧、收益率顯示 
+          +「—」 | 照常顯示數字，並提示「N 筆未取得收盤價，不計入市值與盈
+          +虧」 |                                                        
+      101 +| 全部持股都沒有收盤價 | 同上 | 總成本照常顯示；市值、盈虧、收
+          +益率顯示「—」，提示「所有持股都還沒取得收盤價」 |             
+      102 +| 沒有任何持股 | — | 全部顯示 0（收益率 0.00%） |             
+      103 +                                                              
+      104  ## 更換行情主機
+      105 
+      106  股票資料來自證交所（上市）與櫃買中心（上櫃）。主機網址可以用環
+           境變數換成自己的測試伺服器，**路徑和參數不變**。
+
+● Update(README.md)  ⎿  Added 1 line
+      201  ```
+      202  src/main/java/io/hsiaopingkuo/stockholdings/
+      203  ├── StockHoldingsApplication.java   程式進入點
+      204 +├── calc/                           盈虧計算規則（ProfitCalcul
+          +ator）與總計（SummaryCalculator），不碰資料庫、不連網         
+      205  ├── config/                         台北時區 Clock、行情 API
+           設定（主機網址、逾時、排程）
+      206  ├── controller/                     網頁：首頁、持股清單（新增
+           ／修改／刪除、代號即時查詢）
+      207  ├── dto/                            表單欄位與檢查規則、JSON
+           回應格式、清單的一列（含收盤價）
+
+● Update(README.md)
+  ⎿  Added 1 line, removed 1 line
+      204  ├── calc/                           盈虧計算規則（ProfitCalcul
+           ator）與總計（SummaryCalculator），不碰資料庫、不連網
+      205  ├── config/                         台北時區 Clock、行情 API
+           設定（主機網址、逾時、排程）
+      206  ├── controller/                     網頁：首頁、持股清單（新增
+           ／修改／刪除、代號即時查詢）
+      207 -├── dto/                            表單欄位與檢查規則、JSON  
+          -回應格式、清單的一列（含收盤價）                              
+      207 +├── dto/                            表單欄位與檢查規則、JSON  
+          +回應格式、清單的一列（含收盤價、盈虧）                        
+      208  ├── entity/                         持股（Holding）、行情快取
+           （Quote）、上市／上櫃（Market）
+      209  ├── exception/                      重複代號、找不到持股、查無
+           代號、官方連不上、無法判斷上市或上櫃
+      210  ├── quote/                          官方 API：批次與逐檔行情、
+           休市日表、判斷上市或上櫃（MarketResolver，
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● README.md 已照草稿寫入，三處都改了，其他檔案沒動。
+
+  你沒回覆上次的兩個確認點，所以我用預設做法：範例只放 2330 一個，收盤價是 0.00
+  的情況不寫進 README。
+
+  建議的 commit 訊息：
+
+  docs: 第4題 README 補上盈虧計算規則、總計算法與沒有收盤價時的顯示
+
+  接下來：
+  1. 你 commit README。
+  2. 合併回 master（一般 merge，不要 squash）後 push。
+  3. 在另一個資料夾重新 clone，照 README
+     從頭啟動一次，確認清單頁有總計和盈虧欄。
+  4. 用 /export 匯出這段對話放進 ai-log/，commit 前檢查有沒有密碼或 token。
+  5. 手動操作時發現問題就告訴我，修好後我再提 TESTLOG 草稿。
+
+✻ Baked for 20s · done 下午8:03
