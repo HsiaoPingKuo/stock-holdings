@@ -1,0 +1,1513 @@
+ ▐▛███▛█   Claude Code v2.1.329
+▝▜██████▀  Opus 5.5 · Claude Pro
+ ▝▝   ▝▝   C:\TKA102_JavaApp\Workspace_for_practice\stock-holdings
+
+
+> /clear                                                                        
+
+> 【規則】先讀 CLAUDE.md，全程遵守。先提方案等「同意」才動手。commit            
+  由我執行。V1～V6 不能改。                                                     
+                                                                                
+  【背景】                                                                      
+  朋友的第三輪驗收報告在專案根目錄「第三輪驗收報告.md」（不 commit，請確認它在  
+  .git/info/exclude 裡）。只讀第一節 G-01～G-03。這三個都是 Part A 第 3         
+  題的問題。                                                                    
+  注意：報告是在第 6 題第 4c 階段之前寫的。現在行情排程已經跟除權息同步共用     
+  MarketLocks（市場鎖）和 MarketRefreshState 的冷卻，除權息每天 07:30           
+  跑。修正時不能破壞這些。                                                      
+                                                                                
+  【開始前】從最新的 master 開分支 fix/q3-quote-refresh。                       
+                                                                                
+  【要做的】每個問題一個 commit，順序 G-01 → G-02 → G-03。                      
+                                                                                
+  G-01：並行寫入行情時，新資料被舊資料蓋掉                                      
+  - QuoteService.upsert()                                                       
+  讀既有的列時要鎖住，比較和寫入都在鎖住之後；鎖的順序固定（例如依代號排序）。  
+  - 兩個交易同時新增同一個新代號時，主鍵衝突要安全處理，不能讓整批失敗。        
+  - Quote.apply 現有的兩個日期規則（最新交易日、最近有成交日）要維持。          
+  - 等不到鎖時：背景排程下一輪再試；新增持股時的補查照現在的做法，失敗只記      
+  log、持股照常新增。                                                           
+                                                                                
+  G-02：當天的批次成功後，補查收盤價失敗就不會再試                              
+  - 把「這個市場今天的批次已經拿到」和「還有持股的收盤價待補查」分開記錄。      
+  - 拿到批次後不再重抓整個市場，但待補查的持股要繼續重試，直到補到或當天的排程  
+  結束（含 G-03 延長的時段）。                                                  
+  - 被擋、暫時失敗、確定沒有成交要分開處理，不能無限重試同一個查不到的代號。    
+                                                                                
+  G-03：15:40 以後就停止更新，違反「官方公布後一小時內要更新」                  
+  - 15:40                                                                       
+  之後，如果這個市場今天的批次還沒拿到（今天是交易日、不在冷卻中），繼續用低頻  
+  率查，間隔要保證「公布後一小時內」做得到；拿到就停止。請提出間隔和結束時間。  
+  - G-02 的待補查也適用這個延長的時段。                                         
+  - README 的排程說明要更新：內容先給我看，確認後再改。                         
+                                                                                
+  【測試：只做必要的】                                                          
+  - G-01：報告的情境（A 讀到 11/23 後暫停，B 寫入 11/25 並提交，A 再寫入        
+  11/24）→ 最後要是 11/25、120。用同步屏障控制交錯，不能靠 sleep。              
+  - G-02：今天的批次成功、第一次補查失敗、下一輪恢復 → 同一天補到價格。         
+  - G-03：週二 16:00、市場今天還沒拿到資料 → 排程繼續跑，不會等到隔天 13:40。   
+  - 現有測試的預期值不能改；非改不可時先停下來告訴我。                          
+    開發途中只跑相關的測試類別，用 ./mvnw -q；全部測試由我自己跑。              
+                                                                                
+  【回覆格式】                                                                  
+  - 提案：用表格，控制在 50 行內，只寫三個問題各自的做法、排程時間表（13:40     
+  之後每個時段做什麼）、會改的檔案、需要我決定的問題。                          
+  - 完成回報：只寫跟提案不一樣的地方、需要我決定的事、每個 commit 的訊息。      
+                                                                                
+  【規則再提醒】先提方案等「同意」；每個問題一個 commit，main 和 test 一起      
+  commit；不碰第 6 題的程式（MarketLocks、除權息排程除外，只能為了相容而調整）  
+  ；設計文件和驗收報告不 commit。                                               
+
+  Read 1 file, ran 4 shell commands (ctrl+o to expand)
+
+● 報告不在專案根目錄，我在 Downloads 找到
+  持股記帳專案_第三輪嚴格驗收_2ff2f68.md，先讀了它的
+  G-01～G-03。接下來讀行情相關的程式碼，再提方案。
+
+  Read 1 file, ran 5 shell commands (ctrl+o to expand)
+
+● 正在看現有測試和 README 排程段落，確認 G-03 改時段會不會動到既有預期值。
+
+  Ran 4 shell commands (ctrl+o to expand)
+
+● 已從最新的 master（740a2a1）開好
+  fix/q3-quote-refresh。先提醒一件事：報告不在專案根目錄，我讀的是
+  C:\Users\Ping\Downloads\持股記帳專案_第三輪嚴格驗收_2ff2f68.md。它不在 repo
+  裡，不會被 commit；如果你要搬到根目錄，我再把它加進 .git/info/exclude。
+
+  提案
+
+  ┌──────────┬───────────────────────────────────────────────────────────────┐
+  │   問題   │                             做法                              │
+  ├──────────┼───────────────────────────────────────────────────────────────┤
+  │          │ 在 QuoteRepository 加一個上鎖讀取的方法（SELECT … FOR UPDATE  │
+  │ G-01 鎖  │ ORDER BY code，讀到的列在交易結束前別人不能改）。upsert       │
+  │          │ 先把傳進來的行情依代號排序，鎖住既有的列之後才用 Quote.apply  │
+  │          │ 比較和寫入，apply 的兩個日期規則不動                          │
+  ├──────────┼───────────────────────────────────────────────────────────────┤
+  │          │ 改用 TransactionTemplate（在程式裡開交易的工具）。整批遇到主  │
+  │ G-01     │ 鍵衝突時，開一個新交易重做一次；這時那一列已經存在，會被鎖住  │
+  │ 新列衝突 │ 再比較。等不到鎖就直接丟例外：排程原本就會接住並記成          │
+  │          │ ERROR，下一輪再試；新增持股時本來就會接住，只記 log           │
+  ├──────────┼───────────────────────────────────────────────────────────────┤
+  │          │ MarketRefreshState 分成兩個狀態：「今天的批次已拿到」（原本的 │
+  │ G-02     │  done）和「還有待補查」（每輪補查後重新算）。done             │
+  │          │ 但還有待補查時，排程輪不重抓整個市場，只跑補查                │
+  ├──────────┼───────────────────────────────────────────────────────────────┤
+  │          │ FOUND／NOT_FOUND（確定沒有成交）→                             │
+  │ G-02     │ 今天不再查。UNAVAILABLE（暫時失敗）→                          │
+  │ 結果分類 │ 下一輪再試，同一檔每天最多 6 次。BLOCKED（被擋）→             │
+  │          │ 冷卻，不算次數                                                │
+  ├──────────┼───────────────────────────────────────────────────────────────┤
+  │          │ 15:40                                                         │
+  │ G-03     │ 之後，如果這個市場今天還沒拿到資料，或還有待補查，就繼續用低  │
+  │          │ 頻率查；拿到資料而且沒有待補查就停。休市日、冷卻、週末照舊不  │
+  │          │ 查                                                            │
+  └──────────┴───────────────────────────────────────────────────────────────┘
+
+  排程時間表（每個市場各自算，台北時間，週一到週五）
+
+  ┌─────────────────┬─────────────────┬─────────────────┬─────────────────┐
+  │      時段       │ 這個市場今天還  │ 已拿到但還有待  │ 已拿到、也沒有  │
+  │                 │     沒拿到      │      補查       │     待補查      │
+  ├─────────────────┼─────────────────┼─────────────────┼─────────────────┤
+  │                 │ 約每 60         │ 每 10           │ 停到下一個平日  │
+  │ 13:40～14:30    │ 秒（逐檔模式每  │ 分鐘只跑補查    │ 13:40           │
+  │                 │ 10 分鐘）       │                 │                 │
+  ├─────────────────┼─────────────────┼─────────────────┼─────────────────┤
+  │ 14:30～15:40    │ 每 10 分鐘      │ 每 10           │ 同上            │
+  │                 │                 │ 分鐘只跑補查    │                 │
+  ├─────────────────┼─────────────────┼─────────────────┼─────────────────┤
+  │ 15:40～23:40（  │ 每 20 分鐘      │ 每 20           │ 同上            │
+  │ 新）            │                 │ 分鐘只跑補查    │                 │
+  ├─────────────────┼─────────────────┼─────────────────┼─────────────────┤
+  │ 23:40 之後      │ 停到下一個平日  │ 同左            │ 同上            │
+  │                 │ 13:40           │                 │                 │
+  └─────────────────┴─────────────────┴─────────────────┴─────────────────┘
+
+  - 為什麼是 20 分鐘：官方在兩輪之間公布，最晚約 20
+    分鐘加上一輪的執行時間就會拿到。就算中間有一輪失敗，也還在 40
+    多分鐘內，符合「一小時內」。
+  - 每個市場每小時只多 3 個請求。颱風假（休市日表上沒有）整晚查到 23:40 也只多約
+    24 個請求。
+  - 除權息 07:30 不在這個時段，MarketLocks 和冷卻的用法都不變。
+
+  會改的檔案
+
+  ┌────────┬───────────────────────────────────────┬─────────────────────────┐
+  │ commit │                 main                  │          test           │
+  ├────────┼───────────────────────────────────────┼─────────────────────────┤
+  │        │                                       │ 新增 G-01               │
+  │ G-01   │ QuoteService、QuoteRepository         │ 交錯測試（放在          │
+  │        │                                       │ QuoteServiceTest        │
+  │        │                                       │ 或另開一個類別）        │
+  ├────────┼───────────────────────────────────────┼─────────────────────────┤
+  │ G-02   │ MarketRefreshState、QuoteRefreshServi │ QuoteRefreshServiceTest │
+  │        │ ce、RefreshSchedule                   │  新增 1 個              │
+  ├────────┼───────────────────────────────────────┼─────────────────────────┤
+  │        │ RefreshSchedule、QuoteProperties、app │ RefreshScheduleTest     │
+  │ G-03   │ lication.properties（新增 late-end-ti │ 新增 1                  │
+  │        │ me=23:40、late-interval=20m）         │ 個、RefreshTestSupport  │
+  │        │                                       │ 補建構參數              │
+  └────────┴───────────────────────────────────────┴─────────────────────────┘
+
+  - G-01 測試怎麼控制交錯：A 上鎖讀到 11/23 後放行 B，接著最多等 1 秒看 B
+    有沒有寫完。修好後 B 會卡在鎖上，等不到；A 寫入 11/24 提交後，B
+    才拿到鎖並寫入 11/25。這 1 秒只是等待上限，不決定執行順序；即使 B
+    先寫完，最後也一定要是 11/25、120，所以結果不靠時間。
+
+  需要你決定
+
+  1. G-03 一定會改到 4 個現有測試的預期值（RefreshScheduleTest）。這 4
+     個測的正是「還沒拿到資料、過了 15:40 就排到隔天」，也就是 G-03 本身：
+     - 下一輪會超過1540_改到隔天1340：15:35 → 原本隔天 13:40，改成 15:45
+     - 到了1540停止_下一輪是隔天1340：改成繼續跑，下一輪 16:00
+     - 週六週日…裡「週五 15:40 → 週一」那一行：改成週五 16:00
+     - 冷卻結束時已過1540_排到隔天1340：改成排在冷卻結束時
+
+     建議 A：改預期值和測試名稱，讓測試反映新規則。B：測試用的設定把延長時段關掉
+     ，舊測試就不用改，但這樣測的設定跟正式環境不一樣，不建議。
+  2. 延長時段要到 23:40，還是比較短（例如
+     20:00）？時段越短，越晚公布的情況越可能超過一小時。
+  3. 暫時失敗每天最多重試 6 次，可以嗎？
+
+  建議（未實作）
+  - 當天的市場已經停止更新後才新增持股，如果新增時補查收盤價失敗，要等到隔天才會
+    補上。這不是這三個問題的範圍。
+
+✻ Worked for 2m 21s · done 上午5:35
+
+> 同意。報告放在下載資料夾就好，不用搬。                                        
+                                                                                
+  1. 選 A：RefreshScheduleTest 那 4 個測試的預期值和名稱照新規則改（15:35 →     
+  15:45、15:40 → 16:00、週五 15:40 → 週五 16:00、冷卻結束時已過 15:40 →         
+  排在冷卻結束時）。這 4 個是我同意的修改，其他測試的預期值不能改。             
+  2. 延長時段到 23:40，間隔 20 分鐘。                                           
+  3. 暫時失敗每天最多重試 6 次。                                                
+     「當天停止更新後才新增持股」的建議這次不做。                               
+                                                                                
+  完成後只回報：跟提案不一樣的地方、需要我決定的事、三個 commit                 
+  的訊息。全部測試由我自己跑。README 的排程說明草稿也一起附上。                 
+
+● 開始實作 G-01。先看現有的 QuoteServiceTest，以及有沒有地方直接 new 
+  QuoteService(...)。
+
+  Ran 3 shell commands (ctrl+o to expand)
+
+● 先寫 G-01：QuoteRepository 加上鎖讀取，QuoteService.upsert
+  改成排序、鎖住、遇到主鍵衝突重試一次。
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\repository\QuoteRepository.j
+       ava)
+  ⎿  Added 17 lines
+       1  package io.hsiaopingkuo.stockholdings.repository;
+       2 
+       3 +import java.util.Collection;                                   
+       4 +import java.util.List;                                         
+       5 +                                                               
+       6  import org.springframework.data.jpa.repository.JpaRepository;
+       7 +import org.springframework.data.jpa.repository.Lock;           
+       8 +import org.springframework.data.jpa.repository.Query;          
+       9 +import org.springframework.data.repository.query.Param;        
+      10 
+      11  import io.hsiaopingkuo.stockholdings.entity.Quote;
+      12 +import jakarta.persistence.LockModeType;                       
+      13 
+      14  /** 行情快取的資料存取；主鍵是代號（字串）。 */
+      15  public interface QuoteRepository extends JpaRepository<Quote, S
+          tring> {
+      16 +                                                               
+      17 +  /**                                                          
+      18 +   * G-01：寫入行情前先鎖住已存在的列（SELECT … FOR UPDATE）， 
+         +交易結束才放開。                                               
+      19 +   * 背景排程和新增持股的補查可能同時寫同一檔；不鎖的話，先讀到
+         +舊資料的一方最後提交，會把對方剛寫的新資料蓋掉。               
+      20 +   * 依代號排序：每一方都照同樣的順序上鎖，兩批互相等對方的情況
+         +（死結）才不會發生。                                           
+      21 +   * 等不到鎖時（H2 預設等 2 秒）丟 PessimisticLockingFailureEx
+         +ception。必須在交易裡呼叫。                                    
+      22 +   */                                                          
+      23 +  @Lock(LockModeType.PESSIMISTIC_WRITE)                        
+      24 +  @Query("select q from Quote q where q.code in :codes order by
+         + q.code")                                                      
+      25 +  List<Quote> findAllByCodeForUpdate(@Param("codes") Collection
+         +<String> codes);                                               
+      26  }
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\service\QuoteService.java)
+  ⎿  Added 50 lines, removed 6 lines
+       4  import java.time.LocalDateTime;
+       5  import java.util.ArrayList;
+       6  import java.util.Collection;
+       7 +import java.util.Comparator;                                   
+       8  import java.util.HashMap;
+       9  import java.util.List;
+      10 +import java.util.Locale;                                       
+      11  import java.util.Map;
+      12  import java.util.Optional;
+      13 
+      14 +import org.slf4j.Logger;                                       
+      15 +import org.slf4j.LoggerFactory;                                
+      16 +import org.springframework.dao.DataIntegrityViolationException;
+      17  import org.springframework.stereotype.Service;
+      18 +import org.springframework.transaction.PlatformTransactionManag
+         +er;                                                            
+      19 +import org.springframework.transaction.annotation.Propagation; 
+      20  import org.springframework.transaction.annotation.Transactional
+          ;
+      21 +import org.springframework.transaction.support.TransactionTempl
+         +ate;                                                           
+      22 
+      23  import io.hsiaopingkuo.stockholdings.entity.Quote;
+      24  import io.hsiaopingkuo.stockholdings.quote.DailyQuote;
+     ...
+      29  @Transactional(readOnly = true)
+      30  public class QuoteService {
+      31 
+      32 +  private static final Logger log = LoggerFactory.getLogger(Quo
+         +teService.class);                                              
+      33 +                                                               
+      34 +  // V3__create_quote.sql 的主鍵約束名稱；H2 的錯誤訊息裡會出現
+         +它（大寫）                                                     
+      35 +  private static final String PRIMARY_KEY_CONSTRAINT = "PK_QUOT
+         +E";                                                            
+      36 +  // 主鍵衝突時整批重做一次就夠：重做時那一列已經存在，會被鎖住
+         +再比較，不會再衝突                                             
+      37 +  private static final int MAX_ATTEMPTS = 2;                   
+      38 +                                                               
+      39    private final QuoteRepository quoteRepository;
+      40    private final Clock clock;
+      41 +  // 交易由 TransactionTemplate 在程式裡開：主鍵衝突時要在交易 
+         +外接住例外，再開一個新交易重做                                 
+      42 +  private final TransactionTemplate writeTransaction;          
+      43 
+      27 -  public QuoteService(QuoteRepository quoteRepository, Clock cl
+         -ock) {                                                         
+      44 +  public QuoteService(QuoteRepository quoteRepository, Clock cl
+         +ock, PlatformTransactionManager transactionManager) {          
+      45      this.quoteRepository = quoteRepository;
+      46      this.clock = clock;
+      47 +    this.writeTransaction = new TransactionTemplate(transaction
+         +Manager);                                                      
+      48    }
+      49 
+      50    public Optional<Quote> findByCode(String code) {
+     ...
+      53 
+      54    /**
+      55     * 寫入一批行情（批次查詢一次約 1000～1400 筆）。
+      38 -   * 先一次把已存在的列讀出來，再逐筆套用規則：沒有的新增，已有
+         -的交給 Quote.apply 判斷要不要更新。                            
+      56 +   * 先鎖住已存在的列，再逐筆套用規則：沒有的新增，已有的交給 Q
+         +uote.apply 判斷要不要更新。                                    
+      57     * 不在這一批裡的代號完全不動。
+      58     *
+      59 +   * 兩方同時新增同一個新代號時（沒有列可以鎖），後提交的一方會
+         +撞到主鍵：整批換一個新交易重做一次，                           
+      60 +   * 不讓一千多筆因為一筆衝突全部失敗。等不到鎖則直接丟出，由呼
+         +叫端決定（排程下一輪再試、新增持股只記 log）。                 
+      61 +   *                                                           
+      62 +   * SUPPORTS：自己不開交易（類別預設的唯讀交易會讓寫入不送出）
+         +，交給 TransactionTemplate 開；                                
+      63 +   * 呼叫端已經在交易裡時（例如測試）就加入那個交易。          
+      64 +   *                                                           
+      65     * @return 新增或真的有變動的筆數
+      66     */
+      43 -  @Transactional                                               
+      67 +  @Transactional(propagation = Propagation.SUPPORTS)           
+      68    public int upsert(Collection<DailyQuote> quotes) {
+      69      if (quotes.isEmpty()) {
+      70        return 0;
+      71      }
+      72 +    // 依代號排序：新增的列也照這個順序寫入，和上鎖的順序一致  
+      73 +    List<DailyQuote> sorted = quotes.stream().sorted(Comparator
+         +.comparing(DailyQuote::code)).toList();                        
+      74 +    for (int attempt = 1;; attempt++) {                        
+      75 +      try {                                                    
+      76 +        return writeTransaction.execute(status -> upsertLocked(
+         +sorted));                                                      
+      77 +      } catch (DataIntegrityViolationException e) {            
+      78 +        if (!isPrimaryKeyViolation(e) || attempt >= MAX_ATTEMPT
+         +S) {                                                           
+      79 +          throw e;                                             
+      80 +        }                                                      
+      81 +        log.info("寫入行情時別人剛好新增了同一個代號，整批重做 
+         +一次");                                                        
+      82 +      }                                                        
+      83 +    }                                                          
+      84 +  }                                                            
+      85 +                                                               
+      86 +  private int upsertLocked(List<DailyQuote> sorted) {          
+      87      LocalDateTime now = LocalDateTime.now(clock);
+      49 -    // 一次查回來，不要每筆查一次資料庫                        
+      88 +    // 一次查回來並上鎖，不要每筆查一次資料庫                  
+      89      Map<String, Quote> existing = new HashMap<>();
+      51 -    quoteRepository.findAllById(quotes.stream().map(DailyQuote:
+         -:code).toList())                                               
+      90 +    quoteRepository.findAllByCodeForUpdate(sorted.stream().map(
+         +DailyQuote::code).distinct().toList())                         
+      91          .forEach(quote -> existing.put(quote.getCode(), quote))
+          ;
+      92 
+      93      List<Quote> created = new ArrayList<>();
+      94      int changed = 0;
+      56 -    for (DailyQuote incoming : quotes) {                       
+      95 +    for (DailyQuote incoming : sorted) {                       
+      96        Quote quote = existing.get(incoming.code());
+      97        if (quote == null) {
+      98          quote = new Quote(incoming, now);
+     ...
+      108      quoteRepository.saveAll(created);
+      109      return changed;
+      110    }
+      111 +                                                              
+      112 +  private static boolean isPrimaryKeyViolation(DataIntegrityVi
+          +olationException e) {                                         
+      113 +    String message = e.getMostSpecificCause().getMessage();   
+      114 +    return message != null && message.toUpperCase(Locale.ROOT)
+          +.contains(PRIMARY_KEY_CONSTRAINT);                            
+      115 +  }                                                           
+      116  }
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● Write(src\test\java\io\hsiaopingkuo\stockholdings\service\QuoteServiceConcurre
+       ncyTest.java)
+  ⎿  Wrote 110 lines to src\test\java\io\hsiaopingkuo\stockholdings\service
+     \QuoteServiceConcurrencyTest.java
+       1 package io.hsiaopingkuo.stockholdings.service;
+       2 
+       3 import static org.assertj.core.api.Assertions.assertThat;
+       4 
+       5 import java.lang.reflect.InvocationTargetException;
+       6 import java.lang.reflect.Proxy;
+       7 import java.math.BigDecimal;
+       8 import java.time.Clock;
+       9 import java.time.Instant;
+      10 import java.time.LocalDate;
+     … +100 lines (ctrl+o to expand)
+
+  Ran 1 shell command · 1 failed (ctrl+o to expand)
+
+● 輸出被 log 洗掉了，改看 surefire 報告的結果。
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● 4 個類別都通過。再確認一下這個測試真的抓得到 bug：暫時拿掉 @Lock
+  跑一次，預期會失敗。
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● G-01 完成並已 git add（只暫存，沒有 commit）。拿掉鎖時新測試會失敗（but was: 
+  2026-11-24），加回鎖就通過。接著做 G-02，先看現有補查測試的寫法。
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● Now editing MarketRefreshState for G-02.
+
+  Read 1 file (ctrl+o to expand)
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\service\MarketRefreshState.
+        java)
+  ⎿  Added 2 lines
+       2 
+       3  import java.time.Instant;
+       4  import java.time.LocalDate;
+       5 +import java.util.HashMap;                                      
+       6  import java.util.HashSet;
+       7 +import java.util.Map;                                          
+       8  import java.util.Set;
+       9 
+      10  import io.hsiaopingkuo.stockholdings.entity.Market;
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\service\MarketRefreshState.
+        java)
+  ⎿  Added 9 lines, removed 1 line
+      18   */
+      19  public class MarketRefreshState {
+      20 
+      21 +  /** 補查收盤價時官方「暫時查不了」：同一檔一天最多試這麼多次 
+         +，之後當天不再查（G-02）。 */                                  
+      22 +  public static final int MAX_CLOSE_BACKFILL_UNAVAILABLE_PER_DA
+         +Y = 6;                                                         
+      23 +                                                               
+      24    private final Market market;
+      22 -  /** 哪一天已經拿到當天的資料（那天不用再查）。 */            
+      25 +  /** 哪一天已經拿到當天的資料（那天不用再抓整個市場）。 */    
+      26    private volatile LocalDate doneDate;
+      27 +  /**                                                          
+      28 +   * G-02：哪一天還有持股的收盤價待補查。和 doneDate 分開記：  
+      29 +   * 拿到當天的批次後不再重抓整個市場，但待補查的持股要繼續重試
+         +。每一輪補查完重新計算。                                       
+      30 +   */                                                          
+      31 +  private volatile LocalDate closeBackfillPendingDate;         
+      32    /** 上一輪批次失敗、改用逐檔：下一輪間隔要拉長。 */
+      33    private volatile boolean usedPerStock;
+      34    /** 被擋時，冷卻到什麼時候；null 代表沒有冷卻。 */
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\service\MarketRefreshState.
+        java)
+  ⎿  Added 2 lines
+      40     */
+      41    private LocalDate closeBackfillDate;
+      42    private final Set<String> closeBackfilledCodes = new HashSet<
+          >();
+      43 +  /** 同一天裡，每個代號補查時遇到「暫時查不了」的次數；和上面 
+         +的代號一起在換日時清空。 */                                    
+      44 +  private final Map<String, Integer> closeBackfillUnavailableCo
+         +unts = new HashMap<>();                                        
+      45 
+      46    public MarketRefreshState(Market market) {
+      47      this.market = market;
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\service\MarketRefreshState.
+        java)
+  ⎿  Added 10 lines
+      59      this.doneDate = date;
+      60    }
+      61 
+      62 +  /** 這一天還有沒有持股的收盤價待補查。 */                    
+      63 +  public boolean hasPendingCloseBackfill(LocalDate date) {     
+      64 +    return date.equals(closeBackfillPendingDate);              
+      65 +  }                                                            
+      66 +                                                               
+      67 +  /** 補查完重新計算的結果：pending 是 true 代表還有待補查，排 
+         +程要繼續跑。 */                                                
+      68 +  public void setPendingCloseBackfill(LocalDate date, boolean p
+         +ending) {                                                      
+      69 +    this.closeBackfillPendingDate = pending ? date : null;     
+      70 +  }                                                            
+      71 +                                                               
+      72    public boolean usedPerStock() {
+      73      return usedPerStock;
+      74    }
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\service\MarketRefreshState.
+        java)
+  ⎿  Added 17 lines
+      101      closeBackfilledCodes.add(code);
+      102    }
+      103 
+      104 +  /**                                                         
+      105 +   * 今天還要不要補查這個代號：已經有結果（FOUND、NOT_FOUND） 
+          +，或「暫時查不了」已達上限，就不再查。                        
+      106 +   * 有上限才不會整天重試同一個一直查不到的代號。             
+      107 +   */                                                         
+      108 +  public synchronized boolean isCloseBackfillSettled(String co
+          +de, LocalDate today) {                                        
+      109 +    resetIfNewDay(today);                                     
+      110 +    return closeBackfilledCodes.contains(code) || closeBackfil
+          +lUnavailableCounts.getOrDefault(code,                         
+      111 +        0) >= MAX_CLOSE_BACKFILL_UNAVAILABLE_PER_DAY;         
+      112 +  }                                                           
+      113 +                                                              
+      114 +  /** 記一次「暫時查不了」，回傳今天累計幾次。 */             
+      115 +  public synchronized int recordCloseBackfillUnavailable(Strin
+          +g code, LocalDate today) {                                    
+      116 +    resetIfNewDay(today);                                     
+      117 +    return closeBackfillUnavailableCounts.merge(code, 1, Integ
+          +er::sum);                                                     
+      118 +  }                                                           
+      119 +                                                              
+      120    /** 只記今天：日期換了就清空，隔天每一檔都會再補查一次。 */
+      121    private void resetIfNewDay(LocalDate today) {
+      122      if (!today.equals(closeBackfillDate)) {
+      123        closeBackfilledCodes.clear();
+      124 +      closeBackfillUnavailableCounts.clear();                 
+      125        closeBackfillDate = today;
+      126      }
+      127    }
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\service\MarketRefreshState.
+        java)
+  ⎿  Removed 6 lines
+       90      this.cooldownUntil = until;
+       91    }
+       92 
+       93 -  /** 這個代號今天是不是已經補查過收盤價。 */                 
+       94 -  public synchronized boolean isCloseBackfilled(String code, L
+          -ocalDate today) {                                             
+       95 -    resetIfNewDay(today);                                     
+       96 -    return closeBackfilledCodes.contains(code);               
+       97 -  }                                                           
+       98 -                                                              
+       93    public synchronized void markCloseBackfilled(String code, Lo
+           calDate today) {
+       94      resetIfNewDay(today);
+       95      closeBackfilledCodes.add(code);
+
+● Now QuoteRefreshService: new mode, the "done but pending" branch, and backfill
+  accounting.
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\service\QuoteRefreshService
+        .java)
+  ⎿  Added 1 line, removed 1 line
+      60    /** 這一輪最後用什麼方式、結果如何（寫在 log 裡，也給測試檢查
+          ）。 */
+      61    public enum Mode {
+      62      BATCH("批次"), PER_STOCK("逐檔"), NO_DATA("尚無資料"), BLOC
+          KED("被擋，開始冷卻"), SKIPPED("略過"),
+      63 -    ERROR("發生例外");                                         
+      63 +    CLOSE_BACKFILL("今天已拿到資料，只補查收盤價"), ERROR("發生
+         +例外");                                                        
+      64 
+      65      private final String label;
+      66 
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\service\QuoteRefreshService
+        .java)
+  ⎿  Added 5 lines, removed 1 line
+      132          // 排程本來就不會在冷卻期間排這一輪；這裡再擋一次，確
+           保冷卻期間絕對不發請求
+      133          result = new RoundResult(market, trigger, Mode.SKIPPED
+           , 0, null);
+      134        } else if (trigger == Trigger.SCHEDULED && state.isDoneF
+           or(today)) {
+      135 -        result = new RoundResult(market, trigger, Mode.SKIPPED
+          -, 0, null);                                                   
+      135 +        // G-02：今天的資料已經拿到，不再抓整個市場；但還有持 
+          +股的收盤價待補查時，只做補查                                  
+      136 +        result = state.hasPendingCloseBackfill(today)         
+      137 +            ? new RoundResult(market, trigger, Mode.CLOSE_BACK
+          +FILL,                                                         
+      138 +                backfillMissingClose(market, state, today), nu
+          +ll)                                                           
+      139 +            : new RoundResult(market, trigger, Mode.SKIPPED, 0
+          +, null);                                                      
+      140        } else if (trigger == Trigger.STARTUP) {
+      141          result = startupFetch(market, state, today);
+      142        } else {
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\service\QuoteRefreshService
+        .java)
+  ⎿  Added 40 lines, removed 24 lines
+      263     * 快取沒有這一列也要補：F-01 決定新增時寫快取失敗仍照常新增
+           ，缺的行情要靠這裡補上。
+      264     *
+      265     * 遵守逐檔的規則：一次一個請求、每個請求前隨機等一下、被擋
+           就冷卻並停止。
+      266 -   * 查到 FOUND 或 NOT_FOUND 才記成「今天已補查」（長期沒成交 
+          -的股票才不會每輪重查）；                                      
+      267 -   * UNAVAILABLE 可能只是暫時的，不記，下一輪再試。           
+      266 +   * 三種結果分開處理（G-02）：                               
+      267 +   * - FOUND 或 NOT_FOUND（這個月和上個月都沒成交）：記成「今 
+          +天已補查」，長期沒成交的股票才不會每輪重查                    
+      268 +   * - UNAVAILABLE（暫時查不了）：下一輪再試，同一檔一天最多 6
+          + 次                                                           
+      269 +   * - BLOCKED（被擋）：冷卻，不算次數（冷卻結束後再試）      
+      270 +   * 結束時（包括被擋提早結束）重新計算「還有沒有待補查」，排 
+          +程才知道今天拿到資料後還要不要繼續跑。                        
+      271     *
+      272     * @return 新增或真的有變動的 quote 筆數
+      273     */
+     ...
+      275        throws InterruptedException {
+      276      List<String> heldCodes = holdingRepository.findByMarketOrd
+           erByCodeAsc(market).stream()
+      277          .map(Holding::getCode).toList();
+      275 -    List<String> targets = codesWithoutClose(heldCodes).stream
+          -()                                                            
+      276 -        .filter(code -> !state.isCloseBackfilled(code, today))
+      277 -        .toList();                                            
+      278 +    List<String> targets = pendingCloseBackfill(heldCodes, sta
+          +te, today);                                                   
+      279 
+      280      int updated = 0;
+      280 -    for (String code : targets) {                             
+      281 -      // 第一個請求前也要等：前一刻剛向同一台主機送過批次請求 
+      282 -      pauseBetweenRequests();                                 
+      283 -      StockLookup lookup = stockClients.get(market).lookupLate
+          -st(code, today);                                              
+      284 -      switch (lookup.status()) {                              
+      285 -        case FOUND -> {                                       
+      286 -          // 寫入照 Quote.apply 的規則：舊資料不會蓋掉新資料  
+      287 -          updated += quoteService.upsert(List.of(lookup.toDail
+          -yQuote(code)));                                               
+      288 -          state.markCloseBackfilled(code, today);             
+      281 +    try {                                                     
+      282 +      for (String code : targets) {                           
+      283 +        // 第一個請求前也要等：前一刻剛向同一台主機送過批次請 
+          +求                                                            
+      284 +        pauseBetweenRequests();                               
+      285 +        StockLookup lookup = stockClients.get(market).lookupLa
+          +test(code, today);                                            
+      286 +        switch (lookup.status()) {                            
+      287 +          case FOUND -> {                                     
+      288 +            // 寫入照 Quote.apply 的規則：舊資料不會蓋掉新資料
+      289 +            updated += quoteService.upsert(List.of(lookup.toDa
+          +ilyQuote(code)));                                             
+      290 +            state.markCloseBackfilled(code, today);           
+      291 +          }                                                   
+      292 +          case NOT_FOUND -> {                                 
+      293 +            log.warn("補查收盤價 {} {}：這個月和上個月都查不到
+          +", market, code);                                             
+      294 +            state.markCloseBackfilled(code, today);           
+      295 +          }                                                   
+      296 +          case BLOCKED -> {                                   
+      297 +            // 被擋：剩下的代號這一輪都不查了                 
+      298 +            startCooldown(state);                             
+      299 +            return updated;                                   
+      300 +          }                                                   
+      301 +          default -> {                                        
+      302 +            int times = state.recordCloseBackfillUnavailable(c
+          +ode, today);                                                  
+      303 +            log.warn("補查收盤價 {} {}：官方暫時查不了（今天第
+          + {} 次，上限 {} 次）", market, code, times,                   
+      304 +                MarketRefreshState.MAX_CLOSE_BACKFILL_UNAVAILA
+          +BLE_PER_DAY);                                                 
+      305 +          }                                                   
+      306          }
+      290 -        case NOT_FOUND -> {                                   
+      291 -          log.warn("補查收盤價 {} {}：這個月和上個月都查不到",
+          - market, code);                                               
+      292 -          state.markCloseBackfilled(code, today);             
+      293 -        }                                                     
+      294 -        case BLOCKED -> {                                     
+      295 -          // 被擋：剩下的代號這一輪都不查了                   
+      296 -          startCooldown(state);                               
+      297 -          return updated;                                     
+      298 -        }                                                     
+      299 -        default -> log.warn("補查收盤價 {} {}：官方暫時查不了 
+          -，下一輪再試", market, code);                                 
+      307        }
+      308 +    } finally {                                               
+      309 +      state.setPendingCloseBackfill(today, !pendingCloseBackfi
+          +ll(heldCodes, state, today).isEmpty());                       
+      310      }
+      311      if (!targets.isEmpty()) {
+      312        log.info("補查收盤價 市場={} 補查={}檔 更新={}筆", marke
+           t, targets.size(), updated);
+     ...
+      314      return updated;
+      315    }
+      316 
+      317 +  /** 有人持有、快取沒有收盤價，而且今天還要再查的代號（還沒有
+          +結果、暫時查不了也還沒達上限）。 */                           
+      318 +  private List<String> pendingCloseBackfill(List<String> heldC
+          +odes, MarketRefreshState state, LocalDate today) {            
+      319 +    return codesWithoutClose(heldCodes).stream()              
+      320 +        .filter(code -> !state.isCloseBackfillSettled(code, to
+          +day))                                                         
+      321 +        .toList();                                            
+      322 +  }                                                           
+      323 +                                                              
+      324    /** 快取沒有這一列，或有這一列但收盤價是 null 的代號。 */
+      325    private List<String> codesWithoutClose(List<String> codes) {
+      326      Set<String> withClose = new HashSet<>();
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\service\QuoteRefreshService
+        .java)
+  ⎿  Added 1 line
+      37   *    - 失敗（404、500、逾時、格式不符）→ ②
+      38   * ①-b 補查收盤價：批次只有那一天的資料，那天沒成交的股票沒有收
+          盤價；
+      39   *    對有人持有、但快取沒有這一列或沒有收盤價的代號，逐檔往前
+          找最近一個有成交日的收盤價
+      40 + *    （G-02：這個市場今天已完成、但還有待補查時，排程輪只做這 
+         +一步，不再抓整個市場）                                         
+      41   * ② 逐檔：只查這個市場「有人持有、而且快取還沒有今天資料」的代
+          號，一次一個，請求之間隨機等一下
+      42   * ③ 補舊持股的市場（market 是 NULL 的）
+      43   * 任何例外都在這裡接住、寫 log，不會往外丟，排程不會因此停止。
+
+● Now RefreshSchedule (G-02 part only: keep running when done-but-pending).
+
+  Read 1 file, ran 2 shell commands (ctrl+o to expand)
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\service\RefreshSchedule.jav
+        a)
+  ⎿  Added 2 lines, removed 1 line
+      16   * - 週一到週五 13:40～14:30：約每 60 秒一輪（60 秒 ± 0～5 秒，
+          毫秒級隨機）
+      17   * - 14:30～15:40：每 10 分鐘一輪（應付官方延遲公布）
+      18   * - 上一輪批次失敗改用逐檔：這個市場改成每 10 分鐘一輪（逐檔請
+          求多，太頻繁容易被擋）
+      19 + * - 今天已拿到資料、但還有持股的收盤價待補查（G-02）：每 10 分
+         +鐘一輪，只做補查                                               
+      20   * - 冷卻中：等冷卻結束
+      20 - * - 今天已拿到資料、已過 15:40、週末：下一個平日 13:40        
+      21 + * - 今天已拿到資料而且沒有待補查、已過 15:40、週末：下一個平日
+         + 13:40                                                         
+      22   */
+      23  public class RefreshSchedule {
+      24 
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\service\RefreshSchedule.jav
+        a)
+  ⎿  Added 2 lines, removed 2 lines
+      32 
+      33    /** 現在這個時間，這個市場的排程輪該不該執行（13:40 前、15:40
+           後、週末、今天已完成都不執行）。 */
+      34    public boolean shouldRun(ZonedDateTime now, MarketRefreshStat
+          e state) {
+      35 -    return isWeekday(now.toLocalDate()) && inWindow(now.toLocal
+         -Time()) && !state.isDoneFor(now.toLocalDate())                 
+      36 -        && !state.isCoolingDown(now.toInstant());              
+      35 +    return isWeekday(now.toLocalDate()) && inWindow(now.toLocal
+         +Time())                                                        
+      36 +        && !finishedToday(state, now.toLocalDate()) && !state.i
+         +sCoolingDown(now.toInstant());                                 
+      37    }
+      38 
+      39    /** 這一輪結束後，下一輪排在什麼時候。 */
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\service\RefreshSchedule.jav
+        a)
+  ⎿  Added 1 line, removed 1 line
+      44      }
+      45      LocalDate today = now.toLocalDate();
+      46      LocalTime time = now.toLocalTime();
+      47 -    if (!isWeekday(today) || state.isDoneFor(today) || !time.is
+         -Before(settings.endTime())) {                                  
+      47 +    if (!isWeekday(today) || finishedToday(state, today) || !ti
+         +me.isBefore(settings.endTime())) {                             
+      48        return nextWeekdayStart(today.plusDays(1), now);
+      49      }
+      50      if (time.isBefore(settings.startTime())) {
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\service\RefreshSchedule.jav
+        a)
+  ⎿  Added 2 lines, removed 1 line
+      50      if (time.isBefore(settings.startTime())) {
+      51        return now.with(settings.startTime());
+      52      }
+      53 -    boolean slow = !time.isBefore(settings.slowdownTime()) || s
+         -tate.usedPerStock();                                           
+      53 +    // 只剩補查收盤價時（今天已拿到資料）也用慢速：補查是逐檔請
+         +求，太頻繁容易被擋                                             
+      54 +    boolean slow = !time.isBefore(settings.slowdownTime()) || s
+         +tate.usedPerStock() || state.isDoneFor(today);                 
+      55      Duration interval = slow ? settings.slowInterval() : fastIn
+          tervalWithJitter();
+      56      return withinWindowOrNextDay(now.plus(interval));
+      57    }
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\service\RefreshSchedule.jav
+        a)
+  ⎿  Added 5 lines
+      86      return day.atTime(settings.startTime()).atZone(zoneSource.g
+          etZone());
+      87    }
+      88 
+      89 +  /** 今天的資料拿到了，也沒有持股的收盤價待補查：這個市場今天 
+         +不用再跑（G-02）。 */                                          
+      90 +  private static boolean finishedToday(MarketRefreshState state
+         +, LocalDate today) {                                           
+      91 +    return state.isDoneFor(today) && !state.hasPendingCloseBack
+         +fill(today);                                                   
+      92 +  }                                                            
+      93 +                                                               
+      94    private boolean inWindow(LocalTime time) {
+      95      return !time.isBefore(settings.startTime()) && time.isBefor
+          e(settings.endTime());
+      96    }
+
+● Add the G-02 regression test after the existing "暫時查不了" case.
+
+● Update(src\test\java\io\hsiaopingkuo\stockholdings\service\QuoteRefreshService
+        Test.java)
+  ⎿  Added 26 lines
+      465    }
+      466 
+      467    @Test
+      468 +  void 今天的批次成功_第一次補查失敗_下一輪只補查不重抓批次_同
+          +一天補到價格() {                                              
+      469 +    // G-02：上一個案例回的是昨天的批次，不會「今天完成」；這 
+          +裡回今天的批次，市場當天就完成                                
+      470 +    hold("2363", Market.TWSE);                                
+      471 +    twseBatch.answer = date -> batchOf(date, Market.TWSE, "233
+          +0", "2050.00", "2363", "--");                                 
+      472 +    twseStock.answer = code -> StockLookup.unavailable(Market.
+          +TWSE);                                                        
+      473 +                                                              
+      474 +    var first = service.runRound(Market.TWSE, Trigger.SCHEDULE
+          +D);                                                           
+      475 +    assertThat(first.mode()).isEqualTo(Mode.BATCH);           
+      476 +    assertThat(service.state(Market.TWSE).isDoneFor(TODAY)).is
+          +True();                                                       
+      477 +    assertThat(service.state(Market.TWSE).hasPendingCloseBackf
+          +ill(TODAY)).isTrue();                                         
+      478 +                                                              
+      479 +    twseStock.answer = code -> noTradeOn1123(Market.TWSE);    
+      480 +    clock.advance(Duration.ofMinutes(10));                    
+      481 +    var second = service.runRound(Market.TWSE, Trigger.SCHEDUL
+          +ED);                                                          
+      482 +                                                              
+      483 +    assertThat(second.mode()).isEqualTo(Mode.CLOSE_BACKFILL); 
+      484 +    assertThat(twseBatch.asked).as("拿到今天的批次後不再抓整個
+          +市場").containsExactly(TODAY);                                
+      485 +    assertThat(twseStock.asked).containsExactly("2363", "2363"
+          +);                                                            
+      486 +    assertThat(quoteRepository.findById("2363").orElseThrow().
+          +getClosePrice()).isEqualByComparingTo("10.00");               
+      487 +    assertThat(service.state(Market.TWSE).hasPendingCloseBackf
+          +ill(TODAY)).isFalse();                                        
+      488 +                                                              
+      489 +    clock.advance(Duration.ofMinutes(10));                    
+      490 +    assertThat(service.runRound(Market.TWSE, Trigger.SCHEDULED
+          +).mode()).as("補到之後就停").isEqualTo(Mode.SKIPPED);         
+      491 +  }                                                           
+      492 +                                                              
+      493 +  @Test                                                       
+      494    void 沒有人持有的代號那天沒有成交_不補查() {
+      495      hold("2330", Market.TWSE);
+      496      twseBatch.answer = date -> batchOf(date, Market.TWSE, "233
+           0", "2050.00", "9999", "--");
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● G-02 相關的 4 個測試類別都通過。把 G-02 的檔案也 git add，RefreshSchedule
+  暫存的就是 G-02 版本，接下來 G-03 只會改工作目錄。
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Now G-03. Checking where QuoteProperties.Refresh is constructed.
+
+  Read 1 file, ran 1 shell command (ctrl+o to expand)
+
+● Bash(cd "C:/TKA102_JavaApp/Workspace_for_practice/stock-holdings" && cat >
+      "$TEMP/rs_body.txt" <<'EOF'
+      /**…)
+  ⎿                  }
+                     return nextWeekdayStart(day.plusDays(1), candidate);
+             }
+     … +29 lines (ctrl+o to expand)
+  ⎿  Updated src\main\java\io\hsiaopingkuo\stockholdings\service\RefreshSch
+     edule.java +112 -102
+        1 -package io.hsiaopingkuo.stockholdings.service;                
+        2 -                                                              
+        3 -import java.time.DayOfWeek;                                   
+        4 -import java.time.Duration;                                    
+        5 -import java.time.LocalDate;                                   
+        6 -import java.time.LocalTime;                                   
+        7 -import java.time.ZonedDateTime;                               
+        8 -import java.util.random.RandomGenerator;                      
+        9 -                                                              
+       10 -import io.hsiaopingkuo.stockholdings.config.QuoteProperties;  
+       11 -                                                              
+       12 -/**                                                           
+       13 - * 排程的時間規則（純計算，不碰網路和資料庫，所以很好測）。傳 
+          -進來的時間一律是台北時間。                                    
+       14 - *                                                            
+       15 - * 每個市場各自套用：                                         
+       16 - * - 週一到週五 13:40～14:30：約每 60 秒一輪（60 秒 ± 0～5 秒 
+          -，毫秒級隨機）                                                
+       17 - * - 14:30～15:40：每 10 分鐘一輪（應付官方延遲公布）         
+       18 - * - 上一輪批次失敗改用逐檔：這個市場改成每 10 分鐘一輪（逐檔 
+          -請求多，太頻繁容易被擋）                                      
+       19 - * - 今天已拿到資料、但還有持股的收盤價待補查（G-02）：每 10  
+          -分鐘一輪，只做補查                                            
+       20 - * - 冷卻中：等冷卻結束                                       
+       21 - * - 今天已拿到資料而且沒有待補查、已過 15:40、週末：下一個平 
+          -日 13:40                                                      
+       22 - */                                                           
+       23 -public class RefreshSchedule {                                
+       24 -                                                              
+       25 -        private final QuoteProperties.Refresh settings;       
+       26 -        private final RandomGenerator random;                 
+       27 -                                                              
+       28 -        public RefreshSchedule(QuoteProperties.Refresh setting
+          -s, RandomGenerator random) {                                  
+       29 -                this.settings = settings;                     
+       30 -                this.random = random;                         
+       31 -        }                                                     
+       32 -                                                              
+       33 -        /** 現在這個時間，這個市場的排程輪該不該執行（13:40 前
+          -、15:40 後、週末、今天已完成都不執行）。 */                   
+       34 -        public boolean shouldRun(ZonedDateTime now, MarketRefr
+          -eshState state) {                                             
+       35 -                return isWeekday(now.toLocalDate()) && inWindo
+          -w(now.toLocalTime())                                          
+       36 -                                && !finishedToday(state, now.t
+          -oLocalDate()) && !state.isCoolingDown(now.toInstant());       
+       37 -        }                                                     
+       38 -                                                              
+       39 -        /** 這一輪結束後，下一輪排在什麼時候。 */             
+       40 -        public ZonedDateTime nextRun(ZonedDateTime now, Market
+          -RefreshState state) {                                         
+     … +174 lines (ctrl+o to expand)
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Now the properties record, both application.properties, and
+  RefreshTestSupport.
+
+● Bash(cd "C:/TKA102_JavaApp/Workspace_for_practice/stock-holdings" &&
+      Q=src/main/java/io/hsiaopingkuo/stockholdings/config/QuoteProperties.java
+      && \
+      sed -i 's|^\t \*…)
+  ⎿           * 時間一律是台北時間。
+              *
+              * @param enabled
+     排程開關（測試時關掉，避免跑測試時發出請
+     … +52 lines (ctrl+o to expand)
+  ⎿  Updated src\main\java\io\hsiaopingkuo\stockholdings\config\QuoteProper
+     ties.java +6 -2
+      40           * @param enabled             排程開關（測試時關掉，避
+          免跑測試時發出請求）
+      41           * @param startTime           每個交易日開始查詢的時間
+          （收盤 13:30、盤後最晚 13:33，官方約 13:50 後公布）
+      42           * @param slowdownTime        過了這個時間改成慢速（應
+          付官方延遲公布）
+      43 -         * @param endTime             過了這個時間當天停止     
+      43 +         * @param endTime             過了這個時間，只剩今天還 
+         +沒拿到資料或還有待補查的市場繼續跑（改用延長時段的間隔）       
+      44 +         * @param lateEndTime         延長時段結束的時間：過了 
+         +就停到下一個平日（G-03）                                       
+      45           * @param fastInterval        快速時段每一輪的間隔
+      46           * @param fastJitter          快速間隔的隨機加減範圍（
+          避免每次都在整數秒送出）
+      47           * @param slowInterval        慢速時段，以及批次失敗改
+          用逐檔時的間隔
+      48 +         * @param lateInterval        延長時段每一輪的間隔（G-0
+         +3）                                                            
+      49           * @param perRequestDelayMin  逐檔查詢（和啟動時往前找
+          ）每個請求之間最少等多久
+      50           * @param perRequestDelayMax  每個請求之間最多等多久
+      51           * @param cooldown            被官方擋下後，這個市場暫
+          停多久
+      52           * @param startupLookbackDays 伺服器啟動時，今天沒有資
+          料最多往前找幾天
+      53           */
+      54          public record Refresh(boolean enabled, LocalTime startT
+          ime, LocalTime slowdownTime, LocalTime endTime,
+      53 -                        Duration fastInterval, Duration fastJit
+         -ter, Duration slowInterval, Duration perRequestDelayMin,       
+      55 +                        LocalTime lateEndTime,                 
+      56 +                        Duration fastInterval, Duration fastJit
+         +ter, Duration slowInterval, Duration lateInterval,             
+      57 +                        Duration perRequestDelayMin,           
+      58                          Duration perRequestDelayMax, Duration c
+          ooldown, int startupLookbackDays) {
+      59          }
+      60  }
+  ⎿  Updated src\main\resources\application.properties +4 -1
+      45  quote.refresh.enabled=true
+      46  # 收盤 13:30、盤後最晚 13:33，實測官方約 13:50～14:02 公布，所
+          以 13:40 開始查
+      47  quote.refresh.start-time=13:40
+      48 -# 14:30 後放慢，應付官方延遲公布；15:40 後當天停止             
+      48 +# 14:30 後放慢，應付官方延遲公布；15:40 後只剩今天還沒拿到資料 
+         +、或還有持股收盤價待補查的市場繼續查                           
+      49  quote.refresh.slowdown-time=14:30
+      50  quote.refresh.end-time=15:40
+      51 +# 15:40～23:40 每 20 分鐘一輪：官方延遲公布時，仍能在公布後一小
+         +時內更新；拿到資料就停                                         
+      52 +quote.refresh.late-end-time=23:40                              
+      53 +quote.refresh.late-interval=20m                                
+      54  # 快速時段每輪約 60 秒，隨機加減 0～5 秒（非整數秒，避免看起來
+          像固定排程的機器人）
+      55  quote.refresh.fast-interval=60s
+      56  quote.refresh.fast-jitter=5s
+  ⎿  Updated src\test\java\io\hsiaopingkuo\stockholdings\service\RefreshTes
+     tSupport.java +3 -2
+      25 
+      26          /** 和 application.properties 相同的設定。 */
+      27          static final QuoteProperties.Refresh SETTINGS = new Quo
+          teProperties.Refresh(true, LocalTime.of(13, 40),
+      28 -                        LocalTime.of(14, 30), LocalTime.of(15, 
+         -40), Duration.ofSeconds(60), Duration.ofSeconds(5),            
+      29 -                        Duration.ofMinutes(10), Duration.ofMill
+         -is(3200), Duration.ofMillis(5800), Duration.ofMinutes(30), 10);
+      28 +                        LocalTime.of(14, 30), LocalTime.of(15, 
+         +40), LocalTime.of(23, 40), Duration.ofSeconds(60), Duration.ofS
+         +econds(5),                                                     
+      29 +                        Duration.ofMinutes(10), Duration.ofMinu
+         +tes(20), Duration.ofMillis(3200), Duration.ofMillis(5800),     
+      30 +                        Duration.ofMinutes(30), 10);           
+      31 
+      32          private RefreshTestSupport() {
+      33          }
+  ⎿  Updated src\test\resources\application.properties +2
+      25  quote.refresh.start-time=13:40
+      26  quote.refresh.slowdown-time=14:30
+      27  quote.refresh.end-time=15:40
+      28 +quote.refresh.late-end-time=23:40                              
+      29 +quote.refresh.late-interval=20m                                
+      30  quote.refresh.fast-interval=60s
+      31  quote.refresh.fast-jitter=5s
+      32  quote.refresh.slow-interval=10m
+
+● Tidy up the line wrapping in both records.
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\config\QuoteProperties.java
+        )
+  ⎿  Added 3 lines, removed 4 lines
+      52     * @param startupLookbackDays 伺服器啟動時，今天沒有資料最多
+          往前找幾天
+      53     */
+      54    public record Refresh(boolean enabled, LocalTime startTime, L
+          ocalTime slowdownTime, LocalTime endTime,
+      55 -      LocalTime lateEndTime,                                   
+      56 -      Duration fastInterval, Duration fastJitter, Duration slow
+         -Interval, Duration lateInterval,                               
+      57 -      Duration perRequestDelayMin,                             
+      58 -      Duration perRequestDelayMax, Duration cooldown, int start
+         -upLookbackDays) {                                              
+      55 +      LocalTime lateEndTime, Duration fastInterval, Duration fa
+         +stJitter, Duration slowInterval,                               
+      56 +      Duration lateInterval, Duration perRequestDelayMin, Durat
+         +ion perRequestDelayMax, Duration cooldown,                     
+      57 +      int startupLookbackDays) {                               
+      58    }
+      59  }
+
+  Read 1 file (ctrl+o to expand)
+
+● Update(src\test\java\io\hsiaopingkuo\stockholdings\service\RefreshTestSupport.
+        java)
+  ⎿  Added 3 lines, removed 3 lines
+      25 
+      26    /** 和 application.properties 相同的設定。 */
+      27    static final QuoteProperties.Refresh SETTINGS = new QuoteProp
+          erties.Refresh(true, LocalTime.of(13, 40),
+      28 -      LocalTime.of(14, 30), LocalTime.of(15, 40), LocalTime.of(
+         -23, 40), Duration.ofSeconds(60), Duration.ofSeconds(5),        
+      29 -      Duration.ofMinutes(10), Duration.ofMinutes(20), Duration.
+         -ofMillis(3200), Duration.ofMillis(5800),                       
+      30 -      Duration.ofMinutes(30), 10);                             
+      28 +      LocalTime.of(14, 30), LocalTime.of(15, 40), LocalTime.of(
+         +23, 40), Duration.ofSeconds(60),                               
+      29 +      Duration.ofSeconds(5), Duration.ofMinutes(10), Duration.o
+         +fMinutes(20), Duration.ofMillis(3200),                         
+      30 +      Duration.ofMillis(5800), Duration.ofMinutes(30), 10);    
+      31 
+      32    private RefreshTestSupport() {
+      33    }
+
+  Read 1 file (ctrl+o to expand)
+
+● Update the 4 approved tests and add the G-03 test.
+
+● Update(src\test\java\io\hsiaopingkuo\stockholdings\service\RefreshScheduleTest
+        .java)
+  ⎿  Added 16 lines, removed 5 lines
+       72    }
+       73 
+       74    @Test
+       75 -  void 下一輪會超過1540_改到隔天1340() {                      
+       76 -    assertThat(schedule.nextRun(taipei(11, 24, 15, 35), state)
+          -).isEqualTo(taipei(11, 25, 13, 40));                          
+       75 +  void 下一輪會超過1540_還沒拿到資料_照排進延長時段() {       
+       76 +    assertThat(schedule.nextRun(taipei(11, 24, 15, 35), state)
+          +).isEqualTo(taipei(11, 24, 15, 45));                          
+       77    }
+       78 
+       79    @Test
+       80 -  void 到了1540停止_下一輪是隔天1340() {                      
+       80 +  void 到了1540還沒拿到資料_繼續執行_間隔變成20分鐘() {       
+       81      ZonedDateTime now = taipei(11, 24, 15, 40);
+       82 
+       83 -    assertThat(schedule.shouldRun(now, state)).isFalse();     
+       84 -    assertThat(schedule.nextRun(now, state)).isEqualTo(taipei(
+          -11, 25, 13, 40));                                             
+       83 +    assertThat(schedule.shouldRun(now, state)).isTrue();      
+       84 +    assertThat(schedule.nextRun(now, state)).isEqualTo(taipei(
+          +11, 24, 16, 0));                                              
+       85    }
+       86 
+       87    @Test
+       88 +  void 週二1600市場今天還沒拿到資料_排程繼續跑_不會等到隔天134
+          +0() {                                                         
+       89 +    // G-03：官方延遲到 16:00 才公布，或服務中斷到 16:00 才恢 
+          +復                                                            
+       90 +    ZonedDateTime now = taipei(11, 24, 16, 0);                
+       91 +                                                              
+       92 +    assertThat(schedule.shouldRun(now, state)).isTrue();      
+       93 +    assertThat(schedule.nextRun(now, state)).isEqualTo(taipei(
+          +11, 24, 16, 20));                                             
+       94 +    // 延長時段到 23:40 為止                                  
+       95 +    assertThat(schedule.nextRun(taipei(11, 24, 23, 30), state)
+          +).isEqualTo(taipei(11, 25, 13, 40));                          
+       96 +  }                                                           
+       97 +                                                              
+       98 +  @Test                                                       
+       99    void 今天已拿到資料_當天停止_下一輪是隔天1340() {
+      100      state.markDone(LocalDate.of(2026, 11, 24));
+      101      ZonedDateTime now = taipei(11, 24, 13, 55);
+
+● Update(src\test\java\io\hsiaopingkuo\stockholdings\service\RefreshScheduleTest
+        .java)
+  ⎿  Added 2 lines, removed 2 lines
+      105    }
+      106 
+      107    @Test
+      108 -  void 週六週日不執行_週五收盤後下一輪是週一1340() {          
+      108 +  void 週六週日不執行_週五1540還沒拿到資料仍在當天繼續_週末排 
+          +到週一1340() {                                                
+      109      assertThat(schedule.shouldRun(taipei(11, 28, 14, 0), state
+           )).isFalse();
+      110      assertThat(schedule.shouldRun(taipei(11, 29, 14, 0), state
+           )).isFalse();
+      111 -    assertThat(schedule.nextRun(taipei(11, 27, 15, 40), state)
+          -).isEqualTo(taipei(11, 30, 13, 40));                          
+      111 +    assertThat(schedule.nextRun(taipei(11, 27, 15, 40), state)
+          +).isEqualTo(taipei(11, 27, 16, 0));                           
+      112      assertThat(schedule.nextRun(taipei(11, 28, 10, 0), state))
+           .isEqualTo(taipei(11, 30, 13, 40));
+      113    }
+      114 
+
+● Update(src\test\java\io\hsiaopingkuo\stockholdings\service\RefreshScheduleTest
+        .java)
+  ⎿  Added 2 lines, removed 2 lines
+      122    }
+      123 
+      124    @Test
+      125 -  void 冷卻結束時已過1540_排到隔天1340() {                    
+      125 +  void 冷卻結束時已過1540_還沒拿到資料_排在冷卻結束時() {     
+      126      ZonedDateTime now = taipei(11, 24, 15, 20);
+      127      state.startCooldown(now.plusMinutes(30).toInstant());
+      128 
+      129 -    assertThat(schedule.nextRun(now, state)).isEqualTo(taipei(
+          -11, 25, 13, 40));                                             
+      129 +    assertThat(schedule.nextRun(now, state)).isEqualTo(taipei(
+          +11, 24, 15, 50));                                             
+      130    }
+      131  }
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\service\RefreshSchedule.jav
+        a)
+  ⎿  Added 1 line
+      56      return withinWindowOrNextDay(now.plus(intervalAt(time, stat
+          e, today)));
+      57    }
+      58 
+      59 +  /** 依時段決定間隔：15:40 後延長時段 20 分鐘；之前照原本的快 
+         +速／慢速規則。 */                                              
+      60    private Duration intervalAt(LocalTime time, MarketRefreshStat
+          e state, LocalDate today) {
+      61      if (!time.isBefore(settings.endTime())) {
+      62        return settings.lateInterval();
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● 三個問題的相關測試都通過了。最後讀一下 README 的排程段落，準備草稿。
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● 三個問題都改好了，相關的測試類別都通過（QuoteServiceConcurrencyTest、QuoteServ
+  iceTest、QuoteRefreshServiceTest、RefreshScheduleTest、QuoteRefreshSchedulerTe
+  st、DividendSyncSchedulerTest、CreateHoldingConcurrencyTest）。全部測試還沒跑
+  ，留給你。
+
+  跟提案不一樣的地方
+
+  1. 我用了 git add（只暫存，沒有 commit）。 原因是 RefreshSchedule.java 在 G-02
+     和 G-03 都有改。目前暫存區裡是 G-01＋G-02 的版本（RefreshSchedule 是 G-02
+     版），G-03 的改動只在工作目錄。請照下方的指令依序 commit，三個 commit
+     就會乾淨分開。
+  2. 多改了 src/test/resources/application.properties：補上
+     late-end-time、late-interval 兩行。不補的話，測試環境讀不到這兩個值。
+  3. MarketRefreshState 刪掉了 isCloseBackfilled，換成
+     isCloseBackfillSettled（已經有結果，或暫時失敗已滿 6
+     次）。原本的方法沒有其他地方在用。
+  4. G-01 測試的等待上限從提案的 1 秒改成 0.5 秒。 H2 預設等鎖 2
+     秒，留一些餘裕。我另外驗證過：暫時拿掉鎖，這個測試會失敗（but was: 
+     2026-11-24）；加回鎖就通過。
+  5. G-03 測試多驗了一個時間點：23:30 的下一輪會排到隔天 13:40，確認延長時段到
+     23:40 結束。
+  6. 週六週日… 這個測試的名稱改成
+     週六週日不執行_週五1540還沒拿到資料仍在當天繼續_週末排到週一1340，因為原名
+     裡的「週五收盤後下一輪是週一」已經不成立。預期值只改了你同意的那一行。
+
+  需要你決定的事
+
+  沒有新的待決事項。
+
+  commit 訊息（請依序執行）
+
+  git commit -m "fix: 第3題 G-01 
+  行情寫入先鎖住既有列再比較，並行寫入不再讓新資料被舊資料蓋掉" -- 
+  src/main/java/io/hsiaopingkuo/stockholdings/repository/QuoteRepository.java 
+  src/main/java/io/hsiaopingkuo/stockholdings/service/QuoteService.java src/test
+  /java/io/hsiaopingkuo/stockholdings/service/QuoteServiceConcurrencyTest.java
+
+  git commit -m "fix: 第3題 G-02 當天批次拿到後，待補查的收盤價仍會繼續重試"
+
+  git add 
+  src/main/java/io/hsiaopingkuo/stockholdings/config/QuoteProperties.java 
+  src/main/java/io/hsiaopingkuo/stockholdings/service/RefreshSchedule.java 
+  src/main/resources/application.properties 
+  src/test/java/io/hsiaopingkuo/stockholdings/service/RefreshScheduleTest.java 
+  src/test/java/io/hsiaopingkuo/stockholdings/service/RefreshTestSupport.java 
+  src/test/resources/application.properties
+  git commit -m "fix: 第3題 G-03 15:40 後還沒拿到資料的市場每 20 分鐘再查，到 
+  23:40 為止"
+
+  第一個指令在檔名前加了 --，所以只會 commit 這三個檔案；G-02
+  的檔案會留在暫存區，給第二個 commit 用。
+
+  README 排程說明草稿（確認後才寫入，另外用 docs: commit）
+
+  第 55～62 行改成：
+
+  - 交易日（週一到週五，台北時間）13:40 起由背景排程更新，上市、上櫃各自查詢：
+    13:40～14:30 約每 60 秒一次，14:30～15:40 每 10 分鐘一次；
+    15:40～23:40 只有今天還沒拿到資料的市場繼續查，每 20
+  分鐘一次，讓官方延遲公布時仍能在公布後一小時內更新。
+    拿到當天資料後，該市場當天就不再查整個市場。
+    （依實測，官方約 13:50～14:02 公布當天收盤價。）
+  - 全市場批次查詢失敗時，改成逐檔查詢有人持有的股票；被官方擋下時該市場暫停 30
+  分鐘。
+  - 全市場批次只有某一天的資料：有人持有的股票那天沒有成交（或批次裡沒有這一檔）
+  時，會再逐檔查詢，找出前一個有成交日的收盤價。
+    查到結果（包括確定兩個月內都沒有成交）就當天不再查；官方暫時查不了時，下一輪
+  再試，同一檔一天最多 6 次。
+    當天資料已拿到、但還有待補查的股票時，排程照上面的時段繼續，只做補查。
+  - 排程會讀取證交所的休市日表，事先公布的休市日當天不查詢；休市日表查不到時（例
+  如測試伺服器沒有這支 API）當成交易日，照常查詢。
+    颱風假等臨時休市不在表裡，那天會查到「沒有資料」，重試到 23:40 為止。
+  - 23:40 之後到下一個交易日 13:40
+  之前，若官方或測試伺服器的資料有變動，要等下一個交易日 13:40
+  之後，或重新啟動伺服器才會更新。
+
+  設定表第 212～213 行改成：
+
+  | `quote.refresh.start-time`／`slowdown-time`／`end-time`／`late-end-time` |
+  13:40／14:30／15:40／23:40 | 背景排程的時段（台北時間）；15:40～23:40
+  只有今天還沒拿到資料、或還有待補查的市場會查 |
+  | `quote.refresh.fast-interval`／`slow-interval`／`late-interval` |
+  60s／10m／20m | 快速、慢速、延長時段每一輪的間隔 |
+
+  提醒三件事：這次的修正有沒有要記進 TESTLOG
+  由你決定（問題來自朋友的驗收報告）；ai-log 記得放；commit
+  前檢查裡面有沒有密碼或 token。
+
+✻ Cogitated for 8m 43s · done 上午5:44
+
+※ recap: G-01～G-03 三個第 3 題的問題都修好了，相關測試也都通過；G-01、G-02 已經暫存，還沒有 commit。下一步請照我給的三個指令依序 commit，再看 README 草稿要不要寫入。
+
+> 三個修正都確認了，請你依照替我順序 commit。                                   
+                                                                                
+  README 的排程說明草稿同意，請寫入，用另一個 commit：                          
+  docs: 第3題 README 更新背景排程時段（15:40 後延長到 23:40）                   
+                                                                                
+  TESTLOG 要記，三個問題各一筆，「誰發現、怎麼發現」寫：朋友第三輪驗收時，用同  
+  步屏障和可控時鐘重現。先給我草稿確認，確認後再寫入。                          
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● 先依序做三個 fix commit。照你之前的偏好，訊息只寫一行，不加 AI 尾行。
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Three commits are split correctly. Now writing the README changes.
+
+  Read 1 file (ctrl+o to expand)
+
+● Update(README.md)
+  ⎿  Added 9 lines, removed 5 lines
+      52 
+      53  - 清單上的收盤價來自本機資料庫的行情快取，打開清單不會向官方查
+          詢。
+      54  - 伺服器啟動時，會在背景向官方查一次最近一個交易日的收盤價（例
+          如週六啟動拿到週五的資料），不影響啟動速度；官方連不上也能正常
+          啟動。
+      55 -- 交易日（週一到週五，台北時間）13:40～15:40 由背景排程更新，上
+         -市、上櫃各自查詢：                                             
+      56 -  13:40～14:30 約每 60 秒一次，14:30～15:40 每 10 分鐘一次；拿 
+         -到當天資料後該市場當天就停止。                                 
+      55 +- 交易日（週一到週五，台北時間）13:40 起由背景排程更新，上市、 
+         +上櫃各自查詢：                                                 
+      56 +  13:40～14:30 約每 60 秒一次，14:30～15:40 每 10 分鐘一次；   
+      57 +  15:40～23:40 只有今天還沒拿到資料的市場繼續查，每 20 分鐘一次
+         +，讓官方延遲公布時仍能在公布後一小時內更新。                   
+      58 +  拿到當天資料後，該市場當天就不再查整個市場。                 
+      59    （依實測，官方約 13:50～14:02 公布當天收盤價。）
+      60  - 全市場批次查詢失敗時，改成逐檔查詢有人持有的股票；被官方擋下
+          時該市場暫停 30 分鐘。
+      59 -- 全市場批次只有某一天的資料：有人持有的股票那天沒有成交（或批 
+         -次裡沒有這一檔）時，會再逐檔查詢，找出前一個有成交日的收盤價； 
+         -同一檔一天最多補查一次。                                       
+      61 +- 全市場批次只有某一天的資料：有人持有的股票那天沒有成交（或批 
+         +次裡沒有這一檔）時，會再逐檔查詢，找出前一個有成交日的收盤價。 
+      62 +  查到結果（包括確定兩個月內都沒有成交）就當天不再查；官方暫時 
+         +查不了時，下一輪再試，同一檔一天最多 6 次。                    
+      63 +  當天資料已拿到、但還有待補查的股票時，排程照上面的時段繼續， 
+         +只做補查。                                                     
+      64  - 排程會讀取證交所的休市日表，事先公布的休市日當天不查詢；休市
+          日表查不到時（例如測試伺服器沒有這支 API）當成交易日，照常查詢
+          。
+      61 -  颱風假等臨時休市不在表裡，那天會查到「沒有資料」，重試到 15:4
+         -0 為止。                                                       
+      62 -- 非交易時段若官方或測試伺服器的資料有變動，要等下一個交易日 13
+         -:40 之後，或重新啟動伺服器才會更新。                           
+      65 +  颱風假等臨時休市不在表裡，那天會查到「沒有資料」，重試到 23:4
+         +0 為止。                                                       
+      66 +- 23:40 之後到下一個交易日 13:40 之前，若官方或測試伺服器的資料
+         +有變動，要等下一個交易日 13:40 之後，或重新啟動伺服器才會更新。
+      67 
+      68  ## 清單的收盤價怎麼顯示
+      69 
+
+● Update(README.md)
+  ⎿  Added 2 lines, removed 2 lines
+      213  | `quote.max-concurrent-lookups`<br>（環境變數 `QUOTE_MAX_CONC
+           URRENT_LOOKUPS`） | 4 | 同時查官方的代號數上限，至少 1；新增持
+           股、即時提示、背景補查舊持股共用 |
+      214  | `quote.lookup-min-remaining`<br>（環境變數 `QUOTE_LOOKUP_MIN
+           _REMAINING`） | 2s | 剩下的時間少於這個值就不查官方，直接回「
+           暫時無法確認」 |
+      215  | `quote.lookup-cache-ttl` | 10m | 查過的代號記住多久，避免短
+           時間重複查詢官方 |
+      216 -| `quote.refresh.start-time`／`slowdown-time`／`end-time` | 13
+          -:40／14:30／15:40 | 背景排程的時段（台北時間） |              
+      217 -| `quote.refresh.fast-interval`／`slow-interval` | 60s／10m | 
+          -快速、慢速時段每一輪的間隔 |                                  
+      216 +| `quote.refresh.start-time`／`slowdown-time`／`end-time`／`la
+          +te-end-time` | 13:40／14:30／15:40／23:40 | 背景排程的時段（台
+          +北時間）；15:40～23:40 只有今天還沒拿到資料、或還有待補查的市 
+          +場會查 |                                                      
+      217 +| `quote.refresh.fast-interval`／`slow-interval`／`late-interv
+          +al` | 60s／10m／20m | 快速、慢速、延長時段每一輪的間隔 |      
+      218  | `quote.refresh.per-request-delay-min`／`max` | 3200ms／5800m
+           s | 逐檔查詢時，請求之間的隨機等待 |
+      219  | `quote.refresh.cooldown` | 30m | 被官方擋下後暫停多久 |
+      220  | `quote.refresh.startup-lookback-days` | 10 | 啟動時今天沒有
+           資料，最多往前找幾天 |
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● 四個 commit 都在 fix/q3-quote-refresh 上，工作目錄是乾淨的。還沒
+  push，也還沒合併回 master。
+
+  ┌─────────┬────────────────────────────────────────────────────────────────┐
+  │ commit  │                              訊息                              │
+  ├─────────┼────────────────────────────────────────────────────────────────┤
+  │ 5940c48 │ fix: 第3題 G-01                                                │
+  │         │ 行情寫入先鎖住既有列再比較，並行寫入不再讓新資料被舊資料蓋掉   │
+  ├─────────┼────────────────────────────────────────────────────────────────┤
+  │ 844362f │ fix: 第3題 G-02 當天批次拿到後，待補查的收盤價仍會繼續重試     │
+  ├─────────┼────────────────────────────────────────────────────────────────┤
+  │ 29f200f │ fix: 第3題 G-03 15:40 後還沒拿到資料的市場每 20 分鐘再查，到   │
+  │         │ 23:40 為止                                                     │
+  ├─────────┼────────────────────────────────────────────────────────────────┤
+  │ 622d1eb │ docs: 第3題 README 更新背景排程時段（15:40 後延長到 23:40）    │
+  └─────────┴────────────────────────────────────────────────────────────────┘
+
+  TESTLOG 草稿（T-08～T-10，確認後才寫入）
+
+  先確認一件事： repo 是公開的，協助者只寫代稱。第二輪驗收（435cfd9）在 TESTLOG
+  記的是 Wynn，所以草稿暫時寫「Wynn」。第三輪如果是別人，請告訴我要用哪個代稱。
+
+  ## T-08 背景排程和新增持股同時寫入行情時，新資料被舊資料蓋掉（Wynn
+  第三輪驗收時發現，報告 G-01）
+  - 怎麼發現：Wynn 第三輪驗收 `2ff2f68` 時，用同步屏障控制兩個交易的交錯順序重現
+  - 怎麼重現：1. 資料庫已有 2330：11/23、收盤價 100 2. 交易 A 寫入
+  11/24、110，讀到既有的 11/23 後暫停 3. 交易 B 寫入 11/25、120 並提交 4. 交易 A
+  繼續寫入並提交。自動測試 `QuoteServiceConcurrencyTest` 重現這個順序
+  - 預期／實際：預期最後是 11/25、120；實際倒退成 11/24、110，B
+  已提交的資料不見了
+  - 原因：寫入前讀既有的列時沒有上鎖，A 拿自己先前讀到的舊版本比較日期，不知道 B
+  已經寫進更新的資料
+  - 修好的 commit：`5940c48`（fix: 第3題 G-01
+  行情寫入先鎖住既有列再比較，並行寫入不再讓新資料被舊資料蓋掉）
+
+  ## T-09 當天的批次成功後，補查收盤價失敗一次就不會再試（Wynn
+  第三輪驗收時發現，報告 G-02）
+  - 怎麼發現：Wynn 第三輪驗收 `2ff2f68` 時，用可控時鐘和假的官方 client 重現
+  - 怎麼重現：1. 持有 2363，資料庫沒有它的收盤價 2. 批次回傳今天的資料，2363
+  收盤價是 "--" 3. 第一輪逐檔補查時官方暫時查不了 4.
+  十分鐘後官方恢復，可以查到前一個有成交日的收盤價 10 5. 再跑一輪排程
+  - 預期／實際：預期同一天補到
+  10.00；實際第二輪直接略過，收盤價一直是「未取得」，要等到隔天或重新啟動
+  - 原因：拿到今天的批次就把市場記成「今天完成」，之後的排程輪全部略過；「整個市
+  場已拿到」和「還有持股待補查」沒有分開記
+  - 修好的 commit：`844362f`（fix: 第3題 G-02
+  當天批次拿到後，待補查的收盤價仍會繼續重試）
+
+  ## T-10 官方延遲到 15:40 之後才公布時，要等到隔天 13:40 才更新（Wynn
+  第三輪驗收時發現，報告 G-03）
+  - 怎麼發現：Wynn 第三輪驗收 `2ff2f68` 時，用可控時鐘模擬
+  - 怎麼重現：1. 時鐘設在週二 16:00 2. 這個市場今天還沒拿到資料 3.
+  看排程該不該執行、下一輪排在什麼時候
+  - 預期／實際：預期繼續查，官方公布後一小時內更新；實際不執行，下一輪排到隔天
+  13:40
+  - 原因：排程在 15:40 固定截止，不管這個市場今天有沒有拿到資料
+  - 修好的 commit：`29f200f`（fix: 第3題 G-03 15:40 後還沒拿到資料的市場每 20
+  分鐘再查，到 23:40 為止）、`622d1eb`（docs: 第3題 README
+  更新背景排程時段（15:40 後延長到 23:40））
+
+  T-10 的「怎麼發現」裡，我把報告的但書寫成「用可控時鐘模擬」。報告有說明，這不
+  是真的遇到官方在 16:00 才公布。
+
+  你確認代稱和內容後，我再寫入 TESTLOG。commit 訊息建議用 docs: 第3題 TESTLOG 
+  記錄第三輪驗收的 G-01～G-03。另外提醒兩件事：合併回 master
+  前請跑一次全部測試，這輪 ai-log 也記得放。
+
+✻ Sautéed for 46s · done 上午5:49
+
+> 對是Wynn提供的                                                                
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Bash(cd "C:/TKA102_JavaApp/Workspace_for_practice/stock-holdings" && cat >>
+      TESTLOG.md <<'EOF'…)
+  ⎿   TESTLOG.md | 21 +++++++++++++++++++++
+      1 file changed, 21 insertions(+)
+  ⎿  Updated TESTLOG.md +21
+      50  - 預期／實際：預期平均成本 145.21（290,413 ÷ 2,000），已實現損
+          益維持 14,688；實際平均成本是 142.53，已實現損益也算錯
+      51  - 原因：重播時同一天固定「先買後賣」，買回的 2,000 股被排到賣出
+          前面，新買的成本混進前一輪一起按比例扣掉
+      52  - 修好的 commit：`e7aa947`（fix: 第6題 同一天的交易改依輸入順序
+          重播，先賣光再買回時平均成本與已實現損益不再算錯）
+      53 +                                                               
+      54 +## T-08 背景排程和新增持股同時寫入行情時，新資料被舊資料蓋掉（W
+         +ynn 第三輪驗收時發現，報告 G-01）                              
+      55 +- 怎麼發現：Wynn 第三輪驗收 `2ff2f68` 時，用同步屏障控制兩個交 
+         +易的交錯順序重現                                               
+      56 +- 怎麼重現：1. 資料庫已有 2330：11/23、收盤價 100 2. 交易 A 寫 
+         +入 11/24、110，讀到既有的 11/23 後暫停 3. 交易 B 寫入 11/25、12
+         +0 並提交 4. 交易 A 繼續寫入並提交。自動測試 `QuoteServiceConcur
+         +rencyTest` 重現這個順序                                        
+      57 +- 預期／實際：預期最後是 11/25、120；實際倒退成 11/24、110，B  
+         +已提交的資料不見了                                             
+      58 +- 原因：寫入前讀既有的列時沒有上鎖，A 拿自己先前讀到的舊版本比 
+         +較日期，不知道 B 已經寫進更新的資料                            
+      59 +- 修好的 commit：`5940c48`（fix: 第3題 G-01 行情寫入先鎖住既有 
+         +列再比較，並行寫入不再讓新資料被舊資料蓋掉）                   
+      60 +                                                               
+      61 +## T-09 當天的批次成功後，補查收盤價失敗一次就不會再試（Wynn 第
+         +三輪驗收時發現，報告 G-02）                                    
+      62 +- 怎麼發現：Wynn 第三輪驗收 `2ff2f68` 時，用可控時鐘和假的官方 
+         +client 重現                                                    
+      63 +- 怎麼重現：1. 持有 2363，資料庫沒有它的收盤價 2. 批次回傳今天 
+         +的資料，2363 收盤價是 "--" 3. 第一輪逐檔補查時官方暫時查不了 4.
+         + 十分鐘後官方恢復，可以查到前一個有成交日的收盤價 10 5. 再跑一 
+         +輪排程                                                         
+      64 +- 預期／實際：預期同一天補到 10.00；實際第二輪直接略過，收盤價 
+         +一直是「未取得」，要等到隔天或重新啟動                         
+      65 +- 原因：拿到今天的批次就把市場記成「今天完成」，之後的排程輪全 
+         +部略過；「整個市場已拿到」和「還有持股待補查」沒有分開記       
+      66 +- 修好的 commit：`844362f`（fix: 第3題 G-02 當天批次拿到後，待 
+         +補查的收盤價仍會繼續重試）                                     
+      67 +                                                               
+      68 +## T-10 官方延遲到 15:40 之後才公布時，要等到隔天 13:40 才更新 
+         +（Wynn 第三輪驗收時發現，報告 G-03）                           
+      69 +- 怎麼發現：Wynn 第三輪驗收 `2ff2f68` 時，用可控時鐘模擬       
+      70 +- 怎麼重現：1. 時鐘設在週二 16:00 2. 這個市場今天還沒拿到資料 3
+         +. 看排程該不該執行、下一輪排在什麼時候                         
+      71 +- 預期／實際：預期繼續查，官方公布後一小時內更新；實際不執行， 
+         +下一輪排到隔天 13:40                                           
+      72 +- 原因：排程在 15:40 固定截止，不管這個市場今天有沒有拿到資料  
+      73 +- 修好的 commit：`29f200f`（fix: 第3題 G-03 15:40 後還沒拿到資 
+         +料的市場每 20 分鐘再查，到 23:40 為止）、`622d1eb`（docs: 第3題
+         + README 更新背景排程時段（15:40 後延長到 23:40））             
+
+  Wrote 1 memory (ctrl+o to expand)
+
+● 我已把 T-08～T-10 照草稿寫進 TESTLOG.md，協助者寫代稱 Wynn，接在 T-07 後面。
+
+  這次還沒 commit，因為你只確認了內容，沒有說要我代為
+  commit。要的話跟我說，訊息會用：
+
+  docs: 第3題 TESTLOG 記錄第三輪驗收的 G-01～G-03
+
+  我也在記憶裡補了一筆：Wynn 提供了第三輪驗收報告（G-01～G-03）。之後寫
+  REVIEW.md 時會用到。
+
+  合併回 master 前，還有三件事要做：
+  - 跑一次全部測試：./mvnw test。到目前為止我只跑過相關的測試類別。
+  - 把這輪的 ai-log 放進 ai-log/，commit 前檢查裡面有沒有密碼或 token。
+  - 合併後，在另一個資料夾重新 clone，照 README 從頭啟動一次。
+✻ Cooked for 21s · done 上午5:51
