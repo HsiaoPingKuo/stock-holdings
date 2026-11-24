@@ -355,12 +355,12 @@ class HoldingControllerTest {
 	}
 
 	@Test
-	void 即時查詢_兩個市場無法判斷回409與錯誤格式() throws Exception {
+	void 即時查詢_兩個市場無法判斷回503與MARKET_UNDETERMINED_和AppAPI一致() throws Exception {
 		given(holdingService.lookupStock("1234")).willThrow(new MarketAmbiguousException("1234"));
 
 		mockMvc.perform(get("/holdings/lookup").param("code", "1234"))
-				.andExpect(status().isConflict())
-				.andExpect(jsonPath("$.error.code").value("MARKET_AMBIGUOUS"))
+				.andExpect(status().isServiceUnavailable())
+				.andExpect(jsonPath("$.error.code").value("MARKET_UNDETERMINED"))
 				.andExpect(jsonPath("$.error.message").value("無法判斷 1234 是上市或上櫃，請聯絡管理者"));
 	}
 

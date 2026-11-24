@@ -2,6 +2,7 @@ package io.hsiaopingkuo.stockholdings.repository;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.tuple;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
@@ -156,5 +157,38 @@ class HoldingRepositoryTest {
 		entityManager.clear();
 
 		assertThat(holdingRepository.findAllForList().get(0).name()).isEqualTo("台積電");
+	}
+
+	@Test
+	void 清單查詢_持股沒有市場時用行情快取的市場_持股自己有的不會被蓋掉() {
+		// 第 2 題的舊持股：沒有市場
+		holdingRepository.saveAndFlush(new Holding("6488", null, null, 1, new BigDecimal("450.00"), NOW));
+		quoteRepository.saveAndFlush(new Quote(
+				DailyQuote.ofDay("6488", "環球晶", Market.TPEX, LocalDate.of(2026, 11, 23), new BigDecimal("460.50")), NOW));
+		// 持股自己有市場：以持股為準（故意和行情快取不同，確認不會被蓋掉）
+		holdingRepository.saveAndFlush(holding("2330", 1, new BigDecimal("1000.00")));
+		quoteRepository.saveAndFlush(new Quote(
+				DailyQuote.ofDay("2330", "台積電", Market.TPEX, LocalDate.of(2026, 11, 23), new BigDecimal("2030.00")), NOW));
+		entityManager.clear();
+
+		List<HoldingListItem> rows = holdingRepository.findAllForList();
+
+		assertThat(rows).extracting(HoldingListItem::code, HoldingListItem::market)
+				.containsExactly(tuple("2330", Market.TWSE), tuple("6488", Market.TPEX));
+	}
+
+	@Test
+	void 單筆查詢_和清單同一列的內容相同_找不到時是empty() {
+		Holding saved = holdingRepository.saveAndFlush(holding("2330", 1, new BigDecimal("1000.00")));
+		holdingRepository.saveAndFlush(holding("6488", 1, new BigDecimal("450.00")));
+		quoteRepository.saveAndFlush(new Quote(
+				DailyQuote.ofDay("2330", "台積電", Market.TWSE, LocalDate.of(2026, 11, 23), new BigDecimal("1100.00")), NOW));
+		entityManager.clear();
+
+		HoldingListItem one = holdingRepository.findListItemById(saved.getId()).orElseThrow();
+
+		assertThat(one).isEqualTo(holdingRepository.findAllForList().get(0));
+		assertThat(one.profit().profit()).isEqualByComparingTo("93708");
+		assertThat(holdingRepository.findListItemById(-1L)).isEmpty();
 	}
 }

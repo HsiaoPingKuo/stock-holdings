@@ -103,6 +103,62 @@ Windows PowerShell 的最後一行改成 `.\mvnw.cmd spring-boot:run`。
 | 全部持股都沒有收盤價 | 同上 | 總成本照常顯示；市值、盈虧、收益率顯示「—」，提示「所有持股都還沒取得收盤價」 |
 | 沒有任何持股 | — | 全部顯示 0（收益率 0.00%） |
 
+## App 1.0 API
+
+給 Android App 1.0 用的 API，完全照附件《App 1.0 API 規格》：路徑開頭 `/api/v1`，回應一律是 JSON（`Content-Type: application/json;charset=UTF-8`），欄位名稱小寫加底線（`buy_price`）。
+
+| 方法 | 路徑 | 成功 | 失敗 |
+|---|---|---|---|
+| GET | `/api/v1/holdings` | 200，持股物件陣列；沒有持股回 `[]` | |
+| GET | `/api/v1/holdings/{id}` | 200，持股物件 | 404 `NOT_FOUND` |
+| POST | `/api/v1/holdings` | 201，新建的持股物件 | 400 `VALIDATION_ERROR`、404 `STOCK_NOT_FOUND`、409 `DUPLICATE_CODE`、503（見下方） |
+| PUT | `/api/v1/holdings/{id}` | 200，修改後的持股物件 | 400 `VALIDATION_ERROR`、404 `NOT_FOUND` |
+| DELETE | `/api/v1/holdings/{id}` | 204，沒有內容 | 404 `NOT_FOUND` |
+| GET | `/api/v1/summary` | 200，總計物件 | |
+
+新增持股的範例（Mac／Linux、Git Bash）：
+```bash
+curl -i -X POST http://localhost:8080/api/v1/holdings -H "Content-Type: application/json" -d '{"code":"2330","lots":1,"buy_price":1000}'
+```
+
+Windows PowerShell 5.1：先執行 `chcp 65001`，中文才會正常顯示；指令要寫 `curl.exe`（`curl` 在 PowerShell 5.1 是別的指令），JSON 裡的 `"` 要寫成 `\"`：
+```powershell
+chcp 65001
+curl.exe -i -X POST http://localhost:8080/api/v1/holdings -H "Content-Type: application/json" -d '{\"code\":\"2330\",\"lots\":1,\"buy_price\":1000}'
+```
+
+所有錯誤都是同一個格式，App 會直接顯示 `message`：
+```json
+{ "error": { "code": "DUPLICATE_CODE", "message": "2330 已在持股中" } }
+```
+
+### 規格沒有寫到的情況
+
+| 情況 | 回應 |
+|---|---|
+| 新增時官方網站連不上，無法確認代號 | 503 `QUOTE_UNAVAILABLE`「暫時無法連線官方網站確認代號，請稍後再試」 |
+| 新增時上市、上櫃都查到，而且最近交易日相同 | 503 `MARKET_UNDETERMINED`「無法判斷 {代號} 是上市或上櫃，請聯絡管理者」 |
+| 型別不對（張數 1.5、`"1"`，買進價 `"1000"`，代號 `2330` 數字） | 400 `VALIDATION_ERROR`，不會自動轉換或截斷 |
+| JSON 格式壞掉、沒有內容、Content-Type 不是 `application/json` | 400 `VALIDATION_ERROR` |
+| `{id}` 不是數字或超出範圍 | 404 `NOT_FOUND` |
+| 路徑不存在 | 404 `NOT_FOUND` |
+| 方法不支援（例如 PATCH） | 405 `METHOD_NOT_ALLOWED` |
+| 伺服器內部錯誤 | 500 `INTERNAL_ERROR`，不會露出錯誤細節 |
+| 請求的 Accept 不是 JSON（例如只接受 `text/html`） | `/api/` 一律回 JSON（成功和錯誤都是），不會回 HTML 或 406 |
+| PUT 的請求帶了 `code` | 忽略（代號不能改），不回錯誤；其他不認得的欄位也忽略 |
+| 第 2 題時存的舊持股，還沒補到名稱或市場 | 先用行情快取補上；行情快取也沒有時（例如官方一直連不上），`name`、`market` 回空字串 `""`，不會是 `null` |
+| 全部持股都沒有收盤價 | 總計的 `market_value`、`pnl` 是 0，`return_pct` 是 0.00（網頁顯示「—」，API 照規格回數字） |
+
+### App 1.0 怎麼連
+
+- **Android Studio 模擬器**：App 的「設定」填 `http://10.0.2.2:8080`。模擬器裡的 `localhost` 指的是模擬器自己，`10.0.2.2` 才是你的電腦。
+- **實體手機**：手機和電腦連同一個 Wi-Fi，「設定」填電腦的區網 IP，例如 `http://192.168.1.20:8080`。
+  - 查電腦的 IP：Windows 執行 `ipconfig`，看「IPv4 位址」；Mac 到「系統設定 → Wi-Fi → 詳細資訊」。
+  - 電腦的防火牆要允許 8080 埠的連線。Windows 用系統管理員身分開 PowerShell 執行：
+    ```powershell
+    New-NetFirewallRule -DisplayName "stock-holdings 8080" -Direction Inbound -Protocol TCP -LocalPort 8080 -Action Allow
+    ```
+
 ## 更換行情主機
 
 股票資料來自證交所（上市）與櫃買中心（上櫃）。主機網址可以用環境變數換成自己的測試伺服器，**路徑和參數不變**。
@@ -203,10 +259,11 @@ set QUOTE_LOOKUP_MIN_REMAINING=
 ```
 src/main/java/io/hsiaopingkuo/stockholdings/
 ├── StockHoldingsApplication.java   程式進入點
+├── api/                            給 App 1.0 的 REST API（/api/v1）與統一的錯誤格式
 ├── calc/                           盈虧計算規則（ProfitCalculator）與總計（SummaryCalculator），不碰資料庫、不連網
-├── config/                         台北時區 Clock、行情 API 設定（主機網址、逾時、排程）
+├── config/                         台北時區 Clock、行情 API 設定（主機網址、逾時、排程）、JSON 嚴格型別檢查、App API 一律回 JSON
 ├── controller/                     網頁：首頁、持股清單（新增／修改／刪除、代號即時查詢）
-├── dto/                            表單欄位與檢查規則、JSON 回應格式、清單的一列（含收盤價、盈虧）
+├── dto/                            表單欄位與檢查規則、App API 的請求與回應、JSON 錯誤格式、清單的一列（含收盤價、盈虧）
 ├── entity/                         持股（Holding）、行情快取（Quote）、上市／上櫃（Market）
 ├── exception/                      重複代號、找不到持股、查無代號、官方連不上、無法判斷上市或上櫃
 ├── quote/                          官方 API：批次與逐檔行情、休市日表、判斷上市或上櫃（MarketResolver，
