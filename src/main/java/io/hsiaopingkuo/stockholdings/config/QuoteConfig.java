@@ -1,6 +1,9 @@
 package io.hsiaopingkuo.stockholdings.config;
 
 import java.time.Clock;
+import java.util.Map;
+import java.util.Random;
+import java.util.random.RandomGenerator;
 
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
@@ -8,17 +11,27 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.web.client.RestClient;
 
+import io.hsiaopingkuo.stockholdings.entity.Market;
 import io.hsiaopingkuo.stockholdings.quote.HolidayCalendar;
+import io.hsiaopingkuo.stockholdings.quote.MarketCloseBatchClient;
 import io.hsiaopingkuo.stockholdings.quote.MarketResolver;
+import io.hsiaopingkuo.stockholdings.quote.StockLookupClient;
 import io.hsiaopingkuo.stockholdings.quote.TwseHolidayClient;
 import io.hsiaopingkuo.stockholdings.quote.TpexOtcClient;
 import io.hsiaopingkuo.stockholdings.quote.TpexTradingStockClient;
 import io.hsiaopingkuo.stockholdings.quote.TwseMiIndexClient;
 import io.hsiaopingkuo.stockholdings.quote.TwseStockDayClient;
+import io.hsiaopingkuo.stockholdings.repository.HoldingRepository;
+import io.hsiaopingkuo.stockholdings.repository.QuoteRepository;
+import io.hsiaopingkuo.stockholdings.service.HoldingBackfillService;
+import io.hsiaopingkuo.stockholdings.service.Pause;
+import io.hsiaopingkuo.stockholdings.service.QuoteRefreshService;
+import io.hsiaopingkuo.stockholdings.service.QuoteService;
 import tools.jackson.databind.json.JsonMapper;
 
 /**
- * 組裝外部行情相關的物件：兩個市場的逐檔 client、批次 client，以及合併兩邊結果的 MarketResolver。
+ * 組裝外部行情相關的物件：兩個市場的逐檔 client、批次 client、合併兩邊結果的 MarketResolver，
+ * 以及背景更新行情的 QuoteRefreshService。
  * 在這裡統一用 @Bean 建立（而不是各自加 @Component），主機網址、逾時從哪裡來一眼就看得到。
  */
 @Configuration
@@ -62,6 +75,33 @@ public class QuoteConfig {
 	MarketResolver marketResolver(TwseStockDayClient twse, TpexTradingStockClient tpex, Clock clock,
 			QuoteProperties properties) {
 		return new MarketResolver(twse, tpex, clock, properties.lookupTimeout(), properties.lookupCacheTtl());
+	}
+
+	// ===== 背景更新行情 =====
+
+	// 請求之間的等待；包成 bean，測試時才能換成不用真的等的版本
+	@Bean
+	Pause quoteRequestPause() {
+		return Pause.threadSleep();
+	}
+
+	// 隨機間隔用。java.util.Random 可以多個執行緒共用（上市、上櫃兩個排程同時在跑）
+	@Bean
+	RandomGenerator quoteRandom() {
+		return new Random();
+	}
+
+	// 哪個市場用哪個 client 在這裡寫清楚：上市 = 證交所，上櫃 = 櫃買
+	@Bean
+	QuoteRefreshService quoteRefreshService(TwseMiIndexClient twseBatch, TpexOtcClient tpexBatch,
+			TwseStockDayClient twseStock, TpexTradingStockClient tpexStock, QuoteService quoteService,
+			QuoteRepository quoteRepository, HoldingRepository holdingRepository,
+			HoldingBackfillService backfillService, Pause pause, RandomGenerator random, QuoteProperties properties,
+			Clock clock) {
+		Map<Market, MarketCloseBatchClient> batchClients = Map.of(Market.TWSE, twseBatch, Market.TPEX, tpexBatch);
+		Map<Market, StockLookupClient> stockClients = Map.of(Market.TWSE, twseStock, Market.TPEX, tpexStock);
+		return new QuoteRefreshService(batchClients, stockClients, quoteService, quoteRepository, holdingRepository,
+				backfillService, pause, random, properties.refresh(), clock);
 	}
 
 	private static RestClient restClient(String baseUrl, QuoteProperties properties) {
