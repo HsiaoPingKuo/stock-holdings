@@ -11,7 +11,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.web.client.RestClient;
 
 import io.hsiaopingkuo.stockholdings.entity.Market;
-import io.hsiaopingkuo.stockholdings.quote.QuoteParsing.DailyClose;
+import io.hsiaopingkuo.stockholdings.quote.QuoteParsing.MonthSummary;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
@@ -70,9 +70,9 @@ public class TwseStockDayClient implements StockLookupClient {
 			if (!data.isArray() || data.isEmpty()) {
 				return StockLookup.notFound(Market.TWSE);
 			}
-			DailyClose last = QuoteParsing.lastDailyClose(root.path("fields"), data, "收盤價");
+			MonthSummary month = QuoteParsing.summarizeMonth(root.path("fields"), data, "收盤價");
 			return StockLookup.found(Market.TWSE, parseName(code, QuoteParsing.text(root.path("title"))),
-					last.date(), last.closePrice());
+					month.lastTradeDate(), month.closePrice(), month.closeDate());
 		}
 		if (stat != null && stat.contains(NO_DATA_MESSAGE)) {
 			return StockLookup.notFound(Market.TWSE);

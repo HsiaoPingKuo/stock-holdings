@@ -56,14 +56,40 @@ class QuoteParsingTest {
 	}
 
 	@Test
-	void 取最後一列的日期與收盤價() {
+	void 最後一列有成交_交易日和收盤日都是最後一列() {
 		JsonNode fields = jsonMapper.readTree("[\"日期\",\"收盤價\"]");
 		JsonNode data = jsonMapper.readTree("[[\"115/11/20\",\"2,000.00\"],[\"115/11/23\",\"2,030.00\"]]");
 
-		QuoteParsing.DailyClose last = QuoteParsing.lastDailyClose(fields, data, "收盤價");
+		QuoteParsing.MonthSummary month = QuoteParsing.summarizeMonth(fields, data, "收盤價");
 
-		assertThat(last.date()).isEqualTo(LocalDate.of(2026, 11, 23));
-		assertThat(last.closePrice()).isEqualByComparingTo("2030.00");
+		assertThat(month.lastTradeDate()).isEqualTo(LocalDate.of(2026, 11, 23));
+		assertThat(month.closePrice()).isEqualByComparingTo("2030.00");
+		assertThat(month.closeDate()).isEqualTo(LocalDate.of(2026, 11, 23));
+	}
+
+	@Test
+	void 最後兩列沒有成交_收盤價取前一個有成交的列_交易日仍是最後一列() {
+		JsonNode fields = jsonMapper.readTree("[\"日期\",\"收盤價\"]");
+		JsonNode data = jsonMapper.readTree(
+				"[[\"115/11/19\",\"1,990.00\"],[\"115/11/20\",\"2,000.00\"],[\"115/11/23\",\"--\"],[\"115/11/24\",\"--\"]]");
+
+		QuoteParsing.MonthSummary month = QuoteParsing.summarizeMonth(fields, data, "收盤價");
+
+		assertThat(month.lastTradeDate()).isEqualTo(LocalDate.of(2026, 11, 24));
+		assertThat(month.closePrice()).isEqualByComparingTo("2000.00");
+		assertThat(month.closeDate()).isEqualTo(LocalDate.of(2026, 11, 20));
+	}
+
+	@Test
+	void 整個月都沒有成交_收盤價和收盤日是null() {
+		JsonNode fields = jsonMapper.readTree("[\"日期\",\"收盤價\"]");
+		JsonNode data = jsonMapper.readTree("[[\"115/12/01\",\"--\"],[\"115/12/02\",\"--\"]]");
+
+		QuoteParsing.MonthSummary month = QuoteParsing.summarizeMonth(fields, data, "收盤價");
+
+		assertThat(month.lastTradeDate()).isEqualTo(LocalDate.of(2026, 12, 2));
+		assertThat(month.closePrice()).isNull();
+		assertThat(month.closeDate()).isNull();
 	}
 
 	@Test
@@ -71,7 +97,7 @@ class QuoteParsingTest {
 		JsonNode fields = jsonMapper.readTree("[\"日期\",\"開盤價\"]");
 		JsonNode data = jsonMapper.readTree("[[\"115/11/23\",\"2,030.00\"]]");
 
-		assertThatThrownBy(() -> QuoteParsing.lastDailyClose(fields, data, "收盤價"))
+		assertThatThrownBy(() -> QuoteParsing.summarizeMonth(fields, data, "收盤價"))
 				.isInstanceOf(IllegalArgumentException.class);
 	}
 }

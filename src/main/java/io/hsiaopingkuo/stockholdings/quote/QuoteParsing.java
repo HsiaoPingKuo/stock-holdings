@@ -63,17 +63,27 @@ final class QuoteParsing {
 	}
 
 	/**
-	 * 取 data 最後一列（最近一個交易日）的日期和收盤價。
+	 * 整理逐檔 API 回傳的一整個月：
+	 * - 最近交易日 = 最後一列的日期（不論當天有沒有成交）
+	 * - 收盤價 = 從最後一列往前找，第一個不是 "--" 的收盤價和它的日期
+	 * 這個月每一列都是 "--" 時，收盤價和收盤日都是 null，由呼叫端決定要不要再查上個月。
 	 * 找不到需要的欄位時丟例外：代表官方格式變了，這份資料不可信。
 	 */
-	static DailyClose lastDailyClose(JsonNode fields, JsonNode data, String closeField) {
+	static MonthSummary summarizeMonth(JsonNode fields, JsonNode data, String closeField) {
 		int dateIndex = indexOfField(fields, "日期");
 		int closeIndex = indexOfField(fields, closeField);
 		if (dateIndex < 0 || closeIndex < 0) {
 			throw new IllegalArgumentException("找不到日期或「" + closeField + "」欄位：" + fields);
 		}
-		JsonNode lastRow = data.get(data.size() - 1);
-		return new DailyClose(parseRocDate(text(lastRow.get(dateIndex))), parsePrice(text(lastRow.get(closeIndex))));
+		LocalDate lastTradeDate = parseRocDate(text(data.get(data.size() - 1).get(dateIndex)));
+		for (int i = data.size() - 1; i >= 0; i--) {
+			JsonNode row = data.get(i);
+			BigDecimal close = parsePrice(text(row.get(closeIndex)));
+			if (close != null) {
+				return new MonthSummary(lastTradeDate, close, parseRocDate(text(row.get(dateIndex))));
+			}
+		}
+		return new MonthSummary(lastTradeDate, null, null);
 	}
 
 	/** 取字串值；節點不存在或不是字串時回 null（Jackson 3 的 asString() 對非字串節點行為不直覺，這裡自己判斷）。 */
@@ -81,7 +91,13 @@ final class QuoteParsing {
 		return node != null && node.isString() ? node.stringValue() : null;
 	}
 
-	/** 某一天的收盤資訊。closePrice 可能是 null（當天沒有成交）。 */
-	record DailyClose(LocalDate date, BigDecimal closePrice) {
+	/**
+	 * 一個月的逐檔資料整理後的結果。
+	 *
+	 * @param lastTradeDate 最後一列的日期（最近交易日）
+	 * @param closePrice    最近一個有成交日的收盤價；整個月都沒成交時是 null
+	 * @param closeDate     closePrice 是哪一天
+	 */
+	record MonthSummary(LocalDate lastTradeDate, BigDecimal closePrice, LocalDate closeDate) {
 	}
 }

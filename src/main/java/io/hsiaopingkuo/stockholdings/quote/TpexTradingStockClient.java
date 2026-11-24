@@ -9,7 +9,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.web.client.RestClient;
 
 import io.hsiaopingkuo.stockholdings.entity.Market;
-import io.hsiaopingkuo.stockholdings.quote.QuoteParsing.DailyClose;
+import io.hsiaopingkuo.stockholdings.quote.QuoteParsing.MonthSummary;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
@@ -76,9 +76,9 @@ public class TpexTradingStockClient implements StockLookupClient {
 		if (!data.isArray() || data.isEmpty()) {
 			return StockLookup.notFound(Market.TPEX);
 		}
-		DailyClose last = QuoteParsing.lastDailyClose(table.path("fields"), data, "收盤");
+		MonthSummary month = QuoteParsing.summarizeMonth(table.path("fields"), data, "收盤");
 		String name = QuoteParsing.text(root.path("name"));
 		name = (name == null || name.isBlank()) ? null : name.strip();
-		return StockLookup.found(Market.TPEX, name, last.date(), last.closePrice());
+		return StockLookup.found(Market.TPEX, name, month.lastTradeDate(), month.closePrice(), month.closeDate());
 	}
 }

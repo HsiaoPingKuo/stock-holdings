@@ -149,7 +149,8 @@ class TwseStockDayClientTest {
 	}
 
 	@Test
-	void 最後一天沒有成交_仍然FOUND但收盤價是null() {
+	void 最後一天沒有成交_收盤價取前一個有成交的列_最近交易日仍是最後一天() {
+		// 第 3 題第二階段改規則：原本收盤價是 null，改成沿用前一個有成交日的收盤價
 		TwseStockDayClient client = clientFor(BASE_URL);
 		String body = """
 				{"stat":"OK","title":"115年11月 1234 測試股   各日成交資訊",
@@ -164,7 +165,19 @@ class TwseStockDayClientTest {
 		assertThat(result.status()).isEqualTo(Status.FOUND);
 		assertThat(result.name()).isEqualTo("測試股");
 		assertThat(result.tradeDate()).isEqualTo(NOV_23);
-		assertThat(result.closePrice()).isNull();
+		assertThat(result.closePrice()).isEqualByComparingTo("10.00");
+		assertThat(result.closeDate()).isEqualTo(LocalDate.of(2026, 11, 20));
+	}
+
+	@Test
+	void 查到2330_最後一天有成交_收盤日等於最近交易日() {
+		TwseStockDayClient client = clientFor(BASE_URL);
+		server.expect(requestTo(url(BASE_URL, "20261123", "2330")))
+				.andRespond(withSuccess(json("twse-stock-day-2330.json"), MediaType.APPLICATION_JSON));
+
+		StockLookup result = client.lookupMonth("2330", NOV_23);
+
+		assertThat(result.closeDate()).isEqualTo(result.tradeDate());
 	}
 
 	@Test
