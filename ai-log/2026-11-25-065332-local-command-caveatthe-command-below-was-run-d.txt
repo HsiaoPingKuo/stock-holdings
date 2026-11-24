@@ -1,0 +1,851 @@
+ ▐▛███▛█   Claude Code v2.1.329
+▝▜██████▀  Opus 5.5 · Claude Pro
+ ▝▝   ▝▝   C:\TKA102_JavaApp\Workspace_for_practice\stock-holdings
+
+
+> /clear                                                                        
+
+> 【規則】先讀 CLAUDE.md，全程遵守。時間有限：先用 30                           
+  行內提出方案，等我回「同意」後一次做完。commit 由我執行。V1～V6 不能改。      
+                                                                                
+  【背景】設計文件「第6題設計決定.md」請讀第 3 節（/api/v1 對照）、第 7 節      
+  A、第 8 節 D（dividend_status）、第 9 節 D（結果欄位）、第 13、15 節。5a      
+  TradeService、5b IdempotencyService 的錯誤代碼表照之前的完成回報。            
+                                                                                
+  【開始前】從最新的 master 開分支 feature/q6-api-v2。                          
+                                                                                
+  【要做的】                                                                    
+  1. /api/v2（命名沿用 v1 的                                                    
+  snake_case；金額是整數元；價格、平均成本兩位小數；沒有收盤價時相關欄位是      
+  null）：                                                                      
+     - GET /api/v2/holdings：持股清單，含已賣光但還有交易的持股。每檔：id、code 
+  、name、market、shares、average_cost、total_cost、current_price、price_date、 
+  market_value、unrealized_pnl、realized_pnl、cash_dividends、total_return、div 
+  idend_status、data_error。                                                    
+     - GET /api/v2/holdings/{id}：上面的欄位＋trades（id、side、date、shares、p 
+  rice、date_estimated、version）＋dividends（ex_date、kind、eligible_shares、c 
+  ash、stock_shares、source）。                                                 
+     - GET /api/v2/summary：total_cost、market_value、unrealized_pnl、realized_ 
+  pnl、cash_dividends、total_return、quote_missing、dividend_pending。          
+     - POST /api/v2/trades（code、side、date、shares、price）→                  
+  201，回傳新交易和那檔持股的最新狀態。                                         
+     - PUT /api/v2/trades/{id}（date、shares、price、version）→ 200，同上。     
+     - DELETE /api/v2/trades/{id}?version=N →                                   
+  200，回傳那檔持股的最新狀態（持股被刪掉時說明怎麼表示）。                     
+  2. 寫入一律要 Idempotency-Key header：沒帶 → 400；接上                        
+  IdempotencyService，重送回傳一模一樣的狀態碼和 JSON。                         
+  3. 錯誤格式沿用 {"error":{"code","message"}}；OVERSELL 另外帶                 
+  oversold_trade_id、estimated_buy_trade_id。所有錯誤代碼接到                   
+  ApiExceptionHandler（含 422 IDEMPOTENCY_KEY_REUSED、409                       
+  REQUEST_IN_PROGRESS）。                                                       
+  4. API.md（repo 根目錄）：照設計文件第 15 節的清單寫，讓 App 2.0              
+  團隊看了就能串：每個 API 的請求、回應範例（含 Idempotency-Key）、錯誤代碼表、 
+  計算規則（同一天依輸入順序、捨入方式）、dividend_status、第 13 節刻意不處理的 
+  規則、股票分割和減資時使用者會看到什麼、股利資料每天更新一次。/api/v1         
+  只寫「維持 1.0 規格，2.0 之後的差異」。                                       
+                                                                                
+  【測試：只做必要的】每個 API 至少一個成功的情況；Idempotency-Key              
+  缺少、重送、內容不同；OVERSELL 和 VERSION_CONFLICT 的錯誤格式；/api/v1        
+  的現有測試照樣通過。開發途中只跑相關的測試類別，用 ./mvnw                     
+  -q；全部測試由我自己跑。                                                      
+                                                                                
+  【commit】兩個：feat（程式＋測試）、docs（API.md）。                          
+                                                                                
+  【回覆格式】                                                                  
+  - 提案：30 行內，只寫和上面不一樣的設計、需要我決定的問題。                   
+  - 完成回報：只寫跟提案不一樣的地方、需要我決定的事、兩個 commit 訊息。        
+                                                                                
+  【規則再提醒】不改 /api/v1 的行為；官方 API                                   
+  不能在交易或鎖裡呼叫；設計文件和驗收報告不 commit。                           
+
+  Read 2 files, ran 4 shell commands (ctrl+o to expand)
+
+● Still reading existing code (HoldingService / HoldingListItem) to write the
+  proposal. Almost done.
+
+  Searched for 2 patterns, ran 2 shell commands (ctrl+o to expand)
+
+● 已從最新 master 開好分支
+  feature/q6-api-v2，程式碼都讀完了。下面是提案，等你回「同意」再動手。
+
+  提案（只列跟指示不同、或需要你決定的地方）
+
+  新增／修改的檔案
+  - 新增 api/HoldingApiV2Controller（3 支
+    GET）、api/TradeApiV2Controller（POST/PUT/DELETE）。
+  - 新增 service/HoldingV2QueryService：v1 的 findAllForList 會把股數 0
+    的持股濾掉，而且只回
+    HoldingListItem（沒有已實現、股利這些欄位），所以另外寫一支
+    service，重播＋行情＋DividendStatusService 都只讀資料庫。v1 的程式不動。
+  - 新增 dto/ApiV2*（持股、明細、交易、股利、總計、寫入回應、OVERSELL
+    錯誤）、exception/IdempotencyKeyMissingException。
+  - 修改 ApiExceptionHandler：加上 OVERSELL、VERSION_CONFLICT、TRADE 的
+    NOT_FOUND、VALIDATION_ERROR、422、409。
+  - 測試：ApiV2ReadTest、ApiV2TradeWriteTest。
+
+  設計細節
+  1. 寫入的回應是 {"trade":{…},"holding":{清單欄位}}。DELETE 回
+     {"deleted_trade_id":12,"holding_id":5,"holding":null}，holding: null
+     就代表持股一起被刪了。
+  2. 冪等：在 toResponse 裡（跟寫入同一個資料庫交易、只讀資料庫）把 JSON
+     轉成字串存起來，重送時原樣回傳狀態碼和內容。雜湊的原文是「方法＋實際路徑＋
+     整理過的欄位」，價格用 stripTrailingZeros，所以 1000 和 1000.00
+     算同一個內容。Key 長度要 1～64（V6 欄位上限），超過也回 400。
+  3. 已賣光的持股：average_cost 是 null，market_value、unrealized_pnl 是
+     0，current_price 照常顯示。
+  4. 現有錯誤處理的漏洞（只影響 v2）：DELETE 沒帶 version 現在會掉到
+     500，version=abc 會回 404「找不到持股」。改成 400
+     VALIDATION_ERROR。/api/v2/trades/abc 回 404「找不到這筆交易」。v1
+     的路徑判斷和訊息不變。
+  5. side 送 BUY、SELL 以外的值 → 400「side 必須是 BUY 或 SELL」。
+
+  需要你決定（每題第一個是我的建議）
+  - Q1 沒帶 Idempotency-Key 的錯誤代碼：(a) 400 IDEMPOTENCY_KEY_REQUIRED，App
+    能分辨是程式漏帶 header；(b) 400 VALIDATION_ERROR。
+  - Q2 資料異常（DATA_ERROR）的持股：清單照樣列出，data_error: 
+    true、數字欄位都是 null。單筆查詢 (a) 回 200 並附上 trades，App 2.0
+    才看得到是哪一筆有問題、修得回來；(b) 跟 v1 一樣回 409 DATA_ERROR。
+  - Q3 summary 的意思：
+    - quote_missing、dividend_pending 是檔數（整數）。
+    - 市值、未實現只加有收盤價的持股；已實現、現金股利全部加，含已賣光的。
+    - total_return = 這三個數字相加。
+    - 資料異常的不計入。
+
+    另一個做法：只要 quote_missing > 0，市值、未實現、總報酬就給 null。
+  - Q4 寫入回應裡的 holding：(a) 只放清單欄位，App 要明細再呼叫 GET；(b)
+    放完整明細（含 trades、dividends）。
+
+  建議（未實作）：summary 加一個 data_error 檔數。
+
+✻ Sautéed for 1m 36s · done 上午6:20
+
+> 同意。四題都選 (a)／第一個建議：                                              
+  Q1：400 IDEMPOTENCY_KEY_REQUIRED。                                            
+  Q2：單筆回 200，附上 trades 和 data_error: true。                             
+  Q3：照你的第一種算法（跟 v1 的 summary 一致），API.md                         
+  要寫清楚「市值、未實現只加有收盤價的持股」。                                  
+  Q4：寫入回應的 holding 只放清單欄位。                                         
+  summary 加 data_error 檔數，同意。                                            
+                                                                                
+  一次做完，完成後只回報：跟提案不一樣的地方、需要我決定的事、兩個 commit       
+  訊息（feat、docs）。全部測試由我自己跑。                                      
+
+  Searched for 1 pattern, ran 4 shell commands (ctrl+o to expand)
+
+● Now writing the code.
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\dto\HoldingV2View.java)
+  ⎿  Wrote 27 lines to
+     src\main\java\io\hsiaopingkuo\stockholdings\dto\HoldingV2View.java
+       1 package io.hsiaopingkuo.stockholdings.dto;
+       2 
+       3 import java.util.List;
+       4 
+       5 import io.hsiaopingkuo.stockholdings.calc.DividendDataStatus;
+       6 import io.hsiaopingkuo.stockholdings.calc.HoldingReplayResult;
+       7 import io.hsiaopingkuo.stockholdings.entity.Trade;
+       8 
+       9 /**
+      10  * /api/v2 的一檔持股（第 6 題）：持股＋行情、全部交易、重播結果
+     … +18 lines (ctrl+o to expand)
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\service\HoldingV2QueryServic
+       e.java)
+  ⎿  Wrote 128 lines to src\main\java\io\hsiaopingkuo\stockholdings\service
+     \HoldingV2QueryService.java
+       1 package io.hsiaopingkuo.stockholdings.service;
+       2 
+       3 import java.util.List;
+       4 import java.util.Map;
+       5 import java.util.Optional;
+       6 import java.util.stream.Collectors;
+       7 
+       8 import org.slf4j.Logger;
+       9 import org.slf4j.LoggerFactory;
+      10 import org.springframework.stereotype.Service;
+     … +118 lines (ctrl+o to expand)
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\dto\ApiV2HoldingResponse.jav
+       a)
+  ⎿  Wrote 75 lines to src\main\java\io\hsiaopingkuo\stockholdings\dto\ApiV
+     2HoldingResponse.java
+       1 package io.hsiaopingkuo.stockholdings.dto;
+       2 
+       3 import java.math.BigDecimal;
+       4 import java.math.RoundingMode;
+       5 import java.time.format.DateTimeFormatter;
+       6 
+       7 import com.fasterxml.jackson.annotation.JsonProperty;
+       8 import com.fasterxml.jackson.annotation.JsonPropertyOrder;
+       9 
+      10 import io.hsiaopingkuo.stockholdings.calc.HoldingReplayResult;
+     … +65 lines (ctrl+o to expand)
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\dto\ApiV2HoldingDetailRespon
+       se.java)
+  ⎿  Wrote 50 lines to src\main\java\io\hsiaopingkuo\stockholdings\dto\ApiV
+     2HoldingDetailResponse.java
+       1 package io.hsiaopingkuo.stockholdings.dto;
+       2 
+       3 import java.util.List;
+       4 
+       5 import com.fasterxml.jackson.annotation.JsonUnwrapped;
+       6 
+       7 import io.hsiaopingkuo.stockholdings.calc.DividendDetail;
+       8 
+       9 /**
+      10  * GET /api/v2/holdings/{id}：清單的欄位（攤平在同一層）＋ trade
+     … +41 lines (~2 KB) (ctrl+o to expand)
+
+● Bash(cd /c/TKA102_JavaApp/Workspace_for_practice/stock-holdings/src/main/java/
+      io/hsiaopingkuo/stockholdings/dto && sed -i
+      's/@com\.fasterxml\.jackson\.annotation\.Js…)
+  ⎿  5:import com.fasterxml.jackson.annotation.JsonProperty;
+     39:                     @JsonProperty("ex_date") String exDate,
+     41:                     @JsonProperty("eligible_shares") long
+     eligibleShares,
+     43:                     @JsonProperty("stock_shares") Long
+     stockShares,
+  ⎿  Updated src\main\java\io\hsiaopingkuo\stockholdings\dto\ApiV2HoldingDe
+     tailResponse.java +4 -3
+      2 
+      3  import java.util.List;
+      4 
+      5 +import com.fasterxml.jackson.annotation.JsonProperty;           
+      6  import com.fasterxml.jackson.annotation.JsonUnwrapped;
+      7 
+      8  import io.hsiaopingkuo.stockholdings.calc.DividendDetail;
+     ...
+      36           * @param source      OFFICIAL（官方明細）、ESTIMATED（
+          用列表估算）、UNAVAILABLE（無法取得）
+      37           */
+      38          public record Dividend(
+      38 -                        @com.fasterxml.jackson.annotation.JsonP
+         -roperty("ex_date") String exDate,                              
+      39 +                        @JsonProperty("ex_date") String exDate,
+      40                          String kind,
+      40 -                        @com.fasterxml.jackson.annotation.JsonP
+         -roperty("eligible_shares") long eligibleShares,                
+      41 +                        @JsonProperty("eligible_shares") long e
+         +ligibleShares,                                                 
+      42                          Long cash,
+      42 -                        @com.fasterxml.jackson.annotation.JsonP
+         -roperty("stock_shares") Long stockShares,                      
+      43 +                        @JsonProperty("stock_shares") Long stoc
+         +kShares,                                                       
+      44                          String source) {
+      45 
+      46                  static Dividend from(DividendDetail d) {
+
+● Now the trade, summary, write responses, requests, and error DTOs.
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\dto\ApiV2TradeResponse.java)
+  ⎿  Wrote 34 lines to src\main\java\io\hsiaopingkuo\stockholdings\dto\ApiV
+     2TradeResponse.java
+       1 package io.hsiaopingkuo.stockholdings.dto;
+       2 
+       3 import java.math.BigDecimal;
+       4 
+       5 import com.fasterxml.jackson.annotation.JsonProperty;
+       6 import com.fasterxml.jackson.annotation.JsonPropertyOrder;
+       7 
+       8 import io.hsiaopingkuo.stockholdings.entity.Trade;
+       9 
+      10 /**
+     … +24 lines (ctrl+o to expand)
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\dto\ApiV2SummaryResponse.jav
+       a)
+  ⎿  Wrote 61 lines to src\main\java\io\hsiaopingkuo\stockholdings\dto\ApiV
+     2SummaryResponse.java
+      1 package io.hsiaopingkuo.stockholdings.dto;
+      2 
+      3 import java.util.List;
+      4 import java.util.Objects;
+      5 
+      6 import com.fasterxml.jackson.annotation.JsonProperty;
+      7 import com.fasterxml.jackson.annotation.JsonPropertyOrder;
+      8 
+      9 import io.hsiaopingkuo.stockholdings.calc.DividendDataStatus;
+     … +52 lines (ctrl+o to expand)
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\dto\ApiV2TradeWriteResponse.
+       java)
+  ⎿  Wrote 8 lines to src\main\java\io\hsiaopingkuo\stockholdings\dto\ApiV2
+     TradeWriteResponse.java
+      1 package io.hsiaopingkuo.stockholdings.dto;
+      2 
+      3 /**
+      4  * POST、PUT /api/v2/trades 的回應：寫入後的交易，和那檔持股的最
+        新狀態（清單欄位，不含 trades、dividends；
+      5  * 要明細時再 GET /api/v2/holdings/{id}）。
+      6  */
+      7 public record ApiV2TradeWriteResponse(ApiV2TradeResponse trade, A
+        piV2HoldingResponse holding) {
+      8 }
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\dto\ApiV2TradeDeleteResponse
+       .java)
+  ⎿  Wrote 17 lines to src\main\java\io\hsiaopingkuo\stockholdings\dto\ApiV
+     2TradeDeleteResponse.java
+       1 package io.hsiaopingkuo.stockholdings.dto;
+       2 
+       3 import com.fasterxml.jackson.annotation.JsonProperty;
+       4 import com.fasterxml.jackson.annotation.JsonPropertyOrder;
+       5 
+       6 /**
+       7  * DELETE /api/v2/trades/{id} 的回應。
+       8  *
+       9  * @param holdingId 被刪的交易屬於哪一檔持股；持股一起被刪時，Ap
+         p 用它把那一列從畫面拿掉
+     … +8 lines (ctrl+o to expand)
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\dto\ApiV2TradeCreateRequest.
+       java)
+  ⎿  Wrote 28 lines to src\main\java\io\hsiaopingkuo\stockholdings\dto\ApiV
+     2TradeCreateRequest.java
+       1 package io.hsiaopingkuo.stockholdings.dto;
+       2 
+       3 import java.math.BigDecimal;
+       4 import java.time.LocalDate;
+       5 
+       6 import io.hsiaopingkuo.stockholdings.calc.TradeSide;
+       7 import jakarta.validation.constraints.NotNull;
+       8 
+       9 /**
+      10  * POST /api/v2/trades 的請求內容。這裡只檢查「有沒有填」；
+     … +18 lines (ctrl+o to expand)
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\dto\ApiV2TradeUpdateRequest.
+       java)
+  ⎿  Wrote 24 lines to src\main\java\io\hsiaopingkuo\stockholdings\dto\ApiV
+     2TradeUpdateRequest.java
+       1 package io.hsiaopingkuo.stockholdings.dto;
+       2 
+       3 import java.math.BigDecimal;
+       4 import java.time.LocalDate;
+       5 
+       6 import jakarta.validation.constraints.NotNull;
+       7 
+       8 /**
+       9  * PUT /api/v2/trades/{id} 的請求內容。買賣方向、代號不能改（要
+         改請刪掉重新新增）。
+     … +15 lines (ctrl+o to expand)
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\dto\OversellErrorResponse.ja
+       va)
+  ⎿  Wrote 27 lines to src\main\java\io\hsiaopingkuo\stockholdings\dto\Over
+     sellErrorResponse.java
+       1 package io.hsiaopingkuo.stockholdings.dto;
+       2 
+       3 import com.fasterxml.jackson.annotation.JsonProperty;
+       4 import com.fasterxml.jackson.annotation.JsonPropertyOrder;
+       5 
+       6 /**
+       7  * 409 OVERSELL 的錯誤回應：在共用格式 {"error":{"code","message
+         "}} 的 error 裡多帶兩個欄位，
+       8  * 只認得 code、message 的用戶端照樣看得懂；App 2.0 可以用 id 標
+         出是哪一筆交易。
+     … +19 lines (ctrl+o to expand)
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\exception\IdempotencyKeyRequ
+       iredException.java)  ⎿  Wrote 12 lines to src\main\java\io\hsiaopingkuo\stockholdings\exceptio
+     n\IdempotencyKeyRequiredException.java
+       1 package io.hsiaopingkuo.stockholdings.exception;
+       2 
+       3 /**
+       4  * /api/v2 的寫入沒帶 Idempotency-Key，或格式不對（空白、超過 64
+          字元，V6 欄位的長度）。
+       5  * API 回 400 IDEMPOTENCY_KEY_REQUIRED：和一般的欄位錯誤分開，Ap
+         p 開發者一看就知道是程式漏帶 header。
+       6  */
+       7 public class IdempotencyKeyRequiredException extends RuntimeExce
+         ption {
+     … +5 lines (ctrl+o to expand)
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\api\HoldingApiV2Controller.j
+       ava)
+  ⎿  Wrote 45 lines to src\main\java\io\hsiaopingkuo\stockholdings\api\Hold
+     ingApiV2Controller.java
+       1 package io.hsiaopingkuo.stockholdings.api;
+       2 
+       3 import java.util.List;
+       4 
+       5 import org.springframework.web.bind.annotation.GetMapping;
+       6 import org.springframework.web.bind.annotation.PathVariable;
+       7 import org.springframework.web.bind.annotation.RequestMapping;
+       8 import org.springframework.web.bind.annotation.RestController;
+       9 
+      10 import io.hsiaopingkuo.stockholdings.dto.ApiV2HoldingDetailRespo
+     … +36 lines (~1 KB) (ctrl+o to expand)
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\api\TradeApiV2Controller.jav
+       a)
+  ⎿  Wrote 132 lines to src\main\java\io\hsiaopingkuo\stockholdings\api\Tra
+     deApiV2Controller.java
+       1 package io.hsiaopingkuo.stockholdings.api;
+       2 
+       3 import org.springframework.http.ResponseEntity;
+       4 import org.springframework.web.bind.annotation.DeleteMapping;
+       5 import org.springframework.web.bind.annotation.PathVariable;
+       6 import org.springframework.web.bind.annotation.PostMapping;
+       7 import org.springframework.web.bind.annotation.PutMapping;
+       8 import org.springframework.web.bind.annotation.RequestBody;
+       9 import org.springframework.web.bind.annotation.RequestHeader;
+      10 import org.springframework.web.bind.annotation.RequestMapping;
+     … +122 lines (ctrl+o to expand)
+
+  Read 1 file (ctrl+o to expand)
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\api\ApiExceptionHandler.jav
+        a)
+  ⎿  Added 71 lines, removed 1 line
+       53     * 規格裡 GET、DELETE 單筆的失敗情況只有 404 NOT_FOUND。
+       54     */
+       55    @ExceptionHandler(MethodArgumentTypeMismatchException.class)
+       56 -  ResponseEntity<ErrorResponse> typeMismatch(MethodArgumentTyp
+          -eMismatchException e) {                                       
+       56 +  ResponseEntity<ErrorResponse> typeMismatch(MethodArgumentTyp
+          +eMismatchException e, HttpServletRequest request) {           
+       57 +    // 第 6 題 /api/v2：網址參數（DELETE 的 ?version=abc）型別
+          +不對是請求寫錯，不是「找不到」                                
+       58 +    if (e.getParameter().hasParameterAnnotation(RequestParam.c
+          +lass)) {                                                      
+       59 +      return ApiJson.error(HttpStatus.BAD_REQUEST, "VALIDATION
+          +_ERROR", e.getName() + " 必須是整數");                        
+       60 +    }                                                         
+       61 +    // /api/v2/trades/abc：找的是交易，不是持股。/api/v1 只有 
+          +持股，訊息維持原樣                                            
+       62 +    if (request.getRequestURI().startsWith(request.getContextP
+          +ath() + "/api/v2/trades/")) {                                 
+       63 +      return ApiJson.error(HttpStatus.NOT_FOUND, "NOT_FOUND", 
+          +"找不到這筆交易（id=" + e.getValue() + "）");                 
+       64 +    }                                                         
+       65      return ApiJson.error(HttpStatus.NOT_FOUND, "NOT_FOUND", "
+           找不到這筆持股（id=" + e.getValue() + "）");
+       66    }
+       67 
+       68 +  // ===== 第 6 題 /api/v2：交易的寫入（TradeService、Idempote
+          +ncyService 丟出的錯誤）=====                                  
+       69 +                                                              
+       70 +  @ExceptionHandler(TradeNotFoundException.class)             
+       71 +  ResponseEntity<ErrorResponse> tradeNotFound(TradeNotFoundExc
+          +eption e) {                                                   
+       72 +    return ApiJson.error(HttpStatus.NOT_FOUND, "NOT_FOUND", e.
+          +getMessage());                                                
+       73 +  }                                                           
+       74 +                                                              
+       75 +  /** 日期、股數、價格不符合規則（TradeRules），和 Bean Valida
+          +tion 的錯誤同一個代碼。 */                                    
+       76 +  @ExceptionHandler(TradeValidationException.class)           
+       77 +  ResponseEntity<ErrorResponse> tradeInvalid(TradeValidationEx
+          +ception e) {                                                  
+       78 +    return ApiJson.error(HttpStatus.BAD_REQUEST, "VALIDATION_E
+          +RROR", e.getMessage());                                       
+       79 +  }                                                           
+       80 +                                                              
+       81 +  /**                                                         
+       82 +   * 超賣：409，error 裡多帶兩個交易 id，App 2.0 可以標出是哪 
+          +一筆（值是 null 也照樣輸出）。                                
+       83 +   * 輸入本身沒錯，是和目前的持股狀態衝突，所以和其他衝突一樣 
+          +用 409。                                                      
+       84 +   */                                                         
+       85 +  @ExceptionHandler(TradeOversellException.class)             
+       86 +  ResponseEntity<OversellErrorResponse> oversell(TradeOversell
+          +Exception e) {                                                
+       87 +    return ResponseEntity.status(HttpStatus.CONFLICT).contentT
+          +ype(ApiJson.JSON_UTF8)                                        
+       88 +        .body(OversellErrorResponse.of(e.getMessage(), e.getOv
+          +ersoldTradeId(), e.getEstimatedBuyTradeId()));                
+       89 +  }                                                           
+       90 +                                                              
+       91 +  /** 別的裝置已經改過這筆交易（版本號不一致）。 */           
+       92 +  @ExceptionHandler(VersionConflictException.class)           
+       93 +  ResponseEntity<ErrorResponse> versionConflict(VersionConflic
+          +tException e) {                                               
+       94 +    return ApiJson.error(HttpStatus.CONFLICT, "VERSION_CONFLIC
+          +T", e.getMessage());                                          
+       95 +  }                                                           
+       96 +                                                              
+       97 +  @ExceptionHandler(IdempotencyKeyRequiredException.class)    
+       98 +  ResponseEntity<ErrorResponse> idempotencyKeyInvalid(Idempote
+          +ncyKeyRequiredException e) {                                  
+       99 +    return ApiJson.error(HttpStatus.BAD_REQUEST, "IDEMPOTENCY_
+          +KEY_REQUIRED", e.getMessage());                               
+      100 +  }                                                           
+      101 +                                                              
+      102 +  /** 沒帶必要的 header。目前只有 Idempotency-Key 是必要的 hea
+          +der。 */                                                      
+      103 +  @ExceptionHandler(MissingRequestHeaderException.class)      
+      104 +  ResponseEntity<ErrorResponse> missingHeader(MissingRequestHe
+          +aderException e) {                                            
+      105 +    if (TradeApiV2Controller.IDEMPOTENCY_KEY.equalsIgnoreCase(
+          +e.getHeaderName())) {                                         
+      106 +      return ApiJson.error(HttpStatus.BAD_REQUEST, "IDEMPOTENC
+          +Y_KEY_REQUIRED",                                              
+      107 +          "缺少 Idempotency-Key header：每一個新增、修改、刪除
+          +都要帶一個 UUID，重送時沿用同一個");                          
+      108 +    }                                                         
+      109 +    return ApiJson.error(HttpStatus.BAD_REQUEST, "VALIDATION_E
+          +RROR", "缺少 " + e.getHeaderName() + " header");              
+      110 +  }                                                           
+      111 +                                                              
+      112 +  /** 沒帶必要的網址參數（DELETE 沒帶 ?version=N）。沒有這個 h
+          +andler 會掉到最後防線變成 500。 */                            
+      113 +  @ExceptionHandler(MissingServletRequestParameterException.cl
+          +ass)                                                          
+      114 +  ResponseEntity<ErrorResponse> missingParameter(MissingServle
+          +tRequestParameterException e) {                               
+      115 +    return ApiJson.error(HttpStatus.BAD_REQUEST, "VALIDATION_E
+          +RROR", "缺少網址參數 " + e.getParameterName());               
+      116 +  }                                                           
+      117 +                                                              
+      118 +  /** 同一個 Idempotency-Key 已經用在另一個 API 或不同的內容。
+          +422：格式沒錯，但這個鍵不能這樣用。 */                        
+      119 +  @ExceptionHandler(IdempotencyKeyReusedException.class)      
+      120 +  ResponseEntity<ErrorResponse> idempotencyKeyReused(Idempoten
+          +cyKeyReusedException e) {                                     
+      121 +    return ApiJson.error(HttpStatus.UNPROCESSABLE_CONTENT, "ID
+          +EMPOTENCY_KEY_REUSED", e.getMessage());                       
+      122 +  }                                                           
+      123 +                                                              
+      124 +  /** 同一個 Idempotency-Key 的第一個請求還沒處理完。 */      
+      125 +  @ExceptionHandler(RequestInProgressException.class)         
+      126 +  ResponseEntity<ErrorResponse> requestInProgress(RequestInPro
+          +gressException e) {                                           
+      127 +    return ApiJson.error(HttpStatus.CONFLICT, "REQUEST_IN_PROG
+          +RESS", e.getMessage());                                       
+      128 +  }                                                           
+      129 +                                                              
+      130    // ===== 新增時的業務錯誤（和網頁用同一組例外，訊息也相同） 
+           =====
+      131 
+      132    @ExceptionHandler(StockCodeNotFoundException.class)
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\api\ApiExceptionHandler.jav
+        a)
+  ⎿  Added 11 lines
+      13  import org.springframework.validation.FieldError;
+      14  import org.springframework.web.HttpMediaTypeNotSupportedExcepti
+          on;
+      15  import org.springframework.web.bind.MethodArgumentNotValidExcep
+          tion;
+      16 +import org.springframework.web.bind.MissingRequestHeaderExcepti
+         +on;                                                            
+      17 +import org.springframework.web.bind.MissingServletRequestParame
+         +terException;                                                  
+      18  import org.springframework.web.bind.annotation.ExceptionHandler
+          ;
+      19 +import org.springframework.web.bind.annotation.RequestParam;   
+      20  import org.springframework.web.bind.annotation.RestControllerAd
+          vice;
+      21  import org.springframework.web.method.annotation.MethodArgument
+          TypeMismatchException;
+      22 
+      23  import io.hsiaopingkuo.stockholdings.dto.ErrorResponse;
+      24 +import io.hsiaopingkuo.stockholdings.dto.OversellErrorResponse;
+      25  import io.hsiaopingkuo.stockholdings.exception.DuplicateCodeExc
+          eption;
+      26  import io.hsiaopingkuo.stockholdings.exception.HoldingBusyExcep
+          tion;
+      27  import io.hsiaopingkuo.stockholdings.exception.HoldingDataExcep
+          tion;
+      28  import io.hsiaopingkuo.stockholdings.exception.HoldingNotFoundE
+          xception;
+      29 +import io.hsiaopingkuo.stockholdings.exception.IdempotencyKeyRe
+         +quiredException;                                               
+      30 +import io.hsiaopingkuo.stockholdings.exception.IdempotencyKeyRe
+         +usedException;                                                 
+      31  import io.hsiaopingkuo.stockholdings.exception.MarketAmbiguousE
+          xception;
+      32  import io.hsiaopingkuo.stockholdings.exception.MarketUnavailabl
+          eException;
+      33 +import io.hsiaopingkuo.stockholdings.exception.RequestInProgres
+         +sException;                                                    
+      34  import io.hsiaopingkuo.stockholdings.exception.StockCodeNotFoun
+          dException;
+      35 +import io.hsiaopingkuo.stockholdings.exception.TradeNotFoundExc
+         +eption;                                                        
+      36 +import io.hsiaopingkuo.stockholdings.exception.TradeOversellExc
+         +eption;                                                        
+      37 +import io.hsiaopingkuo.stockholdings.exception.TradeValidationE
+         +xception;                                                      
+      38  import io.hsiaopingkuo.stockholdings.exception.UpgradeRequiredE
+          xception;
+      39 +import io.hsiaopingkuo.stockholdings.exception.VersionConflictE
+         +xception;                                                      
+      40  import jakarta.servlet.http.HttpServletRequest;
+      41  import tools.jackson.core.JacksonException;
+      42  import tools.jackson.core.exc.InputCoercionException;
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\api\ApiExceptionHandler.jav
+        a)
+  ⎿  Added 10 lines, removed 4 lines
+      248 
+      249    private static final String INVALID_JSON = "請求內容不是正確
+           的 JSON";
+      250 
+      251 -  // 欄位錯誤的排序：照 JSON 請求裡的欄位順序（Java 物件的屬性
+          -名稱）                                                        
+      252 -  private static final List<String> FIELD_ORDER = List.of("cod
+          -e", "lots", "buyPrice");                                      
+      251 +  // 欄位錯誤的排序：照 JSON 請求裡的欄位順序（Java 物件的屬性
+          +名稱）；前三個是 v1，後面是 v2（第 6 題）                     
+      252 +  private static final List<String> FIELD_ORDER = List.of("cod
+          +e", "lots", "buyPrice",                                       
+      253 +      "side", "date", "shares", "price", "version");          
+      254 
+      254 -  // 型別不對時，各欄位（JSON 的欄位名稱）的訊息              
+      255 +  // 型別不對時，各欄位（JSON 的欄位名稱）的訊息；前三個是 v1 
+          +，後面是 v2（第 6 題）                                        
+      256    private static final Map<String, String> FIELD_TYPE_MESSAGES
+            = Map.of(
+      257        "code", "股票代號必須是文字，例如 \"2330\"",
+      258        "lots", "張數必須是 1～999 的整數",
+      258 -      "buy_price", "買進價必須是數字，最多兩位小數");         
+      259 +      "buy_price", "買進價必須是數字，最多兩位小數",          
+      260 +      "side", "side 必須是 \"BUY\" 或 \"SELL\"（大寫）",      
+      261 +      "date", "日期必須是 \"YYYY-MM-DD\" 格式的文字，例如 \"20
+          +26-11-20\"",                                                  
+      262 +      "shares", "股數必須是整數",                             
+      263 +      "price", "成交價必須是數字，例如 1000 或 980.5",        
+      264 +      "version", "version 必須是整數");                       
+      265  }
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Main code compiles. Now the tests.
+
+● Write(src\test\java\io\hsiaopingkuo\stockholdings\api\ApiV2ReadTest.java)
+  ⎿  Wrote 268 lines to
+     src\test\java\io\hsiaopingkuo\stockholdings\api\ApiV2ReadTest.java
+       1 package io.hsiaopingkuo.stockholdings.api;
+       2 
+       3 import static org.assertj.core.api.Assertions.assertThat;
+       4 import static org.hamcrest.Matchers.hasSize;
+       5 import static org.mockito.ArgumentMatchers.any;
+       6 import static org.mockito.BDDMockito.given;
+       7 import static org.springframework.test.web.servlet.request.MockM
+         vcRequestBuilders.get;
+       8 import static org.springframework.test.web.servlet.result.MockMv
+         cResultMatchers.content;
+     … +260 lines (ctrl+o to expand)
+
+● Write(src\test\java\io\hsiaopingkuo\stockholdings\api\ApiV2TradeWriteTest.java
+       )
+  ⎿  Wrote 292 lines to src\test\java\io\hsiaopingkuo\stockholdings\api\Api
+     V2TradeWriteTest.java
+      1 package io.hsiaopingkuo.stockholdings.api;
+      2 
+      3 import static org.assertj.core.api.Assertions.assertThat;
+      4 import static org.springframework.test.web.servlet.request.MockMv
+        cRequestBuilders.delete;
+      5 import static org.springframework.test.web.servlet.request.MockMv
+        cRequestBuilders.post;
+      6 import static org.springframework.test.web.servlet.request.MockMv
+        cRequestBuilders.put;
+      7 import static org.springframework.test.web.servlet.result.MockMvc
+     … +286 lines (~11 KB) (ctrl+o to expand)
+
+  Listed 1 directory, ran 1 shell command (ctrl+o to expand)
+
+● 12 個新測試都通過。接著跑 /api/v1 和錯誤處理相關的既有測試。
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● 既有的 /api/v1 和錯誤處理測試也都通過。接下來寫 API.md，先確認交易規則的細節。
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● Write(API.md)
+  ⎿  Wrote 433 lines to API.md
+       1 # 持股管理 API（給 App 2.0 團隊）
+       2 
+       3 - 伺服器網址：模擬器連本機用 `http://10.0.2.2:8080`，其他情況換
+         成實際主機
+       4 - 請求和回應都是 JSON（UTF-8）。送 JSON 時要帶 `Content-Type: ap
+         plication/json`
+       5 - 欄位名稱都用 snake_case。**值是 `null` 的欄位照樣輸出，不會省
+         略**
+       6 - 日期格式 `YYYY-MM-DD`，以台北時間為準
+       7 - 不用登入，也不用 cookie
+     … +426 lines (ctrl+o to expand)
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● /api/v2 六支 API、錯誤處理、測試和 API.md 都做完了，在分支
+  feature/q6-api-v2，還沒 commit。新加的 12 個測試全部通過；跟 /api/v1
+  和錯誤處理相關的既有 7 個測試類別也照樣通過，共 93
+  個。全部測試還沒跑，留給你。
+
+  跟提案不一樣的地方
+
+  1. 缺 header 的檢查排在最前面：Idempotency-Key 放在第一個參數，所以同時缺
+     header、內容也有錯時，回的是 IDEMPOTENCY_KEY_REQUIRED，不是
+     VALIDATION_ERROR。Key 是空白或超過 64 字元，也回
+     IDEMPOTENCY_KEY_REQUIRED（提案只寫了 400，沒寫代碼）。
+  2. 資料異常的持股仍顯示收盤價：數字欄位是 null，但 current_price、price_date
+     照樣輸出，因為那是行情，不是計算結果。
+  3. market 可以是 null：舊持股還沒補到市場時是 null；v1 在這種情況輸出空字串。
+  4. 單筆回應沒有重寫一份清單欄位：用 @JsonUnwrapped
+     把清單的欄位攤平在同一層，兩邊的欄位和算法一定相同。測試已確認輸出是平的。
+  5. 一筆交易都沒有的持股不列出：正常情況不會出現，因為刪掉最後一筆交易時，持股
+     會一起刪。
+  6. API.md 寫的分割、減資只說明使用者會看到什麼（股數不變，市值看起來大跌或大漲
+     ），請以券商對帳單為準。沒有提供手動修正的方法。
+
+  需要你決定的事
+
+  沒有。
+
+  怎麼驗證
+
+  啟動後執行：
+
+  curl -s -X POST localhost:8080/api/v2/trades -H "Content-Type: 
+  application/json" -H "Idempotency-Key: test-1" -d "{\"code\":\"2330\",\"side\"
+  :\"BUY\",\"date\":\"2026-11-20\",\"shares\":1500,\"price\":1000}"
+
+  - 第一次送：回 201。
+  - 同一行再送一次：回一模一樣的 JSON。
+  - 拿掉 Idempotency-Key：回 400 IDEMPOTENCY_KEY_REQUIRED。
+  - 再看 GET /api/v2/holdings 和 GET /api/v2/summary。
+
+  兩個 commit 訊息
+
+  feat: 第6題 /api/v2 
+  持股清單、明細、總計與交易新增修改刪除（Idempotency-Key、OVERSELL 錯誤格式）
+  docs: 第6題 新增 API.md（/api/v2 規格、錯誤代碼、計算規則、/api/v1 差異）
+  第一個 commit 包含：ApiExceptionHandler.java，以及新加的 2 個 controller、10
+  個 dto、1 個 exception、HoldingV2QueryService、2 個測試檔。第二個 commit 只有
+  API.md。設計文件沒有被 git 追蹤，不會被 commit 進去。
+
+  建議（未實作）：NoOfficialCallTest 可以把 /api/v2 的三支 GET
+  也加進去，確認讀取時不會連官方。
+
+  提醒：README 等這一步驗證完再決定要不要連結 API.md；ai-log 記得放，commit
+  前檢查有沒有密碼或 token。
+
+✻ Worked for 10m 6s · done 上午6:32
+
+> 同意，API.md 我讀過了，內容沒問題。                                           
+  NoOfficialCallTest 加上 /api/v2 的三支 GET，放進同一個 feat commit。          
+  README 先不連結 API.md，第 8 題寫 UPGRADE.md 時再一起處理。                   
+  commit 由我執行，訊息照你給的兩個。                                           
+
+  Read 1 file (ctrl+o to expand)
+
+● Update(src\test\java\io\hsiaopingkuo\stockholdings\NoOfficialCallTest.java)
+  ⎿  Added 22 lines
+      103    }
+      104 
+      105    @Test
+      106 +  void App2的三支讀取API只讀資料庫_不呼叫任何官方client() thro
+          +ws Exception {                                                
+      107 +    LocalDateTime now = LocalDateTime.of(2026, 11, 24, 14, 0);
+      108 +    Long tsmcId = TestHoldings.saveWithBuy(holdingRepository, 
+          +tradeRepository, "2330", "台積電", Market.TWSE, 1,            
+      109 +        "1000.00", now).getId();                              
+      110 +    TestHoldings.saveWithBuy(holdingRepository, tradeRepositor
+          +y, "6488", "環球晶", Market.TPEX, 1, "450.00", now);          
+      111 +    quoteRepository.save(new Quote(                           
+      112 +        DailyQuote.ofDay("2330", "台積電", Market.TWSE, LocalD
+          +ate.of(2026, 11, 23), new BigDecimal("2030.00")), now));      
+      113 +                                                              
+      114 +    mockMvc.perform(get("/api/v2/holdings"))                  
+      115 +        .andExpect(status().isOk())                           
+      116 +        .andExpect(jsonPath("$[0].current_price").value(2030.0
+          +0))                                                           
+      117 +        // 6488 沒有行情：不會為了補收盤價去問官方，直接回 nul
+          +l                                                             
+      118 +        .andExpect(jsonPath("$[1].current_price").value(org.ha
+          +mcrest.Matchers.nullValue()));                                
+      119 +    mockMvc.perform(get("/api/v2/holdings/{id}", tsmcId)).andE
+          +xpect(status().isOk());                                       
+      120 +    mockMvc.perform(get("/api/v2/summary"))                   
+      121 +        .andExpect(status().isOk())                           
+      122 +        .andExpect(jsonPath("$.quote_missing").value(1));     
+      123 +                                                              
+      124 +    verifyNoOfficialCall();                                   
+      125 +  }                                                           
+      126 +                                                              
+      127 +  @Test                                                       
+      128    void 行情快取有這個代號_即時提示和新增都不呼叫任何官方client
+           () throws Exception {
+      129      quoteRepository.save(new Quote(
+      130          DailyQuote.ofDay("6488", "環球晶", Market.TPEX, LocalD
+           ate.of(2026, 11, 23), new BigDecimal("460.50")),
+
+● Fully-qualified nullValue is clumsy; switch to a static import.
+
+● Bash(f=src/test/java/io/hsiaopingkuo/stockholdings/NoOfficialCallTest.java &&
+      sed -i 's/org\.hamcrest\.Matchers\.nullValue()/nullValue()/; s/^import
+      static org.hamcr…)
+  ⎿  5:import static org.hamcrest.Matchers.nullValue;
+     119:
+     .andExpect(jsonPath("$[1].current_price").value(nullValue()));
+     tests="3" errors="0" skipped="0" failures="0"
+  ⎿  Updated
+     src\test\java\io\hsiaopingkuo\stockholdings\NoOfficialCallTest.java +2
+     -1
+      2 
+      3  import static org.assertj.core.api.Assertions.assertThat;
+      4  import static org.hamcrest.Matchers.containsString;
+      5 +import static org.hamcrest.Matchers.nullValue;                  
+      6  import static org.mockito.Mockito.verifyNoInteractions;
+      7  import static org.springframework.test.web.servlet.request.MockM
+         vcRequestBuilders.get;
+      8  import static org.springframework.security.test.web.servlet.requ
+         est.SecurityMockMvcRequestPostProcessors.csrf;
+     ...
+      116                                  .andExpect(status().isOk())
+      117                                  .andExpect(jsonPath("$[0].curr
+           ent_price").value(2030.00))
+      118                                  // 6488 沒有行情：不會為了補收
+           盤價去問官方，直接回 null
+      118 -                                .andExpect(jsonPath("$[1].curr
+          -ent_price").value(org.hamcrest.Matchers.nullValue()));        
+      119 +                                .andExpect(jsonPath("$[1].curr
+          +ent_price").value(nullValue()));                              
+      120                  mockMvc.perform(get("/api/v2/holdings/{id}", t
+           smcId)).andExpect(status().isOk());
+      121                  mockMvc.perform(get("/api/v2/summary"))
+      122                                  .andExpect(status().isOk())
+  ⎿  (timeout 10m)
+
+● NoOfficialCallTest 已加上 /api/v2 三支 GET 的測試，這個類別 3 個測試全部通過。
+
+  改了哪個檔
+  - src/test/java/io/hsiaopingkuo/stockholdings/NoOfficialCallTest.java：新增一
+    個測試，準備 2330（有收盤價）和 6488（沒有行情）兩檔，依序呼叫
+    /api/v2/holdings、/api/v2/holdings/{id}、/api/v2/summary。測試檢查 6488 的
+    current_price 是 null、quote_missing 是 1，最後確認行情相關的官方 client
+    一次都沒被呼叫。
+
+  跟之前不一樣的地方
+  - 檢查的官方 client 範圍跟這個類別原本的測試一樣：四個行情 client 加上
+    MarketResolver。除權息的 client
+    沒有換成假的：伺服器啟動時，除權息排程可能會自己去抓資料，如果也檢查它們，測
+    試會被這個背景動作干擾而失敗。讀取除權息只走資料庫，這點在
+    HoldingV2QueryService 的註解有寫。
+
+  commit 時要加的檔案
+
+  feat 這個 commit：
+  git add src/main/java/io/hsiaopingkuo/stockholdings 
+  src/test/java/io/hsiaopingkuo/stockholdings/api/ApiV2ReadTest.java 
+  src/test/java/io/hsiaopingkuo/stockholdings/api/ApiV2TradeWriteTest.java 
+  src/test/java/io/hsiaopingkuo/stockholdings/NoOfficialCallTest.java
+  git commit -m "feat: 第6題 /api/v2 
+  持股清單、明細、總計與交易新增修改刪除（Idempotency-Key、OVERSELL 錯誤格式）"
+  docs 這個 commit：
+  git add API.md
+  git commit -m "docs: 第6題 新增 API.md（/api/v2 
+  規格、錯誤代碼、計算規則、/api/v1 差異）"
+
+  README 照你說的不動，第 8 題寫 UPGRADE.md 時再一起處理。全部測試請你自己跑
+  ./mvnw test。ai-log 記得放進去，commit 前檢查一下有沒有密碼或 token。
+
+✻ Churned for 42s · done 上午6:51
