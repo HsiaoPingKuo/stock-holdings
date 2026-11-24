@@ -82,7 +82,7 @@
 			<tr th:if="${t.id == editTradeId}" th:object="${updateForm}" th:id="|trade-${t.id}|" class="editing"
 					th:classappend="${marked} ? 'marked'">
 				<td>
-					<input type="date" th:field="*{date}" form="edit-form">
+					<input type="date" th:field="*{date}" th:min="${minDate}" th:max="${maxDate}" form="edit-form">
 					<br th:if="${#fields.hasErrors('date')}">
 					<span class="error" th:if="${#fields.hasErrors('date')}" th:errors="*{date}">錯誤</span>
 				</td>

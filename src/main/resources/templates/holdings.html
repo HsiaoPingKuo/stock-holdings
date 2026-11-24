@@ -84,7 +84,7 @@
 			<span class="error" th:if="${#fields.hasErrors('side')}" th:errors="*{side}">錯誤</span>
 		</p>
 		<p>
-			<label>日期 <input type="date" th:field="*{date}"></label>
+			<label>日期 <input type="date" th:field="*{date}" th:min="${minDate}" th:max="${maxDate}"></label>
 			<span class="error" th:if="${#fields.hasErrors('date')}" th:errors="*{date}">錯誤</span>
 		</p>
 		<p>

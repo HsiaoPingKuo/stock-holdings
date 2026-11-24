@@ -1,6 +1,7 @@
 package io.hsiaopingkuo.stockholdings.controller;
 
 import java.time.Clock;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
@@ -48,6 +49,7 @@ import io.hsiaopingkuo.stockholdings.exception.VersionConflictException;
 import io.hsiaopingkuo.stockholdings.service.HoldingService;
 import io.hsiaopingkuo.stockholdings.service.HoldingV2QueryService;
 import io.hsiaopingkuo.stockholdings.service.IdempotencyService;
+import io.hsiaopingkuo.stockholdings.service.TradeRules;
 import io.hsiaopingkuo.stockholdings.service.TradeService;
 import jakarta.validation.Valid;
 
@@ -172,6 +174,7 @@ public class HoldingWebController {
 		model.addAttribute("now", LocalDateTime.now(clock).format(TIME_FORMAT));
 		// 給頁面上的 JS 當基準，讓時間以「伺服器時間」為準每秒往前走（同第 1 題）
 		model.addAttribute("nowEpochMillis", clock.millis());
+		addDateRange(model);
 		return "holdings";
 	}
 
@@ -279,7 +282,18 @@ public class HoldingWebController {
 		model.addAttribute("marks", marks == null ? List.of() : marks);
 		// 刪除表單共用一個一次性編號：每次畫面重新產生都換新的；刪不同筆時內容不同，不會互相影響
 		model.addAttribute("deleteRequestId", newRequestId());
+		addDateRange(model);
 		return "holding-detail";
+	}
+
+	/**
+	 * 日期欄位可以選的範圍（和 TradeRules 相同）：2021-01-01 到今天。
+	 * 只是讓選擇器不能選到範圍外的日期，送出後伺服器仍會檢查（週末選擇器擋不了，也是由伺服器擋）。
+	 * 「今天」用注入的台北時區 Clock 算，不看使用者電腦的時區，人在國外也不會差一天。
+	 */
+	private void addDateRange(Model model) {
+		model.addAttribute("minDate", TradeRules.EARLIEST_DATE);
+		model.addAttribute("maxDate", LocalDate.now(clock));
 	}
 
 	// 例如在另一個分頁已經刪掉最後一筆交易，這裡又打開明細：回清單並顯示訊息，不出現錯誤頁

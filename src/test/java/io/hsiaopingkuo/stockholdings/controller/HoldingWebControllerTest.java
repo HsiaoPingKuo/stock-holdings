@@ -212,6 +212,21 @@ class HoldingWebControllerTest {
 		assertThat(body).contains("id=\"summary-total-return\" class=\"num gain\">206,788<");
 	}
 
+	@Test
+	void 新增和修改的日期欄位_只能選2021年1月1日到今天() throws Exception {
+		Holding tsmc = holding("2330", "台積電");
+		Trade buy = trade(tsmc, TradeSide.BUY, NOV_02, 1000, "1000.00");
+		given(dividendEventProvider.eventsByCode(any())).willReturn(Map.of());
+
+		String list = html(get("/holdings"));
+		String editing = html(get("/holdings/{id}", tsmc.getId()).param("edit", buy.getId().toString()));
+
+		// 「今天」是台北時間的 11/25（固定時鐘 UTC 06:00）
+		for (String body : new String[] { list, editing }) {
+			assertThat(body).containsPattern("type=\"date\"[^>]*min=\"2021-01-01\" max=\"2026-11-25\"");
+		}
+	}
+
 	// ===== 明細 =====
 
 	@Test
