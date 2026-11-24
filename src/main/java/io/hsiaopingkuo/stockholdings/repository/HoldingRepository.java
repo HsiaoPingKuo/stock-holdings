@@ -2,6 +2,7 @@ package io.hsiaopingkuo.stockholdings.repository;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Optional;
 
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Modifying;
@@ -47,16 +48,23 @@ public interface HoldingRepository extends JpaRepository<Holding, Long> {
 			@Param("now") LocalDateTime now);
 
 	/**
-	 * 清單頁用：持股 LEFT JOIN 行情快取，一個查詢就拿到全部要顯示的欄位。
+	 * 清單一列的查詢（清單頁、App API 共用）：持股 LEFT JOIN 行情快取，一個查詢就拿到全部要顯示的欄位。
 	 * LEFT JOIN：還沒有行情的持股也要列出來（收盤價顯示「未取得」）。
 	 * 兩張表沒有設外鍵，所以用 on 自己指定用代號對應。
+	 * 名稱、市場：持股自己沒有時（第 2 題存的舊資料）用行情快取的補上，App API 規格這兩個欄位不能是 null。
+	 * 寫成常數：下面兩個查詢共用同一段，網頁和 API 的單筆、清單才不會各寫一份而對不起來。
 	 */
-	@Query("""
+	String LIST_ITEM_QUERY = """
 			select new io.hsiaopingkuo.stockholdings.dto.HoldingListItem(
-				h.id, h.code, coalesce(h.name, q.name), h.market, h.lots, h.buyPrice,
+				h.id, h.code, coalesce(h.name, q.name), coalesce(h.market, q.market), h.lots, h.buyPrice,
 				q.closePrice, q.closeDate, q.latestTradeDate)
 			from Holding h left join Quote q on q.code = h.code
-			order by h.code
-			""")
+			""";
+
+	@Query(LIST_ITEM_QUERY + " order by h.code")
 	List<HoldingListItem> findAllForList();
+
+	// 第 5 題：App API 的單筆查詢，以及新增、修改後回傳的持股物件
+	@Query(LIST_ITEM_QUERY + " where h.id = :id")
+	Optional<HoldingListItem> findListItemById(@Param("id") Long id);
 }

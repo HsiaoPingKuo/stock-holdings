@@ -75,6 +75,11 @@ public class HoldingService {
 		return holdingRepository.findAllForList();
 	}
 
+	/** App API 的單筆持股：和清單同一個查詢，收盤價、盈虧和清單上的那一列一定相同。 */
+	public HoldingListItem findListItem(Long id) {
+		return holdingRepository.findListItemById(id).orElseThrow(() -> new HoldingNotFoundException(id));
+	}
+
 	public Holding findById(Long id) {
 		return holdingRepository.findById(id).orElseThrow(() -> new HoldingNotFoundException(id));
 	}
