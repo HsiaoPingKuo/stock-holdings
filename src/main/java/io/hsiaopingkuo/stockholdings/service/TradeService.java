@@ -12,6 +12,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.function.Function;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
 import org.springframework.dao.DataIntegrityViolationException;
@@ -100,6 +101,16 @@ public class TradeService {
 	// F-01：整個方法不開交易，查官方的那幾秒不占資料庫連線、更不占著鎖；寫入各自包在 writeTransaction 裡
 	@Transactional(propagation = Propagation.NOT_SUPPORTED)
 	public Trade addTrade(String code, TradeSide side, LocalDate date, long shares, BigDecimal price) {
+		return addTrade(code, side, date, shares, price, TradeWriteHook.NONE);
+	}
+
+	/**
+	 * 同上，另外在每一段寫入交易的前後呼叫 hook（冪等鍵用，第 5b 階段）。
+	 * 只有真的寫入交易的那一段會 commit；查既有持股卻沒有持股的那一段一律回滾，hook 在裡面寫的東西也不會留下。
+	 */
+	@Transactional(propagation = Propagation.NOT_SUPPORTED)
+	public Trade addTrade(String code, TradeSide side, LocalDate date, long shares, BigDecimal price,
+			TradeWriteHook hook) {
 		// 時間預算從收到請求就開始算，整個請求才不會超過 10 秒（同 HoldingService.create）
 		Deadline deadline = Deadline.after(requestBudget);
 		if (code == null || code.isBlank()) {
@@ -115,7 +126,7 @@ public class TradeService {
 		String normalizedCode = HoldingService.normalizeCode(code);
 
 		// 先看代號是否已有持股：有就鎖住、加在下面。放在查官方之前，既有持股的市場和名稱已經知道
-		Trade added = writeTransaction.execute(status -> addToExisting(normalizedCode, side, date, shares, price));
+		Trade added = writeWithHook(hook, () -> addToExisting(normalizedCode, side, date, shares, price));
 		if (added != null) {
 			return added;
 		}
@@ -126,7 +137,7 @@ public class TradeService {
 		// 全新代號：在交易和鎖之外判斷市場和名稱（可能要問官方）
 		StockIdentity identity = stockIdentityResolver.resolve(normalizedCode, deadline);
 		try {
-			return writeTransaction.execute(status -> {
+			return writeWithHook(hook, () -> {
 				// saveAndFlush：立刻送出 INSERT，違反 UNIQUE 時在這裡就丟例外，才接得到
 				Holding saved = holdingRepository
 						.saveAndFlush(new Holding(normalizedCode, identity.name(), identity.market(), now()));
@@ -138,13 +149,33 @@ public class TradeService {
 			}
 			// 查官方的這段期間，別人剛好也新增了同一個代號：全新代號沒有那一列可以鎖，由 UNIQUE 擋下。
 			// 交易可以多筆，所以不回「重複代號」，改加在對方剛建好的持股下（一樣要鎖住、重播檢查）
-			Trade retried = writeTransaction.execute(status -> addToExisting(normalizedCode, side, date, shares, price));
+			Trade retried = writeWithHook(hook, () -> addToExisting(normalizedCode, side, date, shares, price));
 			if (retried == null) {
 				// 對方剛建好又馬上刪掉，極少見；請使用者再送一次
 				throw new DuplicateCodeException(normalizedCode);
 			}
 			return retried;
 		}
+	}
+
+	/**
+	 * 新增用的一段短交易：開頭呼叫 hook.beforeLock()（鎖持股之前），寫入後呼叫 hook.afterWrite()，再一起 commit。
+	 * write 回 null（代號還沒有持股、沒有寫入）時整段回滾：hook 寫的冪等鍵不能先 commit，
+	 * 否則重送會被當成「已完成」，交易卻沒寫進去。
+	 *
+	 * @return 寫入的交易；write 回 null 時回 null
+	 */
+	private Trade writeWithHook(TradeWriteHook hook, Supplier<Trade> write) {
+		return writeTransaction.execute(status -> {
+			hook.beforeLock();
+			Trade written = write.get();
+			if (written == null) {
+				status.setRollbackOnly();
+				return null;
+			}
+			hook.afterWrite(written);
+			return written;
+		});
 	}
 
 	/**
@@ -183,6 +214,14 @@ public class TradeService {
 	 */
 	@Transactional
 	public Trade updateTrade(Long tradeId, long expectedVersion, LocalDate date, long shares, BigDecimal price) {
+		return updateTrade(tradeId, expectedVersion, date, shares, price, TradeWriteHook.NONE);
+	}
+
+	/** 同上，另外在這個資料庫交易的開頭（鎖持股之前）和寫入後呼叫 hook（冪等鍵用，第 5b 階段）。 */
+	@Transactional
+	public Trade updateTrade(Long tradeId, long expectedVersion, LocalDate date, long shares, BigDecimal price,
+			TradeWriteHook hook) {
+		hook.beforeLock();
 		LockedTrade locked = lockByTrade(tradeId);
 		Trade target = locked.target();
 		checkVersion(target, expectedVersion);
@@ -202,6 +241,7 @@ public class TradeService {
 		target.changeDetails(date, shares, price, now());
 		// 立刻送出 UPDATE：版本號在這時加 1，回傳給呼叫端的才是新的版本號
 		tradeRepository.flush();
+		hook.afterWrite(target);
 		return target;
 	}
 
@@ -218,6 +258,13 @@ public class TradeService {
 	 */
 	@Transactional
 	public void deleteTrade(Long tradeId, long expectedVersion) {
+		deleteTrade(tradeId, expectedVersion, TradeWriteHook.NONE);
+	}
+
+	/** 同上，另外在這個資料庫交易的開頭（鎖持股之前）和刪除後呼叫 hook（冪等鍵用，第 5b 階段）。 */
+	@Transactional
+	public void deleteTrade(Long tradeId, long expectedVersion, TradeWriteHook hook) {
+		hook.beforeLock();
 		LockedTrade locked = lockByTrade(tradeId);
 		Trade target = locked.target();
 		checkVersion(target, expectedVersion);
@@ -233,6 +280,7 @@ public class TradeService {
 			// 交易先刪、持股後刪，不依賴外鍵的 ON DELETE CASCADE，讀程式就看得出刪了什麼
 			holdingRepository.delete(locked.holding());
 		}
+		hook.afterWrite(target);
 	}
 
 	// ===== 共用 =====
