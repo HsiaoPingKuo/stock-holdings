@@ -32,7 +32,7 @@ final class RefreshTestSupport {
 	}
 
 	static QuoteProperties propertiesWith(QuoteProperties.Refresh refresh) {
-		return new QuoteProperties(null, null, null, null, null, null, null, refresh);
+		return new QuoteProperties(null, null, null, null, null, null, null, 0, null, null, refresh);
 	}
 
 	/** 可以手動往前撥的時鐘，時區固定台北。 */

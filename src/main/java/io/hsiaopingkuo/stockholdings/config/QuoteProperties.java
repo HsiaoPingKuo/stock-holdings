@@ -14,14 +14,18 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  * @param tpex           櫃買中心主機
  * @param connectTimeout 建立連線的上限
  * @param readTimeout    等待回應的上限
- * @param lookupTimeout  新增持股時「同時查兩個市場」的整體上限（題目要求 10 秒內看到結果）
- * @param lookupCacheTtl 代號查詢結果記住多久；輸入代號時的即時提示和按下新增共用，避免重複打官方
- * @param holidayUrl     證交所休市日表的完整網址（主機是 openapi.twse.com.tw，和行情不同，所以獨立設定）
- * @param refresh        背景更新行情的排程設定
+ * @param lookupTimeout        新增持股時「同時查兩個市場」的上限；實際上限還會再被剩下的預算縮短
+ * @param lookupCacheTtl       代號查詢結果記住多久；輸入代號時的即時提示和按下新增共用，避免重複打官方
+ * @param requestBudget        一個請求（新增持股、即時提示）的時間預算，排隊等名額、等官方都算在內（F-01）
+ * @param maxConcurrentLookups 同時查官方的代號數上限；官方慢時不會讓大量請求一起卡住（F-01）
+ * @param lookupMinRemaining   剩下的預算少於這個值就不查官方，直接回「暫時無法確認」（F-01）
+ * @param holidayUrl           證交所休市日表的完整網址（主機是 openapi.twse.com.tw，和行情不同，所以獨立設定）
+ * @param refresh              背景更新行情的排程設定
  */
 @ConfigurationProperties("quote")
 public record QuoteProperties(Host twse, Host tpex, Duration connectTimeout, Duration readTimeout,
-		Duration lookupTimeout, Duration lookupCacheTtl, String holidayUrl, Refresh refresh) {
+		Duration lookupTimeout, Duration lookupCacheTtl, Duration requestBudget, int maxConcurrentLookups,
+		Duration lookupMinRemaining, String holidayUrl, Refresh refresh) {
 
 	/** @param baseUrl 主機網址，例如 https://www.twse.com.tw；路徑和參數寫在 client 裡，不能改 */
 	public record Host(String baseUrl) {

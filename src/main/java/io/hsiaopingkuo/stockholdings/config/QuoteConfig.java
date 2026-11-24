@@ -77,7 +77,8 @@ public class QuoteConfig {
 	@Bean
 	MarketResolver marketResolver(TwseStockDayClient twse, TpexTradingStockClient tpex, Clock clock,
 			QuoteProperties properties) {
-		return new MarketResolver(twse, tpex, clock, properties.lookupTimeout(), properties.lookupCacheTtl());
+		return new MarketResolver(twse, tpex, clock, properties.lookupTimeout(), properties.lookupCacheTtl(),
+				properties.requestBudget(), properties.maxConcurrentLookups(), properties.lookupMinRemaining());
 	}
 
 	// ===== 背景更新行情 =====

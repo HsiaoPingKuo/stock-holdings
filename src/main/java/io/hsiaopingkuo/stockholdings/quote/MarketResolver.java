@@ -11,6 +11,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -48,6 +49,12 @@ public class MarketResolver implements AutoCloseable {
 	private final Clock clock;
 	private final Duration lookupTimeout;
 	private final Duration cacheTtl;
+	// F-01：一個請求的時間預算、同時查官方的上限、剩下多少時間以下就不查官方
+	private final Duration requestBudget;
+	private final int maxConcurrentLookups;
+	private final Duration minRemaining;
+	// 號碼牌：同時查官方的代號最多 maxConcurrentLookups 個。fair = true：等待的人照先來後到拿到名額
+	private final Semaphore permits;
 	// 查詢用的執行緒；不用 CompletableFuture 預設的共用執行緒池，那是給計算用的，拿來等網路會卡住別人
 	private final ExecutorService executor;
 	// 代號 → 最近一次的確定結果。輸入時的即時提示和按下新增會查同一個代號，記住結果才不會重複打官方；
@@ -56,24 +63,57 @@ public class MarketResolver implements AutoCloseable {
 	// 代號 → 正在進行中的官方查詢（F-02）。查詢結束（成功或失敗）就移除，只存「這一刻還沒查完的」
 	private final Map<String, CompletableFuture<StockLookup>> inFlight = new ConcurrentHashMap<>();
 
+	/**
+	 * @param requestBudget        沒有指定截止時間時（resolve(code)），從呼叫那一刻起算的時間預算
+	 * @param maxConcurrentLookups 同時查官方的代號數上限
+	 * @param minRemaining         剩下的時間少於這個值就不查官方
+	 */
 	public MarketResolver(StockLookupClient twse, StockLookupClient tpex, Clock clock, Duration lookupTimeout,
-			Duration cacheTtl) {
+			Duration cacheTtl, Duration requestBudget, int maxConcurrentLookups, Duration minRemaining) {
+		if (maxConcurrentLookups < 1) {
+			// 設成 0 會讓所有新增都等不到名額；啟動時就擋下，比上線後才發現好
+			throw new IllegalArgumentException("quote.max-concurrent-lookups 至少要是 1：" + maxConcurrentLookups);
+		}
 		this.twse = twse;
 		this.tpex = tpex;
 		this.clock = clock;
 		this.lookupTimeout = lookupTimeout;
 		this.cacheTtl = cacheTtl;
-		this.executor = newExecutor();
+		this.requestBudget = requestBudget;
+		this.maxConcurrentLookups = maxConcurrentLookups;
+		this.minRemaining = minRemaining;
+		this.permits = new Semaphore(maxConcurrentLookups, true);
+		// 每個代號同時查上市、上櫃，各占一條執行緒；拿到號碼牌的查詢就不會在執行緒池裡排隊
+		this.executor = newExecutor(maxConcurrentLookups * 2);
 	}
 
 	/**
-	 * @param code 已正規化（trim、大寫）的代號
-	 * @return 查到的那一邊的結果（含市場、名稱）
-	 * @throws StockCodeNotFoundException 上市、上櫃都確定沒有這個代號
-	 * @throws MarketUnavailableException 官方網站連不上或回應異常，無法確認
-	 * @throws MarketAmbiguousException   兩個市場都查到且最近交易日相同，無法判斷
+	 * 只想測合併規則、快取的單元測試用：預算 = 等待上限 + 緩衝（等同加上預算之前的行為）、同時 4 個、不保留最少時間。
+	 * 正式環境由 QuoteConfig 用上面完整的建構子建立，三個值都來自設定檔。
+	 */
+	public MarketResolver(StockLookupClient twse, StockLookupClient tpex, Clock clock, Duration lookupTimeout,
+			Duration cacheTtl) {
+		this(twse, tpex, clock, lookupTimeout, cacheTtl, lookupTimeout.plus(AWAIT_GRACE), 4, Duration.ZERO);
+	}
+
+	/**
+	 * 從現在起算 requestBudget 的版本：即時提示、背景補查舊持股用。
+	 *
+	 * @see #resolve(String, Deadline)
 	 */
 	public StockLookup resolve(String code) {
+		return resolve(code, Deadline.after(requestBudget));
+	}
+
+	/**
+	 * @param code     已正規化（trim、大寫）的代號
+	 * @param deadline 這個請求的截止時間；排隊等名額、等官方都不會超過它
+	 * @return 查到的那一邊的結果（含市場、名稱）
+	 * @throws StockCodeNotFoundException 上市、上櫃都確定沒有這個代號
+	 * @throws MarketUnavailableException 官方網站連不上、回應異常，或時間不夠、同時查詢的名額已滿，無法確認
+	 * @throws MarketAmbiguousException   兩個市場都查到且最近交易日相同，無法判斷
+	 */
+	public StockLookup resolve(String code, Deadline deadline) {
 		CachedResult cached = cache.get(code);
 		if (cached != null && clock.instant().isBefore(cached.expiresAt())) {
 			if (cached.found() == null) {
@@ -88,16 +128,16 @@ public class MarketResolver implements AutoCloseable {
 		CompletableFuture<StockLookup> shared = inFlight.putIfAbsent(code, mine);
 		if (shared == null) {
 			shared = mine;
-			startLookup(code, mine);
+			startLookup(code, mine, deadline);
 		}
-		return await(code, shared);
+		return await(code, shared, deadline);
 	}
 
-	/** 由第一個請求呼叫：真的去查官方，查完把結果交給所有在等的人。 */
-	private void startLookup(String code, CompletableFuture<StockLookup> shared) {
+	/** 由第一個請求呼叫：拿號碼牌、真的去查官方，查完把結果交給所有在等的人。 */
+	private void startLookup(String code, CompletableFuture<StockLookup> shared, Deadline deadline) {
 		CompletableFuture<StockLookup> lookup;
 		try {
-			lookup = lookupBothMarkets(code);
+			lookup = lookupWithPermit(code, deadline);
 		} catch (RuntimeException e) {
 			// 例如伺服器關閉中、執行緒池已停止，連查詢都送不出去；一樣要走下面的清除流程，不能卡在 inFlight
 			lookup = CompletableFuture.failedFuture(e);
@@ -126,15 +166,60 @@ public class MarketResolver implements AutoCloseable {
 	}
 
 	/**
-	 * 每個請求各自等待共用的結果，最多等 lookupTimeout 再加一點緩衝。
-	 * 共用的查詢本身最晚 lookupTimeout 就會結束（見 lookupBothMarkets），所以正常情況下一定等得到；
-	 * 自己的上限是最後一道保險，確保不會因為共用別人的查詢而一直等。
+	 * 先拿號碼牌，再查官方。號碼牌只等到「剩下的時間 − minRemaining」為止：
+	 * 排到的時候已經來不及查官方，不如馬上回「暫時無法確認」，不要讓使用者排到超時。
 	 */
-	private StockLookup await(String code, CompletableFuture<StockLookup> shared) {
+	private CompletableFuture<StockLookup> lookupWithPermit(String code, Deadline deadline) {
+		if (!acquirePermit(code, deadline)) {
+			return CompletableFuture.failedFuture(new MarketUnavailableException());
+		}
+		// 拿到號碼牌之後才算查官方能用多久：例如排隊 3 秒後只剩 6 秒，就只等 6 秒（不是固定 8 秒）。
+		// 再扣掉 AWAIT_GRACE：查詢在截止前一點點結束，第一個請求才來得及在自己的預算內拿到結果
+		Duration limit = min(lookupTimeout, deadline.remaining().minus(AWAIT_GRACE));
+		if (limit.isNegative() || limit.isZero()) {
+			permits.release();
+			log.warn("{} 拿到查詢名額時已經沒有時間查官方，回覆暫時無法確認", code);
+			return CompletableFuture.failedFuture(new MarketUnavailableException());
+		}
 		try {
-			return shared.get(lookupTimeout.plus(AWAIT_GRACE).toMillis(), TimeUnit.MILLISECONDS);
+			return lookupBothMarkets(code, limit);
+		} catch (RuntimeException e) {
+			// 查詢沒送出去（例如伺服器關閉中），號碼牌要還回去
+			permits.release();
+			throw e;
+		}
+	}
+
+	private boolean acquirePermit(String code, Deadline deadline) {
+		Duration maxWait = deadline.remaining().minus(minRemaining);
+		if (maxWait.isNegative()) {
+			log.warn("{} 剩下的時間不到 {}，不查官方，回覆暫時無法確認", code, minRemaining);
+			return false;
+		}
+		try {
+			if (permits.tryAcquire(maxWait.toNanos(), TimeUnit.NANOSECONDS)) {
+				return true;
+			}
+			log.warn("同時查官方的代號已達上限 {} 個，{} 等了 {} 仍沒有名額，回覆暫時無法確認",
+					maxConcurrentLookups, code, maxWait);
+			return false;
+		} catch (InterruptedException e) {
+			Thread.currentThread().interrupt();
+			return false;
+		}
+	}
+
+	/**
+	 * 每個請求各自等待共用的結果，最多等「lookupTimeout + 緩衝」和「自己剩下的時間」比較短的那個。
+	 * 第一個請求的截止時間決定了共用查詢最晚何時結束（見 lookupWithPermit），所以它一定等得到結果；
+	 * 後來加入的請求如果剩下的時間比較少，就只等到自己的截止時間，不會因為共用別人的查詢而超時。
+	 */
+	private StockLookup await(String code, CompletableFuture<StockLookup> shared, Deadline deadline) {
+		Duration wait = min(lookupTimeout.plus(AWAIT_GRACE), deadline.remaining());
+		try {
+			return shared.get(wait.toNanos(), TimeUnit.NANOSECONDS);
 		} catch (TimeoutException e) {
-			log.warn("等待 {} 的查詢結果超過 {}，視為無法確認", code, lookupTimeout.plus(AWAIT_GRACE));
+			log.warn("等待 {} 的查詢結果超過 {}，視為無法確認", code, wait);
 			throw new MarketUnavailableException();
 		} catch (InterruptedException e) {
 			// 保留中斷狀態，讓上層知道這個執行緒被要求停止
@@ -178,9 +263,10 @@ public class MarketResolver implements AutoCloseable {
 
 	/**
 	 * 同時查兩個市場，回傳「合併後的結果」的 future（不在這裡等）。
-	 * 不論官方多慢，這個 future 最晚 lookupTimeout（預設 8 秒）就會完成：時間到還沒回來的一方視為無法確認。
+	 * 不論官方多慢，這個 future 最晚 limit 就會完成：時間到還沒回來的一方視為無法確認。
+	 * 呼叫前要先拿到號碼牌；號碼牌在兩邊的請求都真的結束後才歸還。
 	 */
-	private CompletableFuture<StockLookup> lookupBothMarkets(String code) {
+	private CompletableFuture<StockLookup> lookupBothMarkets(String code, Duration limit) {
 		// 一定要用台北時區的 clock：主機在海外時，無參數的 now() 在月初可能還是上個月
 		LocalDate today = LocalDate.now(clock);
 		CompletableFuture<StockLookup> twseFuture =
@@ -188,12 +274,17 @@ public class MarketResolver implements AutoCloseable {
 		CompletableFuture<StockLookup> tpexFuture =
 				CompletableFuture.supplyAsync(() -> lookupRecentMonths(tpex, code, today), executor);
 
+		// 號碼牌等兩邊的 HTTP 請求「真的結束」才還，不是時間到就還：
+		// 時間到只代表不再等，請求仍在背景跑到 read timeout、繼續占著執行緒；提早還號碼牌，新的查詢就會在執行緒池裡排隊
+		CompletableFuture.allOf(twseFuture, tpexFuture).whenComplete((ignored, error) -> permits.release());
+
+		// 注意這裡是另一個 allOf：completeOnTimeout 會讓它提早完成，不能和上面還號碼牌的那個共用
 		return CompletableFuture.allOf(twseFuture, tpexFuture)
 				// 時間到就當作「已完成」往下走，不再等還沒回來的那一邊
-				.completeOnTimeout(null, lookupTimeout.toMillis(), TimeUnit.MILLISECONDS)
+				.completeOnTimeout(null, limit.toNanos(), TimeUnit.NANOSECONDS)
 				.thenApply(ignored -> {
 					if (!twseFuture.isDone() || !tpexFuture.isDone()) {
-						log.warn("查詢 {} 的市場超過 {}，還沒回來的一方視為無法確認", code, lookupTimeout);
+						log.warn("查詢 {} 的市場超過 {}，還沒回來的一方視為無法確認", code, limit);
 					}
 					return decide(code, resultOf(twseFuture, Market.TWSE), resultOf(tpexFuture, Market.TPEX));
 				});
@@ -214,13 +305,20 @@ public class MarketResolver implements AutoCloseable {
 		}
 	}
 
-	/** 已經完成就取結果；還沒完成（逾時）就取消並當成 UNAVAILABLE。 */
+	/**
+	 * 已經完成就取結果；還沒完成（逾時）就當成 UNAVAILABLE。
+	 * 不呼叫 cancel：CompletableFuture.cancel 不會中斷正在等網路的執行緒，HTTP 請求照樣跑到 read timeout，
+	 * 反而會讓「還號碼牌」的 allOf 提早完成，號碼牌提早歸還。
+	 */
 	private static StockLookup resultOf(CompletableFuture<StockLookup> future, Market market) {
 		if (future.isDone() && !future.isCompletedExceptionally()) {
 			return future.join();
 		}
-		future.cancel(true);
 		return StockLookup.unavailable(market);
+	}
+
+	private static Duration min(Duration a, Duration b) {
+		return a.compareTo(b) <= 0 ? a : b;
 	}
 
 	static StockLookup decide(String code, StockLookup twseResult, StockLookup tpexResult) {
@@ -261,9 +359,9 @@ public class MarketResolver implements AutoCloseable {
 		return newer;
 	}
 
-	private static ExecutorService newExecutor() {
+	private static ExecutorService newExecutor(int threads) {
 		AtomicInteger counter = new AtomicInteger();
-		return Executors.newFixedThreadPool(4, runnable -> {
+		return Executors.newFixedThreadPool(threads, runnable -> {
 			Thread thread = new Thread(runnable, "quote-lookup-" + counter.incrementAndGet());
 			// daemon：就算有查詢卡住，也不會擋住程式結束
 			thread.setDaemon(true);

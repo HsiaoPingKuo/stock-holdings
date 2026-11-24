@@ -570,6 +570,133 @@ class MarketResolverTest {
 		assertThat(twseRounds.get()).isEqualTo(2);
 	}
 
+	// ===== 時間預算與同時查詢上限（F-01） =====
+
+	/** 等 latch，最多 5 秒（測試寫錯時不會整個卡住）。 */
+	private static void awaitQuietly(CountDownLatch latch) {
+		try {
+			latch.await(5, TimeUnit.SECONDS);
+		} catch (InterruptedException e) {
+			Thread.currentThread().interrupt();
+		}
+	}
+
+	private static void sleepQuietly(long millis) {
+		try {
+			Thread.sleep(millis);
+		} catch (InterruptedException e) {
+			Thread.currentThread().interrupt();
+		}
+	}
+
+	@Test
+	void 名額已滿_等不到名額就快速回覆無法確認_即時提示和新增共用名額() throws Exception {
+		CountDownLatch started = new CountDownLatch(1);
+		CountDownLatch gate = new CountDownLatch(1);
+		AtomicInteger otherCalls = new AtomicInteger();
+		// 同時查官方最多 1 個；resolve(code) 的預算 1 秒、至少要保留 0.5 秒
+		resolver = new MarketResolver(
+				fakeClient(Market.TWSE, (code, day) -> {
+					if (code.equals("2330")) {
+						started.countDown();
+						awaitQuietly(gate);
+					} else {
+						otherCalls.incrementAndGet();
+					}
+					return found(Market.TWSE);
+				}),
+				fakeClient(Market.TPEX, (code, day) -> StockLookup.notFound(Market.TPEX)),
+				clockAt(LocalDate.of(2026, 11, 24)), LOOKUP_TIMEOUT, CACHE_TTL,
+				Duration.ofSeconds(1), 1, Duration.ofMillis(500));
+		ExecutorService callers = Executors.newSingleThreadExecutor();
+		try {
+			// 新增持股那條路（帶截止時間）先占走唯一的名額
+			Future<StockLookup> first = callers.submit(() -> resolver.resolve("2330", Deadline.after(Duration.ofSeconds(5))));
+			assertThat(started.await(2, TimeUnit.SECONDS)).isTrue();
+
+			// 即時提示那條路（resolve(code)，自己的預算 1 秒）：名額被占走，最多等 1 − 0.5 = 0.5 秒就放棄
+			long start = System.nanoTime();
+			assertThatThrownBy(() -> resolver.resolve("6488")).isInstanceOf(MarketUnavailableException.class);
+			Duration elapsed = Duration.ofNanos(System.nanoTime() - start);
+
+			assertThat(elapsed).isGreaterThanOrEqualTo(Duration.ofMillis(400)).isLessThan(Duration.ofSeconds(1));
+			// 沒拿到名額就不會打官方
+			assertThat(otherCalls.get()).isZero();
+			gate.countDown();
+			assertThat(first.get(5, TimeUnit.SECONDS).market()).isEqualTo(Market.TWSE);
+		} finally {
+			callers.shutdownNow();
+		}
+	}
+
+	@Test
+	void 排隊後只剩多少時間_查官方就只等多少_不是固定的lookupTimeout() throws Exception {
+		CountDownLatch started = new CountDownLatch(1);
+		// lookupTimeout 故意設 8 秒；同時查官方最多 1 個；至少保留 0.2 秒
+		resolver = new MarketResolver(
+				fakeClient(Market.TWSE, (code, day) -> {
+					if (code.equals("2330")) {
+						started.countDown();
+						sleepQuietly(1000); // 先來的請求占住名額 1 秒
+					} else {
+						sleepQuietly(5000); // 後來的請求遇到很慢的官方
+					}
+					return found(Market.TWSE);
+				}),
+				fakeClient(Market.TPEX, (code, day) -> StockLookup.notFound(Market.TPEX)),
+				clockAt(LocalDate.of(2026, 11, 24)), Duration.ofSeconds(8), CACHE_TTL,
+				Duration.ofSeconds(9), 1, Duration.ofMillis(200));
+		ExecutorService callers = Executors.newSingleThreadExecutor();
+		try {
+			Future<StockLookup> first = callers.submit(() -> resolver.resolve("2330", Deadline.after(Duration.ofSeconds(5))));
+			assertThat(started.await(2, TimeUnit.SECONDS)).isTrue();
+
+			// 預算 2 秒：排隊約 1 秒後只剩約 1 秒，查官方只能等「剩下的時間 − 0.5 秒緩衝」，不是 8 秒
+			long start = System.nanoTime();
+			assertThatThrownBy(() -> resolver.resolve("6488", Deadline.after(Duration.ofSeconds(2))))
+					.isInstanceOf(MarketUnavailableException.class);
+			Duration elapsed = Duration.ofNanos(System.nanoTime() - start);
+
+			// 有排隊（等到先來的請求還名額），而且整體沒有超過 2 秒的預算
+			assertThat(elapsed).isGreaterThanOrEqualTo(Duration.ofMillis(800)).isLessThan(Duration.ofSeconds(2));
+			assertThat(first.get(5, TimeUnit.SECONDS).market()).isEqualTo(Market.TWSE);
+		} finally {
+			callers.shutdownNow();
+		}
+	}
+
+	@Test
+	void 名額等官方真的回應後才歸還_不是逾時就歸還() {
+		CountDownLatch gate = new CountDownLatch(1);
+		AtomicInteger otherCalls = new AtomicInteger();
+		// lookupTimeout 只有 0.2 秒；同時查官方最多 1 個；不保留最少時間
+		resolver = new MarketResolver(
+				fakeClient(Market.TWSE, (code, day) -> {
+					if (code.equals("2330")) {
+						awaitQuietly(gate); // 官方一直沒回應，直到 gate 打開
+					} else {
+						otherCalls.incrementAndGet();
+					}
+					return found(Market.TWSE);
+				}),
+				fakeClient(Market.TPEX, (code, day) -> StockLookup.notFound(Market.TPEX)),
+				clockAt(LocalDate.of(2026, 11, 24)), Duration.ofMillis(200), CACHE_TTL,
+				Duration.ofSeconds(2), 1, Duration.ZERO);
+
+		// 0.2 秒就放棄等待，但對官方的請求其實還在跑
+		assertThatThrownBy(() -> resolver.resolve("2330")).isInstanceOf(MarketUnavailableException.class);
+		// 名額還在那個請求手上：另一個代號拿不到名額，也不會打官方。
+		// 給 1 秒（大於 0.5 秒的緩衝）：如果名額被提早歸還，這裡就會真的去打官方，otherCalls 會變成 1
+		assertThatThrownBy(() -> resolver.resolve("6488", Deadline.after(Duration.ofSeconds(1))))
+				.isInstanceOf(MarketUnavailableException.class);
+		assertThat(otherCalls.get()).isZero();
+
+		// 官方回應了 → 名額歸還 → 之後的查詢可以正常進行
+		gate.countDown();
+		assertThat(resolver.resolve("6488").market()).isEqualTo(Market.TWSE);
+		assertThat(otherCalls.get()).isEqualTo(1);
+	}
+
 	@Test
 	void 共用查詢時官方一直不回應_每個請求仍在自己的上限內結束() throws Exception {
 		CountDownLatch never = new CountDownLatch(1);

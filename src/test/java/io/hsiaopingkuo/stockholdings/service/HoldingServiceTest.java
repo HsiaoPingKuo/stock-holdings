@@ -2,8 +2,12 @@ package io.hsiaopingkuo.stockholdings.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyCollection;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
+import static org.mockito.BDDMockito.willThrow;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -14,18 +18,25 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
+import java.util.concurrent.atomic.AtomicReference;
 
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
+import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
+import io.hsiaopingkuo.stockholdings.config.QuoteProperties;
 import io.hsiaopingkuo.stockholdings.entity.Holding;
 import io.hsiaopingkuo.stockholdings.entity.Market;
 import io.hsiaopingkuo.stockholdings.entity.Quote;
@@ -34,21 +45,26 @@ import io.hsiaopingkuo.stockholdings.exception.HoldingNotFoundException;
 import io.hsiaopingkuo.stockholdings.exception.MarketUnavailableException;
 import io.hsiaopingkuo.stockholdings.exception.StockCodeNotFoundException;
 import io.hsiaopingkuo.stockholdings.quote.DailyQuote;
+import io.hsiaopingkuo.stockholdings.quote.Deadline;
 import io.hsiaopingkuo.stockholdings.quote.MarketResolver;
 import io.hsiaopingkuo.stockholdings.quote.StockLookup;
 import io.hsiaopingkuo.stockholdings.repository.HoldingRepository;
 import io.hsiaopingkuo.stockholdings.repository.QuoteRepository;
-import jakarta.persistence.EntityManager;
 
 /** Service 搭配真的資料庫（測試用 H2 記憶體模式 + Flyway）測試業務規則。 */
 @DataJpaTest
 @Import({ HoldingService.class, QuoteService.class, HoldingServiceTest.FixedClockConfig.class })
+// 測試本身不包交易（F-01）：create() 要在「沒有交易」的情況下呼叫官方，
+// 如果測試先開了交易，就測不出 create() 有沒有自己開交易；資料改由「清空資料」負責清掉
+@Transactional(propagation = Propagation.NOT_SUPPORTED)
 class HoldingServiceTest {
 
 	// UTC 06:00 = 台北 14:00；存進去的時間要是 14:00 才代表真的用台北時區
 	private static final Instant FIXED = Instant.parse("2026-11-24T06:00:00Z");
 
 	@TestConfiguration
+	// HoldingService 要讀 quote.request-budget（測試用 application.properties 有設定）
+	@EnableConfigurationProperties(QuoteProperties.class)
 	static class FixedClockConfig {
 		@Bean
 		Clock clock() {
@@ -62,9 +78,6 @@ class HoldingServiceTest {
 	@Autowired
 	private HoldingRepository holdingRepository;
 
-	@Autowired
-	private EntityManager entityManager;
-
 	// 官方 API 的判斷另外在 MarketResolverTest 測；這裡用假的，專心測 service 的流程，也不會連網
 	@MockitoBean
 	private MarketResolver marketResolver;
@@ -73,6 +86,17 @@ class HoldingServiceTest {
 	void 預設任何代號都判斷為上市() {
 		given(marketResolver.resolve(anyString())).willAnswer(invocation -> StockLookup.found(
 				Market.TWSE, "測試股", LocalDate.of(2026, 11, 23), new BigDecimal("10.00")));
+		// 新增持股改呼叫「帶截止時間」的版本（F-01）；即時提示仍用上面那個
+		given(marketResolver.resolve(anyString(), any(Deadline.class))).willAnswer(invocation -> StockLookup.found(
+				Market.TWSE, "測試股", LocalDate.of(2026, 11, 23), new BigDecimal("10.00")));
+	}
+
+	// create() 不開交易（F-01），寫入會真的 commit，測試交易 rollback 不掉；每個測試前後自己清空
+	@BeforeEach
+	@AfterEach
+	void 清空資料() {
+		holdingRepository.deleteAll();
+		quoteRepository.deleteAll();
 	}
 
 	// ===== 第 3 題：先查行情快取 =====
@@ -98,12 +122,10 @@ class HoldingServiceTest {
 
 	@Test
 	void 行情快取沒有_問官方並把查到的收盤價寫入快取() {
-		given(marketResolver.resolve("6488")).willReturn(StockLookup.found(
+		given(marketResolver.resolve(eq("6488"), any(Deadline.class))).willReturn(StockLookup.found(
 				Market.TPEX, "環球晶", LocalDate.of(2026, 11, 24), new BigDecimal("460.50"), LocalDate.of(2026, 11, 23)));
 
 		holdingService.create("6488", 1, new BigDecimal("450.00"));
-		entityManager.flush();
-		entityManager.clear();
 
 		Quote quote = quoteRepository.findById("6488").orElseThrow();
 		assertThat(quote.getMarket()).isEqualTo(Market.TPEX);
@@ -114,7 +136,7 @@ class HoldingServiceTest {
 
 	@Test
 	void 行情快取沒有_官方又連不上_錯誤且持股和快取都不儲存() {
-		given(marketResolver.resolve("2330")).willThrow(new MarketUnavailableException());
+		given(marketResolver.resolve(eq("2330"), any(Deadline.class))).willThrow(new MarketUnavailableException());
 
 		assertThatThrownBy(() -> holdingService.create("2330", 1, new BigDecimal("1000.00")))
 				.isInstanceOf(MarketUnavailableException.class);
@@ -142,13 +164,10 @@ class HoldingServiceTest {
 
 	@Test
 	void 新增時存入官方查到的名稱和市場() {
-		given(marketResolver.resolve("6488")).willReturn(StockLookup.found(
+		given(marketResolver.resolve(eq("6488"), any(Deadline.class))).willReturn(StockLookup.found(
 				Market.TPEX, "環球晶", LocalDate.of(2026, 11, 23), new BigDecimal("460.50")));
 
 		Holding created = holdingService.create("6488", 1, new BigDecimal("450.00"));
-		// 清掉 JPA 快取，確認是真的寫進資料庫
-		entityManager.flush();
-		entityManager.clear();
 
 		Holding saved = holdingRepository.findById(created.getId()).orElseThrow();
 		assertThat(saved.getMarket()).isEqualTo(Market.TPEX);
@@ -159,12 +178,12 @@ class HoldingServiceTest {
 	void 交給官方查詢的是正規化後的代號() {
 		holdingService.create(" 00631l ", 1, new BigDecimal("20.00"));
 
-		verify(marketResolver).resolve("00631L");
+		verify(marketResolver).resolve(eq("00631L"), any(Deadline.class));
 	}
 
 	@Test
 	void 上市上櫃都查不到_丟出錯誤且不儲存() {
-		given(marketResolver.resolve("9999")).willThrow(new StockCodeNotFoundException("9999"));
+		given(marketResolver.resolve(eq("9999"), any(Deadline.class))).willThrow(new StockCodeNotFoundException("9999"));
 
 		assertThatThrownBy(() -> holdingService.create("9999", 1, new BigDecimal("10.00")))
 				.isInstanceOf(StockCodeNotFoundException.class)
@@ -174,12 +193,44 @@ class HoldingServiceTest {
 
 	@Test
 	void 官方連不上無法確認_丟出錯誤且不儲存() {
-		given(marketResolver.resolve("2330")).willThrow(new MarketUnavailableException());
+		given(marketResolver.resolve(eq("2330"), any(Deadline.class))).willThrow(new MarketUnavailableException());
 
 		assertThatThrownBy(() -> holdingService.create("2330", 1, new BigDecimal("1000.00")))
 				.isInstanceOf(MarketUnavailableException.class)
 				.hasMessage("暫時無法連線官方網站確認代號，請稍後再試");
 		assertThat(holdingRepository.count()).isZero();
+	}
+
+	// ===== F-01：等官方時不占資料庫交易；行情快取和持股分開寫入 =====
+
+	@MockitoSpyBean
+	private QuoteService quoteService;
+
+	@Test
+	void 呼叫官方時沒有進行中的資料庫交易() {
+		AtomicReference<Boolean> transactionActive = new AtomicReference<>();
+		// 在「呼叫 resolve 的那條執行緒」上檢查：交易綁在執行緒上，
+		// 放在假 client 裡檢查沒有意義（那是查詢專用的另一條執行緒，本來就不會有交易）
+		given(marketResolver.resolve(eq("2330"), any(Deadline.class))).willAnswer(invocation -> {
+			transactionActive.set(TransactionSynchronizationManager.isActualTransactionActive());
+			return StockLookup.found(Market.TWSE, "台積電", LocalDate.of(2026, 11, 24), new BigDecimal("2030.00"));
+		});
+
+		holdingService.create("2330", 1, new BigDecimal("1000.00"));
+
+		assertThat(transactionActive.get()).isFalse();
+		assertThat(holdingRepository.existsByCode("2330")).isTrue();
+	}
+
+	@Test
+	void 行情快取寫入失敗時_持股仍然新增成功() {
+		willThrow(new DataAccessResourceFailureException("模擬行情快取寫入失敗"))
+				.given(quoteService).upsert(anyCollection());
+
+		Holding created = holdingService.create("2330", 1, new BigDecimal("1000.00"));
+
+		assertThat(holdingRepository.findById(created.getId())).isPresent();
+		assertThat(quoteRepository.count()).isZero();
 	}
 
 	@Test
@@ -201,7 +252,7 @@ class HoldingServiceTest {
 		assertThatThrownBy(() -> holdingService.create("2330", 2, new BigDecimal("900.00")))
 				.isInstanceOf(DuplicateCodeException.class);
 		// 只有第一次新增查過官方
-		verify(marketResolver, times(1)).resolve("2330");
+		verify(marketResolver, times(1)).resolve(eq("2330"), any(Deadline.class));
 	}
 
 	@Test
