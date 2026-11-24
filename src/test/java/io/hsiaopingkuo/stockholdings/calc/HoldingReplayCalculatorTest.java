@@ -152,13 +152,38 @@ class HoldingReplayCalculatorTest {
 	// ---------- 4. 超賣 ----------
 
 	@Test
-	void 同一天先買後賣不算超賣_即使賣出的id比較小() {
-		HoldingReplayResult r = HoldingReplayCalculator.replay("2330",
-				List.of(sell(1, "2025-06-10", 1000, "1000.00"), buy(2, "2025-06-10", 1000, "1000.00")), NO_EVENTS,
-				null);
+	void 同一天先輸入賣出再輸入買進_依id順序被當成超賣擋下() {
+		List<TradeInput> trades = List.of(sell(1, "2025-06-10", 1000, "1000.00"),
+				buy(2, "2025-06-10", 1000, "1000.00"));
 
-		assertThat(r.totalShares()).isZero();
-		assertThat(r.realizedPnl()).isEqualByComparingTo("-5850");
+		assertThatThrownBy(() -> HoldingReplayCalculator.replay("2330", trades, NO_EVENTS, null))
+				.isInstanceOfSatisfying(OversellException.class, e -> {
+					assertThat(e.getTradeId()).isEqualTo(1);
+					assertThat(e.getHeldShares()).isZero();
+					assertThat(e.isSameDayBuyAfter()).isTrue();
+					assertThat(e.getMessage()).contains("同一天的交易依輸入順序計算，請先輸入買進，或修改日期");
+				});
+	}
+
+	@Test
+	void 同一天先賣光再買回_新買進的成本不混進前一輪() {
+		// 朋友實測：1.0 轉入 3,000 股 → 同一天在 2.0 全部賣出 → 同一天用 App 1.0 買回 2,000 股
+		List<TradeInput> sellOut = List.of(buy(1, "2025-06-10", 3000, "140.55"),
+				sell(2, "2025-06-10", 3000, "146.00"));
+		List<TradeInput> buyBack = new ArrayList<>(sellOut);
+		buyBack.add(buy(3, "2025-06-10", 2000, "145.00"));
+
+		HoldingReplayResult before = HoldingReplayCalculator.replay("0050", sellOut, NO_EVENTS, null);
+		HoldingReplayResult r = HoldingReplayCalculator.replay("0050", buyBack, NO_EVENTS, null);
+
+		// 成本 421,650 + 600 = 422,250；賣出淨收 438,000 - 624 - 438（ETF 0.1%）= 436,938
+		assertThat(before.realizedPnl()).isEqualByComparingTo("14688");
+		// 買回不影響之前那次賣出的已實現損益
+		assertThat(r.realizedPnl()).isEqualByComparingTo(before.realizedPnl());
+		assertThat(r.totalShares()).isEqualTo(2000);
+		// 290,000 + 413 = 290,413；290,413 ÷ 2,000 = 145.2065 → 145.21（舊順序會算成 142.53）
+		assertThat(r.totalCost()).isEqualByComparingTo("290413");
+		assertThat(r.averageCost()).isEqualTo(bd("145.21"));
 	}
 
 	@Test

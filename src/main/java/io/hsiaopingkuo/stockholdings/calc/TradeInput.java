@@ -6,7 +6,7 @@ import java.time.LocalDate;
 /**
  * 重播用的一筆交易（第 6 題）。計算核心不碰資料庫，所以不直接用 Entity，由 service 轉成這個 record。
  *
- * @param id     交易 id：同一天同方向時依 id 排序，超賣時也用它指出是哪一筆
+ * @param id     交易 id：同一天不分買賣都依 id（輸入順序）排序，超賣時也用它指出是哪一筆
  * @param shares 股數，可以是零股
  * @param price  每股成交價
  */
