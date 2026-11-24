@@ -1,0 +1,876 @@
+ ▐▛███▛█   Claude Code v2.1.329
+▝▜██████▀  Opus 5.5 · Claude Pro
+ ▝▝   ▝▝   C:\TKA102_JavaApp\Workspace_for_practice\stock-holdings
+
+
+> /clear                                                                        
+
+> 【規則】先讀 CLAUDE.md，全程遵守。先提方案等「同意」才動手。commit            
+  由我執行。V1～V5 不能改。                                                     
+                                                                                
+  【背景】4b（DividendSyncService 同步一輪）已合併進                            
+  master。這一階段只把它接上排程。設計文件第 8 節 A 可以參考，只讀這一節。      
+                                                                                
+  【開始前】從最新的 master 開分支 feature/q6-dividend-schedule。               
+                                                                                
+  【要做的】                                                                    
+  1. 觸發時機：                                                                 
+     - 啟動時：等行情的啟動輪結束後才跑，不要同時打同一個市場。                 
+     - 每個交易日 07:30（台北時間，沿用 HolidayCalendar 判斷休市）。            
+     - 補抓：每 30 分鐘檢查一次，只有「有需要的年份還沒有紀錄」時才跑（例如補登 
+  了更早的交易），平常不發請求。                                                
+  2. 同一個市場，行情排程和除權息同步不能同時發請求：兩邊共用一把市場鎖，一邊在 
+  跑時另一邊等（或延後），不能交錯。同一個市場的除權息同步也不能同時跑兩輪。    
+  3. 冷卻共用 MarketRefreshState：行情在冷卻中時，除權息不查那個市場；除權息被  
+  擋（DividendSyncResult.blocked()）時，那個市場開始冷卻（時間沿用              
+  quote.refresh.cooldown）。                                                    
+  4. 設定：dividend.sync.enabled（預設 true；測試設定                           
+  false），時間、間隔用設定檔，照 quote.refresh 的命名方式。                    
+  5.                                                                            
+  log：每一輪寫一行摘要（市場、抓了哪幾年、寫入幾筆、明細幾筆、有沒有被擋）。   
+                                                                                
+  【測試：只做必要的】                                                          
+  -                                                                             
+  07:30、休市日、冷卻中、補抓（有缺的年份才跑、沒有就不發請求）的判斷，用固定的 
+  Clock 和假的 DividendSyncService。                                            
+  - 市場鎖：行情和除權息同一個市場不會同時執行（一個測試就好）。                
+  - 被擋後兩邊都進入冷卻。                                                      
+    開發途中只跑相關的測試類別，用 ./mvnw -q；全部測試由我自己跑。              
+                                                                                
+  【不要做】不改 DividendSyncService 的同步邏輯、不改行情的排程時段（G-02、G-03 
+  之後另外修）、不改網頁和 API。                                                
+                                                                                
+  【回覆格式】提案和完成回報都只講重點：                                        
+  - 提案：用表格，控制在 40 行內，只寫做法、會改的檔案、需要我決定的問題。      
+  - 完成回報：只寫跟提案不一樣的地方、需要我決定的事、commit                    
+  訊息。檔案清單和測試清單不用列。                                              
+                                                                                
+  【規則再提醒】先提方案等「同意」；官方 API                                    
+  不能在交易或鎖住資料庫時呼叫；設計文件和驗收報告不 commit；main 和 test 一起  
+  commit。                                                                      
+
+  Searched for 1 pattern, read 1 file, ran 4 shell commands (ctrl+o to expand)
+
+● 先確認行情排程的呼叫點和既有測試寫法，再整理提案。
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● 已從最新的 master（78ce9e8，和 origin 一致）開好分支
+  feature/q6-dividend-schedule。以下是提案，還沒有改任何檔案。
+
+  做法
+
+  ┌────────────┬─────────────────────────────────────────────────────────────┐
+  │    項目    │                            做法                             │
+  ├────────────┼─────────────────────────────────────────────────────────────┤
+  │            │ 新增 MarketLocks，每個市場一個                              │
+  │ 市場鎖     │ Semaphore(1)（同時只放一個人進去的號碼牌）。選它而不是      │
+  │            │ ReentrantLock，是因為同一條執行緒也拿不到第二次，在單一執行 │
+  │            │ 緒的測試裡就能驗證兩邊不會同時跑                            │
+  ├────────────┼─────────────────────────────────────────────────────────────┤
+  │            │ QuoteRefreshScheduler                                       │
+  │ 行情這邊   │ 的啟動輪和排程輪都要先拿到鎖才跑，拿不到就等。除權息平常在  │
+  │            │ 07:30 跑，和 13:40 的行情時段不重疊                         │
+  ├────────────┼─────────────────────────────────────────────────────────────┤
+  │            │ 用 tryAcquire：拿不到鎖就不等。啟動輪和每日輪延後           │
+  │ 除權息這邊 │ retry-delay 再試；補抓這次跳過，30                          │
+  │            │ 分鐘後再檢查。同一市場的兩輪除權息也靠這把鎖互斥            │
+  ├────────────┼─────────────────────────────────────────────────────────────┤
+  │            │ 行情的啟動輪做完（finally）後通知 DividendSyncScheduler，那 │
+  │ 啟動       │ 個市場才排除權息的啟動輪；行情排程關閉時，啟動後直接通知。  │
+  │            │ 除權息的啟動輪結束後，才開始排「每日」和「補抓」            │
+  ├────────────┼─────────────────────────────────────────────────────────────┤
+  │            │ 由一個不碰網路的方法 nextDailyRun(now) 算出下一個平日       │
+  │ 每日 07:30 │ 07:30，跑完一輪再排下一輪。執行時用 HolidayCalendar         │
+  │            │ 判斷，休市日就跳過                                          │
+  ├────────────┼─────────────────────────────────────────────────────────────┤
+  │            │ 每 30 分鐘檢查一次：只要「最早交易那一年（最早              │
+  │ 補抓       │ 2021）～今年」有哪一年在 dividend_fetch_range               │
+  │            │ 完全沒有紀錄，就跑一輪；全都有紀錄時只讀資料庫，不發請求    │
+  ├────────────┼─────────────────────────────────────────────────────────────┤
+  │            │ 跑之前看 MarketRefreshState.isCoolingDown：啟動輪和每日輪延 │
+  │ 冷卻       │ 後到冷卻結束；補抓跳過。結果 blocked() 時呼叫               │
+  │            │ state.startCooldown(now + quote.refresh.cooldown)，行情的   │
+  │            │ RefreshSchedule 本來就會看這個狀態，所以兩邊都會停          │
+  ├────────────┼─────────────────────────────────────────────────────────────┤
+  │ 執行緒     │ 除權息用自己的 ThreadPoolTaskScheduler（2                   │
+  │            │ 條、daemon），和行情的分開，伺服器關閉時停止                │
+  ├────────────┼─────────────────────────────────────────────────────────────┤
+  │ 設定       │ dividend.sync.enabled=true、daily-time=07:30、backfill-chec │
+  │            │ k-interval=30m、retry-delay=5m；測試設定裡 enabled=false    │
+  └────────────┴─────────────────────────────────────────────────────────────┘
+
+  會改的檔案
+
+  ┌────────────────────────────────────┬────────────────────────────────────┐
+  │                檔案                │                內容                │
+  ├────────────────────────────────────┼────────────────────────────────────┤
+  │ 新增 service/MarketLocks.java、ser │                                    │
+  │ vice/DividendSyncScheduler.java、c │ 市場鎖、除權息排程、設定           │
+  │ onfig/DividendSyncProperties.java  │                                    │
+  ├────────────────────────────────────┼────────────────────────────────────┤
+  │ 修改 QuoteRefreshScheduler.java、Q │ 執行前先拿鎖、啟動輪結束時通知；建 │
+  │ uoteConfig.java                    │ 立新的 bean                        │
+  ├────────────────────────────────────┼────────────────────────────────────┤
+  │                                    │ 只新增一個唯讀方法 hasMissingYears │
+  │ 修改 DividendSyncService.java      │ (market)，年份範圍和 FIRST_YEAR    │
+  │                                    │ 跟同步一輪共用，同步流程不動       │
+  ├────────────────────────────────────┼────────────────────────────────────┤
+  │ 修改                               │                                    │
+  │ application.properties（main、test │ 新增 dividend.sync.*               │
+  │  兩份）                            │                                    │
+  ├────────────────────────────────────┼────────────────────────────────────┤
+  │ 新增                               │ 你列的 07:30、休市日、冷卻中、補抓 │
+  │ DividendSyncSchedulerTest；小改    │ 、市場鎖、被擋後冷卻；舊測試只因為 │
+  │ QuoteRefreshSchedulerTest          │ 建構子多了參數而修改               │
+  └────────────────────────────────────┴────────────────────────────────────┘
+
+  需要你決定
+
+  1. 補抓怎麼判斷「缺年份」：我建議只看「完全沒有紀錄的年份」。代價是：某一年抓
+     失敗時不會留下紀錄，補抓會每 30
+     分鐘重試一次；被擋時有冷卻，所以不會一直打官方。可以嗎？
+  2. 每輪摘要 log：DividendSyncService.syncMarket
+     現在已經會寫一行摘要（市場、結果、抓到和失敗的年份、新增和更新筆數、明細筆
+     數）。建議沿用這一行，排程只另外寫「來源（啟動、每日、補抓）」和跳過、延後
+     、冷卻的原因，避免重複兩行。還是要改成由排程寫唯一的一行？
+  3. 新增 hasMissingYears 算不算違反「不改
+     DividendSyncService」？如果不行，我就在排程裡直接查兩個
+     repository，但這樣年份範圍的規則會在兩個地方各寫一份。
+  4. 補抓不看休市日和週末（官方 API 假日也能查），只看冷卻和鎖。這樣可以嗎？
+
+  請回覆「同意」或告訴我要調整的地方。
+
+✻ Crunched for 1m 57s · done 上午4:24
+
+> 同意。四點都照你的建議：                                                      
+  1. 補抓只看完全沒有紀錄的年份。                                               
+  2. 摘要 log 沿用 syncMarket 那一行，排程只寫來源和跳過、延後、冷卻的原因。    
+  3. hasMissingYears 可以加（只讀、規則留在一個地方），同步流程不要動。         
+  4. 補抓不看休市日，只看冷卻和鎖。                                             
+                                                                                
+  完成後只回報：跟提案不一樣的地方、需要我決定的事、commit                      
+  訊息。全部測試由我自己跑。                                                    
+
+  Ran 3 shell commands (ctrl+o to expand)
+
+● 開始實作。先改 DividendSyncService（只新增唯讀方法，起始年份抽成共用）。
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\service\DividendSyncService
+        .java)
+  ⎿  Added 1 line, removed 1 line
+      141          .map(DividendFetchRange::getFetchYear)
+      142          .collect(Collectors.toSet());
+      143      List<Integer> years = new ArrayList<>();
+      144 -    for (int year = Math.max(FIRST_YEAR, earliestTrade.getYear
+          -()); year <= today.getYear(); year++) {                       
+      144 +    for (int year = firstYearToFetch(earliestTrade); year <= t
+          +oday.getYear(); year++) {                                     
+      145        if (year == today.getYear() || !completedYears.contains(
+           year)) {
+      146          years.add(year);
+      147        }
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\service\DividendSyncService
+        .java)
+  ⎿  Added 27 lines
+      149      return years;
+      150    }
+      151 
+      152 +  /**                                                         
+      153 +   * 補抓排程用（第 4c 階段）：最早交易那一年到今年，有沒有哪 
+          +一年「完全沒有抓取紀錄」。                                    
+      154 +   * 只讀資料庫、不發請求，所以排程可以每 30 分鐘檢查一次；補 
+          +登更早的交易、或某一年失敗沒留下紀錄時會回 true。             
+      155 +   * 年份範圍和同步一輪共用 firstYearToFetch，規則只寫在這個類
+          +別裡。                                                        
+      156 +   */                                                         
+      157 +  public boolean hasMissingYears(Market market) {             
+      158 +    Optional<LocalDate> earliestTrade = tradeRepository.findEa
+          +rliestTradeDate();                                            
+      159 +    if (earliestTrade.isEmpty()) {                            
+      160 +      return false;                                           
+      161 +    }                                                         
+      162 +    Set<Integer> recordedYears = rangeRepository.findByMarket(
+          +market).stream()                                              
+      163 +        .map(DividendFetchRange::getFetchYear)                
+      164 +        .collect(Collectors.toSet());                         
+      165 +    int thisYear = LocalDate.now(clock).getYear();            
+      166 +    for (int year = firstYearToFetch(earliestTrade.get()); yea
+          +r <= thisYear; year++) {                                      
+      167 +      if (!recordedYears.contains(year)) {                    
+      168 +        return true;                                          
+      169 +      }                                                       
+      170 +    }                                                         
+      171 +    return false;                                             
+      172 +  }                                                           
+      173 +                                                              
+      174 +  /** 要從哪一年開始抓：最早交易那一年，但不早於 2021。 */    
+      175 +  private static int firstYearToFetch(LocalDate earliestTrade)
+          + {                                                            
+      176 +    return Math.max(FIRST_YEAR, earliestTrade.getYear());     
+      177 +  }                                                           
+      178 +                                                              
+      179    /** @return false 代表被擋，這個市場這一輪要停止 */
+      180    private boolean fetchListYear(Round round, int year, LocalDa
+           te today) throws InterruptedException {
+      181      beforeRequest(round);
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\service\MarketLocks.java)
+  ⎿  Wrote 40 lines to
+     src\main\java\io\hsiaopingkuo\stockholdings\service\MarketLocks.java
+       1 package io.hsiaopingkuo.stockholdings.service;
+       2 
+       3 import java.util.EnumMap;
+       4 import java.util.Map;
+       5 import java.util.concurrent.Semaphore;
+       6 
+       7 import io.hsiaopingkuo.stockholdings.entity.Market;
+       8 
+       9 /**
+      10  * 每個市場一把鎖（第 6 題第 4c 階段）：行情排程和除權息同步共用
+     … +31 lines (ctrl+o to expand)
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\config\DividendSyncPropertie
+       s.java)
+  ⎿  Wrote 21 lines to src\main\java\io\hsiaopingkuo\stockholdings\config\D
+     ividendSyncProperties.java
+       1 package io.hsiaopingkuo.stockholdings.config;
+       2 
+       3 import java.time.Duration;
+       4 import java.time.LocalTime;
+       5 
+       6 import org.springframework.boot.context.properties.Configuration
+         Properties;
+       7 
+       8 /**
+       9  * 除權息同步排程的設定（application.properties 的 dividend.sync
+     … +13 lines (ctrl+o to expand)
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\service\DividendSyncSchedule
+       r.java)
+  ⎿  Wrote 211 lines to src\main\java\io\hsiaopingkuo\stockholdings\service
+     \DividendSyncScheduler.java
+      1 package io.hsiaopingkuo.stockholdings.service;
+      2 
+      3 import java.time.Clock;
+      4 import java.time.DayOfWeek;
+      5 import java.time.Duration;
+      6 import java.time.Instant;
+      7 import java.time.LocalDate;
+      8 import java.time.ZonedDateTime;
+      9 import java.util.Optional;
+     … +202 lines (ctrl+o to expand)
+
+● Now QuoteRefreshScheduler: lock around runRound + startup notification.
+
+  Read 1 file, ran 1 shell command · 1 failed (ctrl+o to expand)
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\service\QuoteRefreshSchedul
+        er.java)
+  ⎿  Added 1 line
+      3  import java.time.Clock;
+      4  import java.time.LocalDate;
+      5  import java.time.ZonedDateTime;
+      6 +import java.util.function.Consumer;                             
+      7 
+      8  import org.slf4j.Logger;
+      9  import org.slf4j.LoggerFactory;
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\service\QuoteRefreshSchedul
+        er.java)
+  ⎿  Added 3 lines
+      25   *
+      26   * 伺服器啟動完成（ApplicationReadyEvent）時，兩個市場各排一個
+          立即執行的「啟動輪」，
+      27   * 在背景執行緒跑，不會拖慢啟動；官方連不上也只會寫 log。
+      28 + *                                                             
+      29 + * 第 6 題：每一輪查官方前先拿那個市場的 MarketLocks（和除權息 
+         +同步共用），除權息正在跑時等它做完；                           
+      30 + * 啟動輪結束後通知 afterStartupRound，除權息的啟動輪才開始，兩
+         +邊不會同時打同一個市場。                                       
+      31   */
+      32  public class QuoteRefreshScheduler implements AutoCloseable {
+      33 
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\service\QuoteRefreshSchedul
+        er.java)
+  ⎿  Added 8 lines, removed 1 line
+      39    private final TaskScheduler taskScheduler;
+      40    private final Clock clock;
+      41    private final boolean enabled;
+      42 +  private final MarketLocks marketLocks;                       
+      43 +  private final Consumer<Market> afterStartupRound;            
+      44 
+      45 +  /**                                                          
+      46 +   * @param marketLocks       和除權息同步共用的市場鎖         
+      47 +   * @param afterStartupRound 某個市場的啟動輪結束後要做的事（ 
+         +排除權息的啟動輪）；行情排程關閉時，啟動後直接呼叫             
+      48 +   */                                                          
+      49    public QuoteRefreshScheduler(QuoteRefreshService refreshServi
+          ce, HolidayCalendar holidayCalendar,
+      44 -      RefreshSchedule schedule, TaskScheduler taskScheduler, Cl
+         -ock clock, boolean enabled) {                                  
+      50 +      RefreshSchedule schedule, TaskScheduler taskScheduler, Cl
+         +ock clock, boolean enabled,                                    
+      51 +      MarketLocks marketLocks, Consumer<Market> afterStartupRou
+         +nd) {                                                          
+      52      this.refreshService = refreshService;
+      53      this.holidayCalendar = holidayCalendar;
+      54      this.schedule = schedule;
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\service\QuoteRefreshSchedul
+        er.java)
+  ⎿  Added 2 lines
+      55      this.taskScheduler = taskScheduler;
+      56      this.clock = clock;
+      57      this.enabled = enabled;
+      58 +    this.marketLocks = marketLocks;                            
+      59 +    this.afterStartupRound = afterStartupRound;                
+      60    }
+      61 
+      62    /** 伺服器啟動完成後才開始：這時候資料庫和所有元件都準備好了
+          。 */
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\service\QuoteRefreshSchedul
+        er.java)
+  ⎿  Added 4 lines
+      64    public void onApplicationReady() {
+      65      if (!enabled) {
+      66        log.info("背景更新行情已關閉（quote.refresh.enabled=false
+          ）");
+      67 +      // 沒有行情的啟動輪可以等，除權息直接開始                
+      68 +      for (Market market : Market.values()) {                  
+      69 +        notifyStartupFinished(market);                         
+      70 +      }                                                        
+      71        return;
+      72      }
+      73      for (Market market : Market.values()) {
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\service\QuoteRefreshSchedul
+        er.java)
+  ⎿  Added 3 lines, removed 1 line
+      79    /** 啟動輪：不看時段和休市日，一定查一次（往前找最近一個交易
+          日）。 */
+      80    void runStartupRound(Market market) {
+      81      try {
+      82 -      refreshService.runRound(market, Trigger.STARTUP);        
+      82 +      runRoundLocked(market, Trigger.STARTUP);                 
+      83      } catch (RuntimeException e) {
+      84        // runRound 約定不丟例外；萬一丟了也要排下一輪，排程不能
+          就此停掉
+      85        log.warn("{} 啟動時查詢行情發生例外", market, e);
+      86      } finally {
+      87        scheduleNext(market);
+      88 +      // 這時鎖已經放掉了，除權息的啟動輪才拿得到              
+      89 +      notifyStartupFinished(market);                           
+      90      }
+      91    }
+      92 
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\service\QuoteRefreshSchedul
+        er.java)
+  ⎿  Added 1 line, removed 1 line
+      105          log.info("{} 今天（{}）是休市日，不查詢行情", market,
+           today);
+      106          return;
+      107        }
+      108 -      refreshService.runRound(market, Trigger.SCHEDULED);     
+      108 +      runRoundLocked(market, Trigger.SCHEDULED);              
+      109      } catch (RuntimeException e) {
+      110        log.warn("{} 排程查詢行情發生例外", market, e);
+      111      } finally {
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\service\QuoteRefreshSchedul
+        er.java)  ⎿  Added 28 lines
+      113      }
+      114    }
+      115 
+      116 +  /** 拿到市場鎖才查；除權息正在跑就等它做完（除權息一輪有上限
+          +，行情晚一點沒關係，交錯發請求比較容易被擋）。 */             
+      117 +  private void runRoundLocked(Market market, Trigger trigger) 
+          +{                                                             
+      118 +    if (!marketLocks.tryAcquire(market)) {                    
+      119 +      log.info("{} 除權息同步正在跑，行情等它做完再查", market
+          +);                                                            
+      120 +      try {                                                   
+      121 +        marketLocks.acquire(market);                          
+      122 +      } catch (InterruptedException e) {                      
+      123 +        // 伺服器關閉中：保留中斷狀態，這一輪不查             
+      124 +        Thread.currentThread().interrupt();                   
+      125 +        return;                                               
+      126 +      }                                                       
+      127 +    }                                                         
+      128 +    try {                                                     
+      129 +      refreshService.runRound(market, trigger);               
+      130 +    } finally {                                               
+      131 +      marketLocks.release(market);                            
+      132 +    }                                                         
+      133 +  }                                                           
+      134 +                                                              
+      135 +  private void notifyStartupFinished(Market market) {         
+      136 +    try {                                                     
+      137 +      afterStartupRound.accept(market);                       
+      138 +    } catch (RuntimeException e) {                            
+      139 +      // 除權息排不進去也不能影響行情                         
+      140 +      log.warn("{} 通知除權息排程時發生例外", market, e);     
+      141 +    }                                                         
+      142 +  }                                                           
+      143 +                                                              
+      144    private void scheduleNext(Market market) {
+      145      try {
+      146        ZonedDateTime next = schedule.nextRun(ZonedDateTime.now(
+           clock), refreshService.state(market));
+
+● Now QuoteConfig wiring.
+
+  Read 1 file (ctrl+o to expand)
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\config\QuoteConfig.java)
+  ⎿  Added 11 lines, removed 8 lines
+      125     */
+      126    @Bean
+      127    QuoteRefreshScheduler quoteRefreshScheduler(QuoteRefreshServ
+           ice refreshService, HolidayCalendar holidayCalendar,
+      128 -      RandomGenerator random, QuoteProperties properties, Cloc
+          -k clock) {                                                    
+      129 -    ThreadPoolTaskScheduler taskScheduler = new ThreadPoolTask
+          -Scheduler();                                                  
+      130 -    taskScheduler.setPoolSize(2);                             
+      131 -    taskScheduler.setThreadNamePrefix("quote-refresh-");      
+      132 -    // daemon：萬一有請求卡住，也不會擋住程式結束             
+      133 -    taskScheduler.setDaemon(true);                            
+      134 -    taskScheduler.initialize();                               
+      128 +      RandomGenerator random, QuoteProperties properties, Cloc
+          +k clock, MarketLocks marketLocks,                             
+      129 +      DividendSyncScheduler dividendSyncScheduler) {          
+      130 +    // 行情的啟動輪結束後，才通知除權息開始那個市場的啟動輪（ 
+          +第 6 題）                                                     
+      131      return new QuoteRefreshScheduler(refreshService, holidayCa
+           lendar,
+      136 -        new RefreshSchedule(properties.refresh(), random), tas
+          -kScheduler, clock, properties.refresh().enabled());           
+      132 +        new RefreshSchedule(properties.refresh(), random), bac
+          +kgroundScheduler("quote-refresh-"), clock,                    
+      133 +        properties.refresh().enabled(), marketLocks, dividendS
+          +yncScheduler::onQuoteStartupFinished);                        
+      134    }
+      135 
+      136 +  // 行情排程和除權息同步共用：同一個市場同時只有一邊在對官方 
+          +發請求（第 6 題）                                             
+      137 +  @Bean                                                       
+      138 +  MarketLocks marketLocks() {                                 
+      139 +    return new MarketLocks();                                 
+      140 +  }                                                           
+      141 +                                                              
+      142    // ===== 除權息（第 6 題）=====
+      143    // 主機和行情共用 TWSE_BASE_URL／TPEX_BASE_URL；等待回應的上
+           限另外設（一次查一整年比查一天久）
+      144 
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\config\QuoteConfig.java)
+  ⎿  Added 27 lines
+      169          tradeRepository, pause, random, properties.refresh(),
+           clock);
+      170    }
+      171 
+      172 +  /**                                                         
+      173 +   * 除權息排程（第 4c 階段）用自己的執行緒池（2 條，上市、上 
+          +櫃各一條），和行情的分開：                                    
+      174 +   * 除權息一輪要等好幾個請求間隔，不會占住行情的執行緒。冷卻 
+          +時間沿用 quote.refresh.cooldown；                             
+      175 +   * 伺服器關閉時由 DividendSyncScheduler.close() 停止。      
+      176 +   */                                                         
+      177 +  @Bean                                                       
+      178 +  DividendSyncScheduler dividendSyncScheduler(DividendSyncServ
+          +ice syncService, QuoteRefreshService refreshService,          
+      179 +      HolidayCalendar holidayCalendar, MarketLocks marketLocks
+          +, DividendSyncProperties dividendProperties,                  
+      180 +      QuoteProperties properties, Clock clock) {              
+      181 +    return new DividendSyncScheduler(syncService, refreshServi
+          +ce, holidayCalendar, marketLocks,                             
+      182 +        backgroundScheduler("dividend-sync-"), dividendPropert
+          +ies, properties.refresh().cooldown(), clock);                 
+      183 +  }                                                           
+      184 +                                                              
+      185 +  /**                                                         
+      186 +   * 背景排程的執行緒池（2 條，上市、上櫃各一條）：證交所在請 
+          +求之間等待時，不會卡住櫃買。                                  
+      187 +   * 不註冊成 bean，避免影響 Spring Boot 其他地方預設的執行緒 
+          +池；由使用它的排程在 close() 時停止。                         
+      188 +   */                                                         
+      189 +  private static ThreadPoolTaskScheduler backgroundScheduler(S
+          +tring threadNamePrefix) {                                     
+      190 +    ThreadPoolTaskScheduler taskScheduler = new ThreadPoolTask
+          +Scheduler();                                                  
+      191 +    taskScheduler.setPoolSize(2);                             
+      192 +    taskScheduler.setThreadNamePrefix(threadNamePrefix);      
+      193 +    // daemon：萬一有請求卡住，也不會擋住程式結束             
+      194 +    taskScheduler.setDaemon(true);                            
+      195 +    taskScheduler.initialize();                               
+      196 +    return taskScheduler;                                     
+      197 +  }                                                           
+      198 +                                                              
+      199    private static RestClient restClient(String baseUrl, QuotePr
+           operties properties) {
+      200      return restClient(baseUrl, properties.connectTimeout(), pr
+           operties.readTimeout());
+      201    }
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\config\QuoteConfig.java)
+  ⎿  Added 1 line, removed 5 lines
+      118          backfillService, pause, random, properties.refresh(),
+           clock);
+      119    }
+      120 
+      121 -  /**                                                         
+      122 -   * 排程用自己的執行緒池（2 條，上市、上櫃各一條）：證交所在 
+          -逐檔查詢之間等待時，不會卡住櫃買。                            
+      123 -   * 這個執行緒池只給行情排程用，不註冊成 bean，避免影響 Sprin
+          -g Boot 其他地方預設的執行緒池；                               
+      124 -   * 伺服器關閉時由 QuoteRefreshScheduler.close() 停止。      
+      125 -   */                                                         
+      121 +  // 排程用自己的執行緒池（見 backgroundScheduler），伺服器關 
+          +閉時由 QuoteRefreshScheduler.close() 停止                     
+      122    @Bean
+      123    QuoteRefreshScheduler quoteRefreshScheduler(QuoteRefreshServ
+           ice refreshService, HolidayCalendar holidayCalendar,
+      124        RandomGenerator random, QuoteProperties properties, Cloc
+           k clock, MarketLocks marketLocks,
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\config\QuoteConfig.java)
+  ⎿  Added 1 line, removed 1 line
+      48   * 在這裡統一用 @Bean 建立（而不是各自加 @Component），主機網址
+          、逾時從哪裡來一眼就看得到。
+      49   */
+      50  @Configuration
+      51 -@EnableConfigurationProperties(QuoteProperties.class)          
+      51 +@EnableConfigurationProperties({ QuoteProperties.class, Dividen
+         +dSyncProperties.class })                                       
+      52  public class QuoteConfig {
+      53 
+      54    @Bean
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\config\QuoteConfig.java)
+  ⎿  Added 2 lines
+      33  import io.hsiaopingkuo.stockholdings.repository.QuoteRepository
+          ;
+      34  import io.hsiaopingkuo.stockholdings.repository.TradeRepository
+          ;
+      35  import io.hsiaopingkuo.stockholdings.service.DividendEventWrite
+          r;
+      36 +import io.hsiaopingkuo.stockholdings.service.DividendSyncSchedu
+         +ler;                                                           
+      37  import io.hsiaopingkuo.stockholdings.service.DividendSyncServic
+          e;
+      38  import io.hsiaopingkuo.stockholdings.service.HoldingBackfillSer
+          vice;
+      39 +import io.hsiaopingkuo.stockholdings.service.MarketLocks;      
+      40  import io.hsiaopingkuo.stockholdings.service.Pause;
+      41  import io.hsiaopingkuo.stockholdings.service.QuoteRefreshSchedu
+          ler;
+      42  import io.hsiaopingkuo.stockholdings.service.QuoteRefreshServic
+          e;
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\config\QuoteConfig.java)
+  ⎿  Added 1 line, removed 1 line
+      155      return new TpexDividendListClient(dividendRestClient(prope
+           rties.tpex().baseUrl(), properties), jsonMapper);
+      156    }
+      157 
+      158 -  // 同步一輪（第 4b 階段，還沒有排程）。上市列表 = 證交所 TWT
+          -49U、上櫃列表 = 櫃買 exDailyQ，只有上市要查明細；             
+      158 +  // 同步一輪（第 4b 階段；由下面的 DividendSyncScheduler 排程
+          +）。上市列表 = 證交所 TWT49U、上櫃列表 = 櫃買 exDailyQ，只有上
+          +市要查明細；                                                  
+      159    // 請求之間的等待沿用行情的 Pause 和 3.2～5.8 秒的設定
+      160    @Bean
+      161    DividendSyncService dividendSyncService(TwseDividendListClie
+           nt twseList, TpexDividendListClient tpexList,
+
+● Now the two properties files.
+
+● Bash(tail -c 50 src/main/resources/application.properties | od -c | tail -3;
+      tail -c 20 src/test/resources/application.properties | od -c | tail -2
+      cat >> src/main/r…)
+  ⎿  0000040   R   E   A   D   _   T   I   M   E   O   U   T   :   2   0
+     s
+     0000060   }  \n
+     … +14 lines (ctrl+o to expand)
+  ⎿  Updated src\main\resources\application.properties +8
+      65  # 主機沿用上面的 TWSE_BASE_URL、TPEX_BASE_URL，建立連線的上限沿
+          用 quote.connect-timeout。
+      66  # 只在背景排程呼叫；一次查一整年的上市列表實測約 5 秒，行情的 5
+           秒不夠，所以等待回應的上限另外設 20 秒
+      67  quote.dividend-read-timeout=${DIVIDEND_READ_TIMEOUT:20s}
+      68 +# 除權息同步排程（第 6 題）。時間都是台北時間；任何一項都可以用
+         +環境變數覆蓋，例如 DIVIDEND_SYNC_ENABLED=false                 
+      69 +dividend.sync.enabled=true                                     
+      70 +# 每個交易日 07:30 重抓今年一次（休市日跳過）                  
+      71 +dividend.sync.daily-time=07:30                                 
+      72 +# 每 30 分鐘檢查有沒有年份還沒有紀錄（例如補登了更早的交易）； 
+         +檢查只讀資料庫，有缺才發請求                                   
+      73 +dividend.sync.backfill-check-interval=30m                      
+      74 +# 行情或另一輪除權息正在跑時，啟動輪、每日輪延後 5 分鐘再試；被
+         +擋後冷卻沿用 quote.refresh.cooldown                            
+      75 +dividend.sync.retry-delay=5m                                   
+  ⎿  Updated src\test\resources\application.properties +5
+      33  quote.refresh.cooldown=30m
+      34  quote.refresh.startup-lookback-days=10
+      35  quote.dividend-read-timeout=1s
+      36 +# 測試時關掉除權息排程：跑測試不可以發出請求；需要測排程的測試 
+         +自己建立物件、用假的 DividendSyncService                       
+      37 +dividend.sync.enabled=false                                    
+      38 +dividend.sync.daily-time=07:30                                 
+      39 +dividend.sync.backfill-check-interval=30m                      
+      40 +dividend.sync.retry-delay=5m                                   
+
+  Ran 3 shell commands · 1 failed (ctrl+o to expand)
+
+● Line endings are consistent. Now tests — first update
+  QuoteRefreshSchedulerTest's constructor call.
+
+  Read 1 file (ctrl+o to expand)
+
+● Update(src\test\java\io\hsiaopingkuo\stockholdings\service\QuoteRefreshSchedul
+        erTest.java)
+  ⎿  Added 2 lines
+      40    private TaskScheduler taskScheduler;
+      41    private final MarketRefreshState twseState = new MarketRefres
+          hState(Market.TWSE);
+      42    private final MarketRefreshState tpexState = new MarketRefres
+          hState(Market.TPEX);
+      43 +  /** 收到「啟動輪結束」通知的市場（第 6 題：除權息的啟動輪從這
+         +裡開始）。 */                                                  
+      44 +  private final List<Market> startupFinished = new ArrayList<>(
+         +);                                                             
+      45 
+      46    @BeforeEach
+      47    void setUp() {
+
+● Update(src\test\java\io\hsiaopingkuo\stockholdings\service\QuoteRefreshSchedul
+        erTest.java)
+  ⎿  Added 1 line, removed 1 line
+      55 
+      56    private QuoteRefreshScheduler scheduler(boolean enabled) {
+      57      return new QuoteRefreshScheduler(refreshService, holidayCal
+          endar, new RefreshSchedule(SETTINGS, new Random(1)),
+      58 -        taskScheduler, clock, enabled);                        
+      58 +        taskScheduler, clock, enabled, new MarketLocks(), start
+         +upFinished::add);                                              
+      59    }
+      60 
+      61    /** 排進 TaskScheduler 的時間。 */
+
+● Update(src\test\java\io\hsiaopingkuo\stockholdings\service\QuoteRefreshSchedul
+        erTest.java)
+  ⎿  Added 2 lines, removed 1 line
+      70    }
+      71 
+      72    @Test
+      73 -  void 排程關閉時_啟動後什麼都不排() {                         
+      73 +  void 排程關閉時_啟動後什麼都不排_直接通知除權息可以開始() {  
+      74      scheduler(false).onApplicationReady();
+      75 
+      76      verifyNoInteractions(taskScheduler, refreshService);
+      77 +    assertThat(startupFinished).containsExactly(Market.TWSE, Ma
+         +rket.TPEX);                                                    
+      78    }
+      79 
+      80    @Test
+
+● Update(src\test\java\io\hsiaopingkuo\stockholdings\service\QuoteRefreshSchedul
+        erTest.java)
+  ⎿  Added 2 lines, removed 1 line
+      87    }
+      88 
+      89    @Test
+      90 -  void 啟動輪不看休市日_一定查一次_做完排下一輪() {            
+      90 +  void 啟動輪不看休市日_一定查一次_做完排下一輪_並通知除權息() 
+         +{                                                              
+      91      scheduler(true).runStartupRound(Market.TWSE);
+      92 
+      93      verify(refreshService).runRound(Market.TWSE, Trigger.STARTU
+          P);
+      94      verifyNoInteractions(holidayCalendar);
+      95      assertThat(scheduledTimes()).hasSize(1);
+      96 +    assertThat(startupFinished).containsExactly(Market.TWSE);  
+      97    }
+      98 
+      99    @Test
+
+● Now the new scheduler test.
+
+● Write(src\test\java\io\hsiaopingkuo\stockholdings\service\DividendSyncSchedule
+       rTest.java)
+  ⎿  Wrote 215 lines to src\test\java\io\hsiaopingkuo\stockholdings\service
+     \DividendSyncSchedulerTest.java
+       1 package io.hsiaopingkuo.stockholdings.service;
+       2 
+       3 import static io.hsiaopingkuo.stockholdings.service.RefreshTestS
+         upport.SETTINGS;
+       4 import static io.hsiaopingkuo.stockholdings.service.RefreshTestS
+         upport.TAIPEI;
+       5 import static org.assertj.core.api.Assertions.assertThat;
+       6 import static org.mockito.ArgumentMatchers.any;
+       7 import static org.mockito.BDDMockito.given;
+       8 import static org.mockito.Mockito.mock;
+     … +207 lines (ctrl+o to expand)
+
+● Add one real-DB test for hasMissingYears in DividendSyncServiceTest.
+
+  Read 1 file (ctrl+o to expand)
+
+● Update(src\test\java\io\hsiaopingkuo\stockholdings\service\DividendSyncService
+        Test.java)
+  ⎿  Added 19 lines
+      241      assertThat(rangeRepository.count()).isZero();
+      242    }
+      243 
+      244 +  // ===== 補抓排程用的判斷（第 4c 階段）=====                
+      245 +                                                              
+      246 +  @Test                                                       
+      247 +  void 有沒有缺的年份_沒交易時沒有_同步完沒有_補登更早的交易後
+          +有() {                                                        
+      248 +    assertThat(service.hasMissingYears(Market.TWSE)).isFalse()
+          +;                                                             
+      249 +                                                              
+      250 +    hold("2330", Market.TWSE, LocalDate.of(2025, 6, 10), 1500)
+          +;                                                             
+      251 +    assertThat(service.hasMissingYears(Market.TWSE)).isTrue();
+      252 +                                                              
+      253 +    service.syncAll();                                        
+      254 +    // 2025 抓完、2026 沒抓完：兩年都有紀錄，就不算缺         
+      255 +    assertThat(service.hasMissingYears(Market.TWSE)).isFalse()
+          +;                                                             
+      256 +    assertThat(service.hasMissingYears(Market.TPEX)).isFalse()
+          +;                                                             
+      257 +                                                              
+      258 +    hold("2884", Market.TWSE, LocalDate.of(2023, 3, 1), 1000);
+      259 +    assertThat(service.hasMissingYears(Market.TWSE)).isTrue();
+      260 +    assertThat(service.hasMissingYears(Market.TPEX)).isTrue();
+      261 +  }                                                           
+      262 +                                                              
+      263    // ===== 列表失敗、被擋 =====
+      264 
+      265    @Test
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Output is noisy; check surefire reports for pass/fail.
+
+  Listed 1 directory (ctrl+o to expand)
+
+● 三個類別共 34 個測試全過。再跑一個會啟動整個 Spring 容器的測試，確認 bean
+  接線沒問題。
+  Searched for 1 pattern, ran 2 shell commands (ctrl+o to expand)
+
+● 第 4c 階段寫完了。相關的三個測試類別共 34 個測試全部通過，會啟動整個 Spring 的
+  NoOfficialCallTest 也通過，新的 bean 接得起來。全部測試還沒跑，留給你。
+
+  跟提案不一樣的地方
+  1. DividendSyncService 
+     動了一行同步程式：把「從哪一年開始抓」那行（Math.max(FIRST_YEAR, …)）抽成
+     firstYearToFetch()，同步一輪和 hasMissingYears
+     一起用，規則才只寫在一個地方。行為沒有變，原本 16 個同步測試照樣通過。
+  2. 多加了 1 個測試：在 DividendSyncServiceTest 用真的資料庫測
+     hasMissingYears。依序是：沒有交易時回 false、有交易但還沒抓時回
+     true、同步完回 false、補登 2023 年的交易後又回
+     true。因為補抓判斷的核心是這個方法，而排程測試裡它是假的，所以補一個。
+  3. QuoteConfig：行情和除權息都需要同樣設定的 2 條執行緒池，所以抽成共用的
+     backgroundScheduler()，行情原本的設定沒有變。
+  4. QuoteRefreshSchedulerTest：除了建構子多兩個參數，有兩個既有測試各多驗一件事
+     ：行情排程關閉時、以及啟動輪結束後，都會通知除權息開始。這兩個測試也因此改
+     了名字。
+  5. 每日輪被延後時，要等延後的那一次跑完，才排下一個交易日的
+     07:30。這樣不會同時存在兩條每日的排程。
+
+  需要你決定
+  1. 行情最壞要等多久：行情拿不到鎖時會一直等。如果 13:40
+     剛好遇到補抓，而且要補很多年（例如補登了 2021 年的交易：6
+     年的列表加上明細，每個請求間隔 3.2～5.8
+     秒），行情可能晚好幾分鐘才查。這樣可以接受嗎？不行的話，可以改成補抓不在
+     13:40～15:40 執行。
+  2. 少了一個方向的測試：市場鎖只測了「行情在跑時，除權息不會跑」。反過來「除權
+     息在跑時，行情會等」要開第二條執行緒才測得到，照你說的「一個測試就好」，我
+     沒有寫。
+
+  README 和 ai-log 提醒
+  - README 待補：新的環境變數 DIVIDEND_SYNC_ENABLED，還有
+    DIVIDEND_SYNC_DAILY_TIME 等其他 dividend.sync.*
+    設定。照之前的約定，先記在待補清單，第 6 題驗證完再出草稿。
+  - 這一段的 ai-log 記得放進去，commit 前檢查有沒有密碼或 token。
+
+  commit 訊息
+  feat: 第6題 第4c階段 
+  除權息同步接上排程（啟動、每日07:30、補抓），與行情共用市場鎖和冷卻
+
+✻ Baked for 5m 42s · done 上午4:31
+
+> 同意，跟提案不一樣的五點都接受。                                              
+  1. 行情等幾分鐘可以接受，補抓不用避開 13:40～15:40。                          
+  2. 反方向的鎖測試不用補。                                                     
+     全部測試 518 個已通過。請 commit：                                         
+     feat: 第6題 第4c階段 除權息同步接上排程，與行情共用市場鎖和冷卻            
+     main 和 test 一起 commit，commit 由我執行。                                
+
+● 我沒有執行 commit。你這次的訊息同時寫了「請 commit」和「commit
+  由我執行」，我依 CLAUDE.md 第 3 條，由你自己執行。
+
+  要 commit 的是 main 和 test 一起的 11 個檔案。下面的指令只加這 11
+  個檔案，設計文件和驗收報告不會被加進去；commit 訊息照你給的寫，不加 AI 尾行：
+
+  git add src/main/java/io/hsiaopingkuo/stockholdings/config/QuoteConfig.java \
+
+  src/main/java/io/hsiaopingkuo/stockholdings/config/DividendSyncProperties.java
+  \
+
+  src/main/java/io/hsiaopingkuo/stockholdings/service/DividendSyncService.java \
+
+  src/main/java/io/hsiaopingkuo/stockholdings/service/DividendSyncScheduler.java
+  \
+          src/main/java/io/hsiaopingkuo/stockholdings/service/MarketLocks.java \
+
+  src/main/java/io/hsiaopingkuo/stockholdings/service/QuoteRefreshScheduler.java
+  \
+          src/main/resources/application.properties \
+          src/test/java/io/hsiaopingkuo/stockholdings/service/DividendSyncSchedu
+  lerTest.java \
+          src/test/java/io/hsiaopingkuo/stockholdings/service/DividendSyncServic
+  eTest.java \
+          src/test/java/io/hsiaopingkuo/stockholdings/service/QuoteRefreshSchedu
+  lerTest.java \
+          src/test/resources/application.properties
+  git status --short
+  git commit -m "feat: 第6題 第4c階段 
+  除權息同步接上排程，與行情共用市場鎖和冷卻"
+
+  commit 前先用 git status --short 確認：只有這 11 個檔案在暫存區，而且沒有
+  第6題設計決定.md 和驗收報告。
+
+  這一段的 ai-log 也記得放進去，commit 前檢查有沒有密碼或 token。
+
+  如果你其實是要我直接執行 commit，回我一聲，我就照上面的指令跑。
+
+✻ Cogitated for 10s · done 上午4:33
+
+> 請直接幫我執行 commit，加上標題feat: 第6題 第4c階段                           
+  除權息同步接上排程，與行情共用市場鎖和冷卻就好                                
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● 已在 feature/q6-dividend-schedule 分支 commit 了：e4b7013 feat: 第6題 第4c階段
+  除權息同步接上排程，與行情共用市場鎖和冷卻。
+
+  - 這次 commit 的就是 main 和 test 那 11
+    個檔案。設計文件和驗收報告沒有加進去；commit 後工作目錄是乾淨的，沒有其他未
+    commit 的變更。
+  - 訊息只有你給的標題，沒有加 AI 尾行。
+  - 還沒有 push，也還沒有合併回 master。
+
+  還沒做的事：
+  1. 這一段的 ai-log 還沒放。放進去時記得檢查有沒有密碼或 token，再另外 commit。
+  2. push 分支、合併回 master（用一般 merge，不用 squash）。
+  3. README 待補 DIVIDEND_SYNC_ENABLED 這些設定，等第 6 題驗證完我再出草稿。
+
+✻ Baked for 10s · done 上午4:34
