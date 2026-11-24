@@ -5,8 +5,10 @@ import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.EnumMap;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.random.RandomGenerator;
 
 import org.slf4j.Logger;
@@ -29,9 +31,12 @@ import io.hsiaopingkuo.stockholdings.repository.QuoteRepository;
  * 一輪的流程：
  * ① 查批次（全市場收盤行情）
  *    - 拿到 → 整批寫入 quote 表；資料日期是今天 → 這個市場今天完成
+ *      → 補舊持股的市場（③）→ 補查收盤價（①-b）
  *    - 沒有資料（還沒公布、休市）→ 不算錯，等下一輪
  *    - 被擋 → 這個市場冷卻（冷卻期間不發任何請求）
  *    - 失敗（404、500、逾時、格式不符）→ ②
+ * ①-b 補查收盤價：批次只有那一天的資料，那天沒成交的股票沒有收盤價；
+ *    對有人持有、但快取沒有這一列或沒有收盤價的代號，逐檔往前找最近一個有成交日的收盤價
  * ② 逐檔：只查這個市場「有人持有、而且快取還沒有今天資料」的代號，一次一個，請求之間隨機等一下
  * ③ 補舊持股的市場（market 是 NULL 的）
  * 任何例外都在這裡接住、寫 log，不會往外丟，排程不會因此停止。
@@ -143,7 +148,10 @@ public class QuoteRefreshService {
 		}
 		log.info("行情更新 來源={} 市場={} 方式={} 更新={}筆 資料日期={}", trigger.label, market, result.mode().label,
 				result.updated(), result.dataDate() == null ? "-" : result.dataDate());
-		backfillOldHoldings();
+		if (result.mode() != Mode.BATCH) {
+			// 批次成功的那一輪已經在 handleBatch 裡補過（要排在補查收盤價之前），不用再補一次
+			backfillOldHoldings();
+		}
 		return result;
 	}
 
@@ -182,6 +190,9 @@ public class QuoteRefreshService {
 					// 批次涵蓋整個市場：拿到今天的資料，這個市場今天就完成了，不必等另一個市場
 					state.markDone(today);
 				}
+				// 先補舊持股的市場（剛寫入的批次大多查得到）：補上市場的持股，下一步同一輪就能補查收盤價
+				backfillOldHoldings();
+				updated += backfillMissingClose(market, state, today);
 				return new RoundResult(market, trigger, Mode.BATCH, updated, batch.tradeDate());
 			}
 			case NO_DATA -> {
@@ -239,6 +250,66 @@ public class QuoteRefreshService {
 			state.markDone(today);
 		}
 		return new RoundResult(market, trigger, blocked ? Mode.BLOCKED : Mode.PER_STOCK, updated, latestDate);
+	}
+
+	/**
+	 * 批次只有某一天的資料：那天沒成交（"--"）的股票，收盤價是 null，
+	 * 全新的資料庫又沒有之前的收盤價可以保留，清單會顯示「未取得」（巧馨檢查時發現）。
+	 * 對這個市場「有人持有，但快取沒有這一列或沒有收盤價」的代號，用逐檔 lookupLatest 往前找最近一個有成交日。
+	 * 快取沒有這一列也要補：F-01 決定新增時寫快取失敗仍照常新增，缺的行情要靠這裡補上。
+	 *
+	 * 遵守逐檔的規則：一次一個請求、每個請求前隨機等一下、被擋就冷卻並停止。
+	 * 查到 FOUND 或 NOT_FOUND 才記成「今天已補查」（長期沒成交的股票才不會每輪重查）；
+	 * UNAVAILABLE 可能只是暫時的，不記，下一輪再試。
+	 *
+	 * @return 新增或真的有變動的 quote 筆數
+	 */
+	private int backfillMissingClose(Market market, MarketRefreshState state, LocalDate today)
+			throws InterruptedException {
+		List<String> heldCodes = holdingRepository.findByMarketOrderByCodeAsc(market).stream()
+				.map(Holding::getCode).toList();
+		List<String> targets = codesWithoutClose(heldCodes).stream()
+				.filter(code -> !state.isCloseBackfilled(code, today))
+				.toList();
+
+		int updated = 0;
+		for (String code : targets) {
+			// 第一個請求前也要等：前一刻剛向同一台主機送過批次請求
+			pauseBetweenRequests();
+			StockLookup lookup = stockClients.get(market).lookupLatest(code, today);
+			switch (lookup.status()) {
+				case FOUND -> {
+					// 寫入照 Quote.apply 的規則：舊資料不會蓋掉新資料
+					updated += quoteService.upsert(List.of(lookup.toDailyQuote(code)));
+					state.markCloseBackfilled(code, today);
+				}
+				case NOT_FOUND -> {
+					log.warn("補查收盤價 {} {}：這個月和上個月都查不到", market, code);
+					state.markCloseBackfilled(code, today);
+				}
+				case BLOCKED -> {
+					// 被擋：剩下的代號這一輪都不查了
+					startCooldown(state);
+					return updated;
+				}
+				default -> log.warn("補查收盤價 {} {}：官方暫時查不了，下一輪再試", market, code);
+			}
+		}
+		if (!targets.isEmpty()) {
+			log.info("補查收盤價 市場={} 補查={}檔 更新={}筆", market, targets.size(), updated);
+		}
+		return updated;
+	}
+
+	/** 快取沒有這一列，或有這一列但收盤價是 null 的代號。 */
+	private List<String> codesWithoutClose(List<String> codes) {
+		Set<String> withClose = new HashSet<>();
+		quoteRepository.findAllById(codes).forEach(q -> {
+			if (q.getClosePrice() != null) {
+				withClose.add(q.getCode());
+			}
+		});
+		return codes.stream().filter(code -> !withClose.contains(code)).toList();
 	}
 
 	/** 快取裡沒有、或最近交易日比 today 舊的代號（「今天完成」看 latest_trade_date，當天沒成交的股票才不會一直重查）。 */
