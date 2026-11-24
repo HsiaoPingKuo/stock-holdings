@@ -6,6 +6,7 @@ import java.util.Optional;
 
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 
 import io.hsiaopingkuo.stockholdings.dto.CodeFirstTradeDate;
 import io.hsiaopingkuo.stockholdings.entity.Trade;
@@ -15,6 +16,13 @@ public interface TradeRepository extends JpaRepository<Trade, Long> {
 
 	// 某檔持股的全部交易，依重播順序（日期，同一天再依 id）；對應索引 idx_trade_holding_date
 	List<Trade> findByHoldingIdOrderByTradeDateAscIdAsc(Long holdingId);
+
+	/**
+	 * 修改、刪除交易時，先只查出它屬於哪一檔持股，鎖住持股後才讀交易本身。
+	 * 只查一個數字、不載入 Entity：若先載入，鎖住前讀到的舊版本會留在 JPA 快取裡，鎖住後再查也拿到舊的。
+	 */
+	@Query("select t.holdingId from Trade t where t.id = :id")
+	Optional<Long> findHoldingIdById(@Param("id") Long id);
 
 	// 清單用：一次查出全部交易，在記憶體裡依持股分組，不必每一檔查一次資料庫
 	List<Trade> findAllByOrderByHoldingIdAscTradeDateAscIdAsc();

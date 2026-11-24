@@ -86,6 +86,20 @@ public class Trade {
 		this.updatedAt = now;
 	}
 
+	/**
+	 * 2.0 修改交易：只改日期、股數、價格，買賣方向不能改。
+	 * 推估標記只有在日期真的被改掉時才拿掉：只改價格時，日期仍然是推估的。
+	 */
+	public void changeDetails(LocalDate tradeDate, long shares, BigDecimal price, LocalDateTime now) {
+		if (!this.tradeDate.equals(tradeDate)) {
+			this.tradeDate = tradeDate;
+			this.dateEstimated = false;
+		}
+		this.shares = shares;
+		this.price = price;
+		this.updatedAt = now;
+	}
+
 	/** 轉成計算核心用的 record（計算核心不依賴 Entity）。 */
 	public TradeInput toInput() {
 		return new TradeInput(id, tradeDate, side, shares, price);
