@@ -1,0 +1,1106 @@
+ ▐▛███▛█   Claude Code v2.1.329
+▝▜██████▀  Opus 5.5 · Claude Pro
+ ▝▝   ▝▝   C:\TKA102_JavaApp\Workspace_for_practice\stock-holdings
+
+
+> /clear                                                                        
+
+> 【規則】先讀 CLAUDE.md，全程遵守。先提出方案，等我回覆「同意」才動手。只做這  
+  一階段的範圍。commit 由我執行。V1～V4 不能改。                                
+                                                                                
+  【背景】                                                                      
+  設計文件「第6題設計決定.md」第 8 節（決定 7）和第 14                          
+  節已經更新，請重新讀過。第 4a 階段（三個                                      
+  client、DividendSourceRule）已經合併進 master。第 4 階段拆成                  
+  4b、4c：這一階段不接排程，同步只能由程式呼叫。                                
+                                                                                
+  【開始前】                                                                    
+  git fetch 後切到最新的 master，開分支 feature/q6-dividend-sync。              
+                                                                                
+  【這一階段的目標】第 4b 階段：存除權息資料、同步一輪、接上重播計算            
+                                                                                
+  一、V5 migration（檔名你提）                                                  
+  1. dividend_event：每一次除權息一列，(市場, 代號, 除權息日) 唯一。            
+     - 存列表的原始值（前收、除權息參考價、權值+息值、減除股利參考價；上櫃的現  
+  金股利、每仟股配股；上市的明細參數）。                                        
+     - 存明細的結果和狀態（不需要、待查、查到、查不到、失敗），和最後一次查明細 
+  的時間。                                                                      
+     - 存依 DividendSourceRule 算出來的每股現金股利、每千股配股、來源。         
+     - 數字的精度要容得下 99.99999623 這種 8 位小數。                           
+  2. dividend_fetch_range：(市場, 年份)                                         
+  一列，記錄抓過了沒、抓完了沒、最後一次抓的時間。                              
+     約束和索引都自己取名字，註解照 V1～V4 的風格。                             
+                                                                                
+  二、同步一輪（service，不排程）                                               
+  1. 要抓哪幾年：從所有交易中最早的日期那一年（最早                             
+  2021）到今年。沒有任何交易時不抓。                                            
+     - 過去的年份：抓完了就不再抓。在那一年結束之後抓的才算抓完。               
+     - 今年：每一輪都重抓（1/1 到今天）。                                       
+     - 兩個市場各自處理。                                                       
+  2. 列表的結果：有資料 → 寫入或更新事件（重抓時保留已經查到的明細）；沒有資料  
+  → 一樣記錄成抓過了（真的沒有除權息）；失敗 → 不記錄，下一輪再試；被擋 →       
+  這個市場這一輪停止，回報「被擋」，讓 4c 的排程決定冷卻。                      
+  3. 上市的明細：只查「有人持有的代號」，而且只查用列表算不出官方值的事件（Divi 
+  dendSourceRule 沒有明細時結果不是 OFFICIAL 的）。查不到 →                     
+  標「查不到」，不再查；失敗 → 同一天不重查，隔天再試；被擋 → 停止。            
+  4. 每個請求之間隨機間隔 3.2～5.8 秒（沿用現有的 Pause）；呼叫官方 API         
+  時不能在資料庫交易裡（F-01），寫入用短交易。                                  
+  5. 回傳這一輪的結果摘要（每個市場抓了哪幾年、寫入幾筆、查了幾筆明細、有沒有被 
+  擋），4c 用來寫 log 和決定冷卻。                                              
+                                                                                
+  三、接上重播計算                                                              
+  1. 新增讀資料庫的 DividendEventProvider 實作，取代                            
+  NoDividendEventProvider（NoDividendEventProvider                              
+  是否刪除請提出建議）。只讀資料庫、不呼叫官方 API（寫入時會在鎖裡面呼叫它）。  
+  2. 「無法取得」的事件也要提供，重播計算才會列進明細。                         
+  3. 每檔持股的股利資料狀態：持有期間（第一筆交易那一年到今年）有任何一年還沒抓 
+  過、過去的年份還沒抓完，或這一檔有明細還在「待查」→ PENDING；否則             
+  COMPLETE。今年只要抓過一次就算數。請提出要放在哪裡（第 6 階段的網頁和 /api/v2 
+  會用到），這一階段不用顯示。                                                  
+                                                                                
+  【測試】                                                                      
+  - migration 測試：V5 建表、唯一約束。                                         
+  - 同步一輪（假的 client，用 4a 的實測 JSON）：                                
+    - 有一筆 2025-06 的交易 → 抓 2025、2026 兩年，兩個市場；2025 標成抓完，2026 
+  沒有                                                                          
+    - 再跑一輪 → 2025 不再抓，2026 重抓；明細不會被清掉                         
+    - 沒有資料的年份標成抓過了                                                  
+    - 列表失敗 → 那一年不記錄；被擋 → 這個市場停止、回報被擋                    
+    - 明細：2884（權息）有人持有 → 查明細、變成 OFFICIAL                        
+  1.2／10；2330（息）不查明細；沒有人持有的權息事件不查                         
+    - 明細查不到 → 不再查；明細失敗 → 同一天不重查                              
+  - 重播接起來（題目例子，最重要）：資料庫裡有 4a 實測資料解析出來的事件，透過  
+  /api/v1 或 service 驗證                                                       
+    - 2330 2025-06-10 買 1,500 股 → 現金股利 6,750                              
+    - 2884 2025-07-01 買 2,000 股 @30.00、明細查到 → 2,020 股、平均成本 29.75   
+    - 2884 買 1,550 股 → 現金 1,860、配股 15                                    
+    - 8069 2025-07-01 買 1,000 股 → 4,990                                       
+    - 2884 沒有明細（無法取得）→ 不計入，明細有這一筆                           
+  - 股利資料狀態：還沒抓 → PENDING；抓完 → COMPLETE；有明細待查 → PENDING。     
+  - 現有測試的預期值不能改。注意：1.0 轉入的持股日期是 2026 年，2026            
+  年的除權息會開始影響 /api/v1 的股數；如果有現有測試因此失敗，先停下來告訴我。 
+                                                                                
+  【不要做】                                                                    
+  不接排程（4c）、不改網頁和 /api/v1 的回應格式、不做 /api/v2、不做冪等鍵。     
+                                                                                
+  【請先回覆】                                                                  
+  - V5 的 SQL 草稿                                                              
+  - 同步一輪的流程（含每一步在不在資料庫交易裡）                                
+  - 明細「需要查」的判斷，和各種狀態怎麼轉換                                    
+  - 股利資料狀態放在哪裡、怎麼算                                                
+  - 會新增、修改哪些檔案，測試清單                                              
+  - 你認為設計文件有矛盾或沒寫清楚的地方                                        
+                                                                                
+  【規則再提醒】先提方案等「同意」；V1～V4 不能改；不接排程；官方 API           
+  不能在交易或鎖裡呼叫；兩份設計文件和驗收報告都不 commit；main 和 test 一起    
+  commit；commit 由我執行。                                                     
+  將回覆存成md檔，放在專案根目錄                                                
+
+  Read 1 file, ran 6 shell commands (ctrl+o to expand)
+
+● 目前在讀現有程式（除權息 client、行情同步、持股計算），接下來看
+  QuoteRefreshService、HoldingAssembler 和測試，再寫提案檔。
+
+  Ran 8 shell commands · 1 failed (ctrl+o to expand)
+
+● 正在用實測樣本檢查同一天同代號會不會出現兩列（影響唯一約束的設計），馬上就寫提
+  案。
+
+  Ran 4 shell commands (ctrl+o to expand)
+
+● Write(第6題第4b階段提案.md)
+  ⎿  Wrote 435 lines to 第6題第4b階段提案.md
+       1 # 第 6 題 第 4b 階段提案：存除權息資料、同步一輪、接上重播計算
+       2 
+       3 - 日期：2026-11-25
+       4 - 分支：`feature/q6-dividend-sync`（已從最新的 master `e245b41`
+         開出，還沒有改任何程式）
+       5 - 依據：`第6題設計決定.md` 第 8 節（決定 7）、第 14 節，和這次的
+         指示
+       6 - **這份是提案，等你回覆「同意」才動手。** 這個檔案和設計文件一
+         樣不 commit。
+       7 
+     … +428 lines (ctrl+o to expand)
+
+● Update(第6題第4b階段提案.md)
+  ⎿  Added 1 line, removed 1 line
+      292 
+      293  ## 6. 會新增、修改哪些檔案
+      294 
+      295 -### main（新增 11、修改 3、刪除 1）                           
+      295 +### main（新增 13、修改 3、刪除 1）                           
+      296 
+      297  | 動作 | 檔案 | 內容 |
+      298  |---|---|---|
+
+● Update(第6題第4b階段提案.md)
+  ⎿  Added 1 line, removed 1 line
+      307  | 新增 | `service/DividendSyncResult.java` | 一輪的摘要 |
+      308  | 新增 | `service/DatabaseDividendEventProvider.java` | 讀資料
+           庫的 provider |
+      309  | 新增 | `service/DividendStatusService.java` | 股利資料狀態 |
+      310 -| 新增 | `calc/DividendDataStatus.java`、`calc/DividendStatusR
+          -ule.java` | 狀態 enum 和純計算規則（上面「新增 11」含這兩個， 
+          -共 12 個新檔，更正：**新增 12**） |                           
+      310 +| 新增 | `calc/DividendDataStatus.java`、`calc/DividendStatusR
+          +ule.java` | 狀態 enum 和純計算規則 |                          
+      311  | 修改 | `repository/TradeRepository.java` | 加 `findEarliestT
+           radeDate()`（`select min(t.tradeDate)`） |
+      312  | 修改 | `config/QuoteConfig.java` | 加 `DividendSyncService`
+           的 `@Bean`：上市、上櫃各用哪個列表 client、明細 client 寫在這
+           裡（跟行情一樣） |
+      313  | 修改 | `service/DividendEventProvider.java` | 只改註解（「第
+            3 階段一律空的」那段已經過時） |
+
+● Update(第6題第4b階段提案.md)
+  ⎿  Added 1 line, removed 3 lines
+      313  | 修改 | `service/DividendEventProvider.java` | 只改註解（「第
+            3 階段一律空的」那段已經過時） |
+      314  | 刪除 | `service/NoDividendEventProvider.java` | 第 4 節 |
+      315 
+      316 -> 上表我第一次寫「新增 11」，數了一次是 12 個新檔（`calc` 兩個
+          -），已在表內更正。                                            
+      316 +### test（新增 7、修改 1）                                    
+      317 
+      318 -### test（新增 6、修改 1）                                    
+      319 -                                                              
+      318  | 動作 | 檔案 |
+      319  |---|---|
+      320  | 新增 | `migration/V5DividendMigrationTest.java` |
+
+● Update(第6題第4b階段提案.md)
+  ⎿  Added 1 line, removed 1 line
+      322  | 新增 | `service/DividendSyncServiceTest.java` |
+      323  | 新增 | `service/DatabaseDividendEventProviderTest.java` |
+      324  | 新增 | `service/DividendReplayIntegrationTest.java` |
+      325 -| 新增 | `calc/DividendStatusRuleTest.java`、`service/Dividend
+          -StatusServiceTest.java`（上面「新增 6」含這兩個，共 **7 個**新
+          -檔，已更正） |                                                
+      325 +| 新增 | `calc/DividendStatusRuleTest.java`、`service/Dividend
+          +StatusServiceTest.java` |                                     
+      326  | 修改 | `service/HoldingServiceTest.java`：只改 `@Import`（預
+           期值不改） |
+      327 
+      328  > 測試共用同一個記憶體資料庫 `testdb` 的類別，結束時都要清掉 `
+           dividend_event`、`dividend_fetch_range`，不然別的測試的持股（
+           例如 1.0 轉入的 2026 年持股）會被除權息影響。
+
+● 第 4b 階段的提案寫好了，存在專案根目錄的
+  第6題第4b階段提案.md。還沒動任何程式，等你回覆「同意」。
+
+  已做的事
+  - git fetch 過，master 已經是最新（e245b41），並開好分支
+    feature/q6-dividend-sync。
+  - 提案檔會顯示成 untracked（沒被 git 管理的新檔）。設計文件之所以不會出現在
+    git status，應該是被 .git/info/exclude
+    排除了。要的話，你可以把這個檔也加進同一個地方，commit 時就不會誤加。
+
+  提案重點
+  1. V5：新增 V5__create_dividend_event.sql，建 dividend_event 和
+     dividend_fetch_range 兩張表。數字欄位一律用 DECIMAL(18, 8)，放得下
+     99.99999623。數字的檢查條件要明寫 IS NOT NULL，因為遇到 NULL 時 CHECK
+     會直接放行。
+  2. 同步一輪：拆成兩個類別。DividendSyncService
+     負責呼叫官方，本身不開資料庫交易；DividendEventWriter 負責寫入，每年或每筆
+     明細各用一個短交易。被擋時這個市場立刻停止，並在結果裡回報「被擋」。
+  3. 明細：有五種狀態（不需要、待查、查到、查不到、失敗）。每一輪只查有人持有的
+     代號裡「待查」的事件，以及「失敗」且今天還沒查過的。重抓列表時，「查到」和
+     「查不到」會保留。
+  4. 重播：新增 DatabaseDividendEventProvider，只讀資料庫，「無法取得」的事件也
+     會提供。建議刪掉 NoDividendEventProvider，HoldingServiceTest 因此只要改
+     @Import，預期值不用改。
+  5. 股利資料狀態：enum 和判斷規則放在 calc，查資料庫的部分放
+     service/DividendStatusService，第 6 階段的清單可以直接呼叫。
+  6. 檔案數：main 新增 13 個、修改 3 個、刪除 1 個；test 新增 7 個、修改 1 個。
+
+  需要你決定的（細節在提案第 7 節，每題都附了我的建議）
+  - Q1：主考官的測試伺服器如果沒有明細 API，會回 404
+    而被判成「失敗」，於是每天重試、永遠停不下來。要不要加「連續失敗 N
+    天就當成查不到」？
+  - Q2：要不要只查「除權息日晚於那檔第一筆交易日」的明細？可以少發很多請求，但指
+    示裡沒寫，所以要你同意。
+  - Q3：同一檔同一天如果在列表出現兩列，會跟唯一約束衝突。我建議存成「無法取得」
+    並記 log，實測樣本裡沒有這種情況。
+  - Q4：重抓今年時，列表裡不見的事件要不要刪？我建議不刪。
+  - Q5：設計文件 8-C 寫「無法取得的事件之後會重試明細」，這次指示寫「查不到就不
+    再查」，兩者矛盾。我建議以指示為準。
+  - Q6：同步之後，1.0 轉入的持股如果配股，/api/v1 看到的張數和 buy_price
+    會變。測試不受影響，但第 8 題的 UPGRADE.md 要寫進去。
+
+  提醒：這個階段預計不用改 README，目前也沒有要記進 TESTLOG
+  的問題。結束時記得匯出 ai-log，commit 前檢查有沒有密碼或 token。
+
+✻ Crunched for 6m 16s · done 上午3:54
+
+> 同意這個方案。第 7 節的決定：                                                 
+                                                                                
+  Q1：不加失敗次數。FAILED 隔天再試、不算待查，照你的方案。                     
+  Q2：同意兩個建議：用 holding                                                  
+  表的所有代號（含已賣光的），而且只查除權息日晚於那檔第一筆交易日的事件。      
+  Q3：同意：存成 UNAVAILABLE、記 WARN，整份列表照常寫入。請加一個測試。         
+  Q4：同意：不刪，記 WARN。                                                     
+  Q5：同意：NOT_FOUND 不再查、FAILED 隔天再試。                                 
+  Q6：了解，已經記進設計文件，第 8 題寫 UPGRADE.md。                            
+                                                                                
+  「其他沒寫清楚」那幾點，設計文件都已經修正（年份、不需要標記待抓、股利資料每  
+  天更新一次），開始前請重新讀第 8 節。                                         
+  NoDividendEventProvider 同意刪除。                                            
+                                                                                
+  完成後跑 ./mvnw test，回報測試數量和結果。如果有現有測試因為除權息而失敗，先  
+  停下來告訴我。main 和 test 一起 commit，訊息照你的：                          
+  feat: 第6題 第4b階段 除權息資料表、同步一輪與重播接上資料庫                   
+  commit 由我執行。                                                             
+                                                                                
+  【規則再提醒】V1～V4 不能改；不接排程；官方 API                               
+  不能在交易或鎖裡呼叫；提案檔、兩份設計文件、驗收報告都不 commit。             
+
+  Ran 5 shell commands (ctrl+o to expand)
+  ⎿  Interrupted · What should Claude do instead?
+
+> 開發途中只跑相關的測試類別，並用 ./mvnw                                       
+  -q；全部測試由我自己跑，跑完我回報結果。                                      
+
+  Ran 2 shell commands, wrote 1 memory (ctrl+o to expand)
+
+● Now the migration.
+
+● Write(src\main\resources\db\migration\V5__create_dividend_event.sql)
+  ⎿  Wrote 94 lines to
+     src\main\resources\db\migration\V5__create_dividend_event.sql
+       1 -- 第 6 題：除權息資料。背景同步把官方的除權息列表（上市 TWT49U
+         、上櫃 exDailyQ）存進來，
+       2 -- 重播交易時只讀這兩張表，使用者的請求不呼叫官方 API（CLAUDE.md
+          2.1）。
+       3 -- 注意：這個檔案一旦 commit 就不能再改；之後資料表有任何變動，
+         一律新增 V6__、V7__…
+       4 
+       5 CREATE TABLE dividend_event (
+       6     id                         BIGINT GENERATED BY DEFAULT AS ID
+         ENTITY,
+     … +88 lines (ctrl+o to expand)
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\entity\DividendDetailStatus.
+       java)
+  ⎿  Wrote 18 lines to src\main\java\io\hsiaopingkuo\stockholdings\entity\D
+     ividendDetailStatus.java
+       1 package io.hsiaopingkuo.stockholdings.entity;
+       2 
+       3 /**
+       4  * 上市除權息明細（TWT49UDetail）的查詢狀態（第 6 題），存在 div
+         idend_event.detail_status。
+       5  * 只有上市、而且用列表算不出官方值的事件才需要查明細。
+       6  */
+       7 public enum DividendDetailStatus {
+       8   /** 不需要查：上櫃（列表本身就有官方值），或上市用列表就算得出
+         官方值（例如只除息）。 */
+     … +10 lines (ctrl+o to expand)
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\entity\DividendEvent.java)
+  ⎿  Wrote 367 lines to
+     src\main\java\io\hsiaopingkuo\stockholdings\entity\DividendEvent.java
+       1 package io.hsiaopingkuo.stockholdings.entity;
+       2 
+       3 import java.math.BigDecimal;
+       4 import java.time.LocalDate;
+       5 import java.time.LocalDateTime;
+       6 import java.util.Objects;
+       7 
+       8 import io.hsiaopingkuo.stockholdings.calc.DividendEventInput;
+       9 import io.hsiaopingkuo.stockholdings.calc.DividendKind;
+      10 import io.hsiaopingkuo.stockholdings.calc.DividendSource;
+     … +357 lines (ctrl+o to expand)
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\entity\DividendFetchRange.ja
+       va)
+  ⎿  Wrote 78 lines to src\main\java\io\hsiaopingkuo\stockholdings\entity\D
+     ividendFetchRange.java
+       1 package io.hsiaopingkuo.stockholdings.entity;
+       2 
+       3 import java.time.LocalDateTime;
+       4 
+       5 import jakarta.persistence.Column;
+       6 import jakarta.persistence.Entity;
+       7 import jakarta.persistence.EnumType;
+       8 import jakarta.persistence.Enumerated;
+       9 import jakarta.persistence.GeneratedValue;
+      10 import jakarta.persistence.GenerationType;
+     … +68 lines (ctrl+o to expand)
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\repository\DividendEventRepo
+       sitory.java)
+  ⎿  Wrote 42 lines to src\main\java\io\hsiaopingkuo\stockholdings\reposito
+     ry\DividendEventRepository.java
+       1 package io.hsiaopingkuo.stockholdings.repository;
+       2 
+       3 import java.time.LocalDate;
+       4 import java.time.LocalDateTime;
+       5 import java.util.Collection;
+       6 import java.util.List;
+       7 
+       8 import org.springframework.data.jpa.repository.JpaRepository;
+       9 import org.springframework.data.jpa.repository.Query;
+      10 import org.springframework.data.repository.query.Param;
+     … +32 lines (ctrl+o to expand)
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\repository\DividendFetchRang
+       eRepository.java)
+  ⎿  Wrote 19 lines to src\main\java\io\hsiaopingkuo\stockholdings\reposito
+     ry\DividendFetchRangeRepository.java
+      1 package io.hsiaopingkuo.stockholdings.repository;
+      2 
+      3 import java.util.List;
+      4 import java.util.Optional;
+      5 
+      6 import org.springframework.data.jpa.repository.JpaRepository;
+      7 
+      8 import io.hsiaopingkuo.stockholdings.entity.DividendFetchRange;
+      9 import io.hsiaopingkuo.stockholdings.entity.Market;
+     … +10 lines (ctrl+o to expand)
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\dto\CodeFirstTradeDate.java)
+  ⎿  Wrote 10 lines to src\main\java\io\hsiaopingkuo\stockholdings\dto\Code
+     FirstTradeDate.java
+       1 package io.hsiaopingkuo.stockholdings.dto;
+       2 
+       3 import java.time.LocalDate;
+       4 
+       5 /**
+       6  * 一檔持股的代號和第一筆交易日（第 6 題）：除權息同步用來決定哪
+         些事件需要查明細
+       7  * （除權息日晚於第一筆交易日的才會影響這檔）。由 TradeRepositor
+         y 的查詢直接產生。
+       8  */
+     … +2 lines (ctrl+o to expand)
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\repository\TradeRepository.
+        java)
+  ⎿  Added 15 lines
+      14 
+      15    // 清單用：一次查出全部交易，在記憶體裡依持股分組，不必每一檔
+          查一次資料庫
+      16    List<Trade> findAllByOrderByHoldingIdAscTradeDateAscIdAsc();
+      17 +                                                               
+      18 +  // 除權息同步：從所有交易最早的那一年開始抓；沒有任何交易時是
+         +空的（不抓）                                                   
+      19 +  @Query("select min(t.tradeDate) from Trade t")               
+      20 +  Optional<LocalDate> findEarliestTradeDate();                 
+      21 +                                                               
+      22 +  /**                                                          
+      23 +   * 除權息同步：holding 表每個代號（含已賣光的）的第一筆交易日
+         +。                                                             
+      24 +   * 兩張表沒有設 JPA 關聯，所以用 on 自己指定用 holding_id 對 
+         +應；沒有交易的持股不會出現（沒有持有期間）。                   
+      25 +   */                                                          
+      26 +  @Query("""                                                   
+      27 +      select new io.hsiaopingkuo.stockholdings.dto.CodeFirstTra
+         +deDate(h.code, min(t.tradeDate))                               
+      28 +      from Holding h join Trade t on t.holdingId = h.id        
+      29 +      group by h.code                                          
+      30 +      """)                                                     
+      31 +  List<CodeFirstTradeDate> findFirstTradeDateByCode();         
+      32  }
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\repository\TradeRepository.
+        java)
+  ⎿  Added 4 lines
+       1  package io.hsiaopingkuo.stockholdings.repository;
+       2 
+       3 +import java.time.LocalDate;                                    
+       4  import java.util.List;
+       5 +import java.util.Optional;                                     
+       6 
+       7  import org.springframework.data.jpa.repository.JpaRepository;
+       8 +import org.springframework.data.jpa.repository.Query;          
+       9 
+      10 +import io.hsiaopingkuo.stockholdings.dto.CodeFirstTradeDate;   
+      11  import io.hsiaopingkuo.stockholdings.entity.Trade;
+      12 
+      13  /** 交易的資料存取（第 6 題）。 */
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\service\DividendEventWriter.
+       java)
+  ⎿  Wrote 143 lines to src\main\java\io\hsiaopingkuo\stockholdings\service
+     \DividendEventWriter.java
+       1 package io.hsiaopingkuo.stockholdings.service;
+       2 
+       3 import java.time.LocalDate;
+       4 import java.time.LocalDateTime;
+       5 import java.util.ArrayList;
+       6 import java.util.HashMap;
+       7 import java.util.LinkedHashMap;
+       8 import java.util.List;
+       9 import java.util.Map;
+      10 import java.util.Set;
+     … +133 lines (ctrl+o to expand)
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\service\DividendEventWriter
+        .java)
+  ⎿  Added 3 lines, removed 2 lines
+      84        DividendEvent event = existing.remove(entry.getKey());
+      85        if (event == null) {
+      86          // 已存在的列是交易中讀出來的，改了欄位後交易結束會自動
+          寫回；新的才要 save
+      87 -        created.add(new DividendEvent(first, ambiguous, now)); 
+      87 +        event = new DividendEvent(first, ambiguous, now);      
+      88 +        created.add(event);                                    
+      89        } else if (ambiguous ? event.applyAmbiguousListRow(first,
+           now) : event.applyListRow(first, now)) {
+      90          updated++;
+      91        }
+      91 -      warnIfNoDetailParam(first, ambiguous);                   
+      92 +      warnIfNoDetailParam(event);                              
+      93      }
+      94      eventRepository.saveAll(created);
+      95 
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\service\DividendEventWriter
+        .java)
+  ⎿  Added 6 lines, removed 4 lines
+      102      return new ListWriteResult(created.size(), updated);
+      103    }
+      104 
+      105 -  /** 上市、需要明細、但列表沒有「詳細資料」參數：沒辦法查，記
+          -下來方便追查。 */                                             
+      106 -  private static void warnIfNoDetailParam(DividendListRow row,
+          - boolean ambiguous) {                                         
+      107 -    if (row.market() == Market.TWSE && !ambiguous && (row.deta
+          -ilStockNo() == null || row.detailDate() == null)) {           
+      108 -      log.warn("除權息列表：{} {} 沒有明細參數，如果列表算不出
+          -官方值，會直接標成查不到", row.code(), row.exDate());         
+      105 +  /**                                                         
+      106 +   * 上市、需要明細、但列表沒有「詳細資料」參數：沒辦法查，直 
+          +接標成查不到（沒有查詢時間）。記下來方便追查。                
+      107 +   */                                                         
+      108 +  private static void warnIfNoDetailParam(DividendEvent event)
+          + {                                                            
+      109 +    if (event.getDetailStatus() == DividendDetailStatus.NOT_FO
+          +UND && event.getDetailCheckedAt() == null) {                  
+      110 +      log.warn("除權息列表：{} 需要明細但沒有明細參數，標成查 
+          +不到", event);                                                
+      111      }
+      112    }
+      113 
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\service\DividendEventWriter
+        .java)
+  ⎿  Removed 6 lines
+      137          })
+      138          .orElse(null);
+      139    }
+      140 -                                                              
+      141 -  /** 測試和 log 用：這些代號目前有哪些事件。 */              
+      142 -  @Transactional(readOnly = true)                             
+      143 -  public List<DividendEvent> findByCodes(Set<String> codes) { 
+      144 -    return eventRepository.findByCodeInOrderByCodeAscExDateAsc
+          -IdAsc(codes);                                                 
+      145 -  }                                                           
+      140  }
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\service\DividendEventWriter
+        .java)
+  ⎿  Removed 1 line
+       7  import java.util.LinkedHashMap;
+       8  import java.util.List;
+       9  import java.util.Map;
+      10 -import java.util.Set;                                          
+      10  import java.util.stream.Collectors;
+      11 
+      12  import org.slf4j.Logger;
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\service\DividendSyncResult.j
+       ava)
+  ⎿  Wrote 44 lines to src\main\java\io\hsiaopingkuo\stockholdings\service\
+     DividendSyncResult.java
+       1 package io.hsiaopingkuo.stockholdings.service;
+       2 
+       3 import java.util.List;
+       4 
+       5 import io.hsiaopingkuo.stockholdings.entity.Market;
+       6 
+       7 /**
+       8  * 單一市場同步一輪除權息的摘要（第 6 題）。4c 的排程用它寫 log
+         、決定要不要冷卻。
+       9  *
+     … +35 lines (ctrl+o to expand)
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\service\DividendSyncService.
+       java)
+  ⎿  Wrote 267 lines to src\main\java\io\hsiaopingkuo\stockholdings\service
+     \DividendSyncService.java
+       1 package io.hsiaopingkuo.stockholdings.service;
+       2 
+       3 import java.time.Clock;
+       4 import java.time.LocalDate;
+       5 import java.time.LocalDateTime;
+       6 import java.util.ArrayList;
+       7 import java.util.EnumMap;
+       8 import java.util.List;
+       9 import java.util.Map;
+      10 import java.util.Optional;
+     … +257 lines (ctrl+o to expand)
+
+● 進度：V5、entity、repository、同步 service 和寫入已經寫好，接著寫
+  provider、股利資料狀態、QuoteConfig，然後寫測試。
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\service\DatabaseDividendEven
+       tProvider.java)
+  ⎿  Wrote 46 lines to src\main\java\io\hsiaopingkuo\stockholdings\service\
+     DatabaseDividendEventProvider.java
+       1 package io.hsiaopingkuo.stockholdings.service;
+       2 
+       3 import java.util.Collection;
+       4 import java.util.LinkedHashMap;
+       5 import java.util.LinkedHashSet;
+       6 import java.util.List;
+       7 import java.util.Map;
+       8 import java.util.stream.Collectors;
+       9 
+      10 import org.springframework.stereotype.Component;
+     … +36 lines (ctrl+o to expand)
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\calc\DividendDataStatus.java
+       )
+  ⎿  Wrote 12 lines to src\main\java\io\hsiaopingkuo\stockholdings\calc\Div
+     idendDataStatus.java
+       1 package io.hsiaopingkuo.stockholdings.calc;
+       2 
+       3 /**
+       4  * 一檔持股的股利資料狀態（第 6 題設計決定 7-D），第 6 階段的網
+         頁和 /api/v2 的 dividend_status。
+       5  * 股利資料每天更新一次：今年只要抓過一次就算數，當天稍晚才公布
+         的除權息要等下一輪。
+       6  */
+       7 public enum DividendDataStatus {
+       8   /** 持有期間的除權息資料都抓過了。 */
+     … +4 lines (ctrl+o to expand)
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\calc\DividendStatusRule.java
+       )
+  ⎿  Wrote 45 lines to src\main\java\io\hsiaopingkuo\stockholdings\calc\Div
+     idendStatusRule.java
+       1 package io.hsiaopingkuo.stockholdings.calc;
+       2 
+       3 import java.time.LocalDate;
+       4 import java.util.Collection;
+       5 import java.util.Map;
+       6 
+       7 /**
+       8  * 判斷一檔持股的股利資料狀態（第 6 題設計決定 7-D）。純計算：不
+         碰資料庫，資料由 DividendStatusService 準備。
+       9  */
+     … +36 lines (ctrl+o to expand)
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\service\DividendStatusServic
+       e.java)
+  ⎿  Wrote 90 lines to src\main\java\io\hsiaopingkuo\stockholdings\service\
+     DividendStatusService.java
+       1 package io.hsiaopingkuo.stockholdings.service;
+       2 
+       3 import java.time.Clock;
+       4 import java.time.LocalDate;
+       5 import java.util.Collection;
+       6 import java.util.EnumMap;
+       7 import java.util.HashMap;
+       8 import java.util.LinkedHashMap;
+       9 import java.util.LinkedHashSet;
+      10 import java.util.List;
+     … +80 lines (ctrl+o to expand)
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\config\QuoteConfig.java)
+  ⎿  Added 12 lines
+      148      return new TpexDividendListClient(dividendRestClient(prope
+           rties.tpex().baseUrl(), properties), jsonMapper);
+      149    }
+      150 
+      151 +  // 同步一輪（第 4b 階段，還沒有排程）。上市列表 = 證交所 TWT
+          +49U、上櫃列表 = 櫃買 exDailyQ，只有上市要查明細；             
+      152 +  // 請求之間的等待沿用行情的 Pause 和 3.2～5.8 秒的設定      
+      153 +  @Bean                                                       
+      154 +  DividendSyncService dividendSyncService(TwseDividendListClie
+          +nt twseList, TpexDividendListClient tpexList,                 
+      155 +      TwseDividendDetailClient twseDetail, DividendEventWriter
+          + writer, DividendEventRepository eventRepository,             
+      156 +      DividendFetchRangeRepository rangeRepository, TradeRepos
+          +itory tradeRepository, Pause pause,                           
+      157 +      RandomGenerator random, QuoteProperties properties, Cloc
+          +k clock) {                                                    
+      158 +    Map<Market, DividendListClient> listClients = Map.of(Marke
+          +t.TWSE, twseList, Market.TPEX, tpexList);                     
+      159 +    return new DividendSyncService(listClients, twseDetail, wr
+          +iter, eventRepository, rangeRepository,                       
+      160 +        tradeRepository, pause, random, properties.refresh(), 
+          +clock);                                                       
+      161 +  }                                                           
+      162 +                                                              
+      163    private static RestClient restClient(String baseUrl, QuotePr
+           operties properties) {
+      164      return restClient(baseUrl, properties.connectTimeout(), pr
+           operties.readTimeout());
+      165    }
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\config\QuoteConfig.java)
+  ⎿  Added 1 line
+      14  import org.springframework.web.client.RestClient;
+      15 
+      16  import io.hsiaopingkuo.stockholdings.entity.Market;
+      17 +import io.hsiaopingkuo.stockholdings.quote.DividendListClient; 
+      18  import io.hsiaopingkuo.stockholdings.quote.HolidayCalendar;
+      19  import io.hsiaopingkuo.stockholdings.quote.MarketCloseBatchClie
+          nt;
+      20  import io.hsiaopingkuo.stockholdings.quote.MarketResolver;
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\config\QuoteConfig.java)
+  ⎿  Added 5 lines
+      27  import io.hsiaopingkuo.stockholdings.quote.TpexTradingStockClie
+          nt;
+      28  import io.hsiaopingkuo.stockholdings.quote.TwseMiIndexClient;
+      29  import io.hsiaopingkuo.stockholdings.quote.TwseStockDayClient;
+      30 +import io.hsiaopingkuo.stockholdings.repository.DividendEventRe
+         +pository;                                                      
+      31 +import io.hsiaopingkuo.stockholdings.repository.DividendFetchRa
+         +ngeRepository;                                                 
+      32  import io.hsiaopingkuo.stockholdings.repository.HoldingReposito
+          ry;
+      33  import io.hsiaopingkuo.stockholdings.repository.QuoteRepository
+          ;
+      34 +import io.hsiaopingkuo.stockholdings.repository.TradeRepository
+         +;                                                              
+      35 +import io.hsiaopingkuo.stockholdings.service.DividendEventWrite
+         +r;                                                             
+      36 +import io.hsiaopingkuo.stockholdings.service.DividendSyncServic
+         +e;                                                             
+      37  import io.hsiaopingkuo.stockholdings.service.HoldingBackfillSer
+          vice;
+      38  import io.hsiaopingkuo.stockholdings.service.Pause;
+      39  import io.hsiaopingkuo.stockholdings.service.QuoteRefreshSchedu
+          ler;
+
+● Now delete the old provider, update the interface comment and
+  HoldingServiceTest import.
+
+● Bash(cd "C:/TKA102_JavaApp/Workspace_for_practice/stock-holdings"; git rm -q
+      src/main/java/io/hsiaopingkuo/stockholdings/service/NoDividendEventProvide
+      r.java && git…)
+  ⎿   M src/main/java/io/hsiaopingkuo/stockholdings/config/QuoteConfig.java
+      M src/main/java/io/hsiaopingkuo/stockholdings/repository/TradeReposit
+     ory.java
+     … +23 lines (ctrl+o to expand)
+  ⎿  Deleted src\main\java\io\hsiaopingkuo\stockholdings\service\NoDividend
+     EventProvider.java -22
+       1 -package io.hsiaopingkuo.stockholdings.service;                 
+       2 -                                                               
+       3 -import java.util.Collection;                                   
+       4 -import java.util.List;                                         
+       5 -import java.util.Map;                                          
+       6 -                                                               
+       7 -import org.springframework.stereotype.Component;               
+       8 -                                                               
+       9 -import io.hsiaopingkuo.stockholdings.calc.DividendEventInput;  
+      10 -                                                               
+      11 -/**                                                            
+      12 - * 第 3 階段的除權息提供者：還沒有除權息資料，一律回傳空的。   
+      13 - * 第 4 階段（除權息抓取）完成後換成讀資料庫的實作，這個類別就 
+         -可以刪掉。                                                     
+      14 - */                                                            
+      15 -@Component                                                     
+      16 -public class NoDividendEventProvider implements DividendEventPr
+         -ovider {                                                       
+      17 -                                                               
+      18 -        @Override                                              
+      19 -        public Map<String, List<DividendEventInput>> eventsByCo
+         -de(Collection<String> codes) {                                 
+      20 -                return Map.of();                               
+      21 -        }                                                      
+      22 -}                                                              
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\service\DividendEventProvid
+        er.java)
+  ⎿  Added 1 line, removed 1 line
+       8 
+       9  /**
+      10   * 重播交易時要用的除權息事件（第 6 題）。
+      11 - * 第 3 階段的實作一律回傳空的（NoDividendEventProvider）；第 4
+         - 階段改成讀 dividend_event 表。                                
+      11 + * 實作是 DatabaseDividendEventProvider（讀 dividend_event 表，
+         +資料由背景的 DividendSyncService 寫入）。                      
+      12   *
+      13   * 規則（實作都要遵守）：
+      14   * - 只讀資料庫，不可以呼叫官方 API：寫入時會在鎖住持股的交易裡
+          呼叫，等官方會讓其他裝置一直等不到鎖（F-01）。
+● Update(src\test\java\io\hsiaopingkuo\stockholdings\service\HoldingServiceTest.
+        java)
+  ⎿  Added 2 lines, removed 2 lines
+      58 
+      59  /** Service 搭配真的資料庫（測試用 H2 記憶體模式 + Flyway）測試
+          業務規則。 */
+      60  @DataJpaTest
+      61 -// 第 6 題：HoldingService 重播交易時要用除權息提供者；這一階段
+         -的實作一律回傳空的                                             
+      62 -@Import({ HoldingService.class, QuoteService.class, NoDividendE
+         -ventProvider.class,                                            
+      61 +// 第 6 題：HoldingService 重播交易時要用除權息提供者；這裡的測
+         +試不寫入除權息事件，讀出來一律是空的                           
+      62 +@Import({ HoldingService.class, QuoteService.class, DatabaseDiv
+         +idendEventProvider.class,                                      
+      63      HoldingServiceTest.FixedClockConfig.class })
+      64  // 測試本身不包交易（F-01）：create() 要在「沒有交易」的情況下
+          呼叫官方，
+      65  // 如果測試先開了交易，就測不出 create() 有沒有自己開交易；資料
+          改由「清空資料」負責清掉
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● Write(src\test\java\io\hsiaopingkuo\stockholdings\service\DividendTestSupport.
+       java)
+  ⎿  Wrote 146 lines to src\test\java\io\hsiaopingkuo\stockholdings\service
+     \DividendTestSupport.java
+       1 package io.hsiaopingkuo.stockholdings.service;
+       2 
+       3 import static org.springframework.test.web.client.match.MockRest
+         RequestMatchers.anything;
+       4 import static org.springframework.test.web.client.response.MockR
+         estResponseCreators.withSuccess;
+       5 
+       6 import java.math.BigDecimal;
+       7 import java.time.LocalDate;
+       8 import java.time.LocalDateTime;
+     … +138 lines (ctrl+o to expand)
+
+● Write(src\test\java\io\hsiaopingkuo\stockholdings\service\DividendSyncServiceT
+       est.java)
+  ⎿  Wrote 423 lines to src\test\java\io\hsiaopingkuo\stockholdings\service
+     \DividendSyncServiceTest.java
+      1 package io.hsiaopingkuo.stockholdings.service;
+      2 
+      3 import static io.hsiaopingkuo.stockholdings.service.DividendTestS
+        upport.addTrade;
+      4 import static io.hsiaopingkuo.stockholdings.service.DividendTestS
+        upport.esunDetail;
+      5 import static io.hsiaopingkuo.stockholdings.service.DividendTestS
+        upport.holdWithBuy;
+      6 import static io.hsiaopingkuo.stockholdings.service.DividendTestS
+        upport.rowOf;
+     … +417 lines (ctrl+o to expand)
+
+● 進度：同步一輪的測試寫好了，正在修 import，然後跑這個測試類別。
+
+● Bash(cd "C:/TKA102_JavaApp/Workspace_for_practice/stock-holdings/src/test/java
+      /io/hsiaopingkuo/stockholdings/service"; f=DividendSyncServiceTest.java
+      sed -i 's/org\.…)
+  ⎿  10:import static org.assertj.core.groups.Tuple.tuple;
+     20:import java.util.TreeMap;
+     135:            Map<Integer, Boolean> ranges = new TreeMap<>();
+     … +62 lines (ctrl+o to expand)
+  ⎿  Updated src\test\java\io\hsiaopingkuo\stockholdings\service\DividendSy
+     ncServiceTest.java +5 -3
+       7  import static io.hsiaopingkuo.stockholdings.service.DividendTes
+          tSupport.tpexRows2025;
+       8  import static io.hsiaopingkuo.stockholdings.service.DividendTes
+          tSupport.twseRows2025;
+       9  import static org.assertj.core.api.Assertions.assertThat;
+      10 +import static org.assertj.core.groups.Tuple.tuple;             
+      11 
+      12  import java.math.BigDecimal;
+      13  import java.time.Duration;
+     ...
+      17  import java.util.List;
+      18  import java.util.Map;
+      19  import java.util.Random;
+      20 +import java.util.TreeMap;                                      
+      21 
+      22  import org.junit.jupiter.api.AfterEach;
+      23  import org.junit.jupiter.api.BeforeEach;
+     ...
+      132          }
+      133 
+      134          private Map<Integer, Boolean> rangesOf(Market market)
+           {
+      133 -                Map<Integer, Boolean> ranges = new java.util.T
+          -reeMap<>();                                                   
+      135 +                Map<Integer, Boolean> ranges = new TreeMap<>()
+          +;                                                             
+      136                  for (DividendFetchRange range : rangeRepositor
+           y.findByMarket(market)) {
+      137                          ranges.put(range.getFetchYear(), range
+           .isCompleted());
+      138                  }
+     ...
+      155                  assertThat(results).extracting(DividendSyncRes
+           ult::market, DividendSyncResult::outcome,
+      156                                  DividendSyncResult::fetchedYea
+           rs, DividendSyncResult::eventsInserted)
+      157                                  .containsExactly(
+      156 -                                                org.assertj.co
+          -re.groups.Tuple.tuple(Market.TWSE, Outcome.COMPLETED, List.of(
+          -2025, 2026), 673),                                            
+      157 -                                                org.assertj.co
+          -re.groups.Tuple.tuple(Market.TPEX, Outcome.COMPLETED, List.of(
+          -2025, 2026), 481));                                           
+      158 +                                                tuple(Market.T
+          +WSE, Outcome.COMPLETED, List.of(2025, 2026), 673),            
+      159 +                                                tuple(Market.T
+          +PEX, Outcome.COMPLETED, List.of(2025, 2026), 481));           
+      160                  assertThat(eventRepository.count()).isEqualTo(
+           673 + 481);
+      161          }
+      162 
+  ⎿  (timeout 6m 40s)
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● Bash(cd "C:/TKA102_JavaApp/Workspace_for_practice/stock-holdings/src/test/java
+      /io/hsiaopingkuo/stockholdings/service"; sed -i
+      's/\t\teventRepository.deleteAll();/\t\…)
+  ⎿                  service = new DividendSyncService(Map.of(Market.TWSE,
+     twseList, Market
+     .TPEX, tpexList), detailClient, writer,
+                                     eventRepository, rangeRepository,
+     tradeRepository, pause, new Random(1
+     … +15 lines (ctrl+o to expand)
+  ⎿  Updated src\test\java\io\hsiaopingkuo\stockholdings\service\DividendSy
+     ncServiceTest.java +2 -2
+      109          @BeforeEach
+      110          @AfterEach
+      111          void 清空資料() {
+      112 -                eventRepository.deleteAll();                  
+      113 -                rangeRepository.deleteAll();                  
+      112 +                eventRepository.deleteAllInBatch();           
+      113 +                rangeRepository.deleteAllInBatch();           
+      114                  // 交易設了 ON DELETE CASCADE，刪持股時一併刪
+           除
+      115                  holdingRepository.deleteAll();
+      116          }
+
+  Read 1 file (ctrl+o to expand)
+
+● Update(src\test\java\io\hsiaopingkuo\stockholdings\service\DividendSyncService
+        Test.java)
+  ⎿  Added 1 line, removed 3 lines
+      101          year -> year == 2025 ? DividendListResult.ok(tpexRows2
+           025()) : DividendListResult.noData());
+      102      detailClient = new FakeDetailClient(
+      103          stockNo -> stockNo.equals("2884") ? esunDetail() : Div
+           idendDetailResult.notFound());
+      104 -    service = new DividendSyncService(Map.of(Market.TWSE, twse
+          -List, Market.TPEX, tpexList), detailClient, writer,           
+      105 -        eventRepository, rangeRepository, tradeRepository, pau
+          -se, new Random(1), RefreshTestSupport.SETTINGS,               
+      106 -        clock);                                               
+      104 +    setUpServiceWithClock();                                  
+      105    }
+      106 
+      107    @BeforeEach
+
+● Update(src\test\java\io\hsiaopingkuo\stockholdings\service\DividendSyncService
+        Test.java)
+  ⎿  Added 1 line
+      214          .isEqualByComparingTo("4.50002");
+      215    }
+      216 
+      217 +  /** 用目前的 clock 和假的 client 建立 service；換了 clock 的
+          +測試要再呼叫一次。 */                                         
+      218    private void setUpServiceWithClock() {
+      219      service = new DividendSyncService(Map.of(Market.TWSE, twse
+           List, Market.TPEX, tpexList), detailClient, writer,
+      220          eventRepository, rangeRepository, tradeRepository, pau
+           se, new Random(1), RefreshTestSupport.SETTINGS,
+
+● 同步一輪的 16 個測試都通過了。接著寫
+  migration、provider、重播接起來、股利資料狀態這幾個測試。
+
+● Write(src\test\java\io\hsiaopingkuo\stockholdings\migration\V5DividendMigratio
+       nTest.java)
+  ⎿  Wrote 132 lines to src\test\java\io\hsiaopingkuo\stockholdings\migrati
+     on\V5DividendMigrationTest.java
+       1 package io.hsiaopingkuo.stockholdings.migration;
+       2 
+       3 import static org.assertj.core.api.Assertions.assertThat;
+       4 import static org.assertj.core.api.Assertions.assertThatThrownBy
+         ;
+       5 
+       6 import java.math.BigDecimal;
+       7 import java.sql.Date;
+       8 import java.sql.Timestamp;
+       9 import java.time.LocalDateTime;
+     … +123 lines (ctrl+o to expand)
+
+● Write(src\test\java\io\hsiaopingkuo\stockholdings\calc\DividendStatusRuleTest.
+       java)
+  ⎿  Wrote 60 lines to src\test\java\io\hsiaopingkuo\stockholdings\calc\Div
+     idendStatusRuleTest.java
+      1 package io.hsiaopingkuo.stockholdings.calc;
+      2 
+      3 import static org.assertj.core.api.Assertions.assertThat;
+      4 
+      5 import java.time.LocalDate;
+      6 import java.util.List;
+      7 import java.util.Map;
+      8 
+      9 import org.junit.jupiter.api.Test;
+     … +51 lines (ctrl+o to expand)
+
+● Write(src\test\java\io\hsiaopingkuo\stockholdings\service\DividendStatusServic
+       eTest.java)
+  ⎿  Wrote 131 lines to src\test\java\io\hsiaopingkuo\stockholdings\service
+     \DividendStatusServiceTest.java
+       1 package io.hsiaopingkuo.stockholdings.service;
+       2 
+       3 import static io.hsiaopingkuo.stockholdings.service.DividendTest
+         Support.rowOf;
+       4 import static io.hsiaopingkuo.stockholdings.service.DividendTest
+         Support.twseRows2025;
+       5 import static org.assertj.core.api.Assertions.assertThat;
+       6 
+       7 import java.time.Clock;
+       8 import java.time.LocalDate;
+     … +123 lines (ctrl+o to expand)
+
+● Update(src\test\java\io\hsiaopingkuo\stockholdings\calc\DividendStatusRuleTest
+        .java)
+  ⎿  Added 2 lines, removed 2 lines
+      34 
+      35    @Test
+      36    void 第一筆交易之前的年份不用抓() {
+      37 -    // 2024 沒抓過也不影響 2025 才買的持股                     
+      38 -    assertThat(DividendStatusRule.status(JULY_2025, TODAY, List
+         -.of(Map.of(2025, true, 2026, false)), false))                  
+      37 +    // 2025 沒抓過也不影響 2026 才買的持股                     
+      38 +    assertThat(DividendStatusRule.status(LocalDate.of(2026, 3, 
+         +2), TODAY, List.of(Map.of(2026, false)), false))               
+      39          .isEqualTo(DividendDataStatus.COMPLETE);
+      40    }
+      41 
+
+● Write(src\test\java\io\hsiaopingkuo\stockholdings\service\DatabaseDividendEven
+       tProviderTest.java)
+  ⎿  Wrote 88 lines to src\test\java\io\hsiaopingkuo\stockholdings\service\
+     DatabaseDividendEventProviderTest.java
+       1 package io.hsiaopingkuo.stockholdings.service;
+       2 
+       3 import static io.hsiaopingkuo.stockholdings.service.DividendTest
+         Support.rowOf;
+       4 import static io.hsiaopingkuo.stockholdings.service.DividendTest
+         Support.tpexRows2025;
+       5 import static io.hsiaopingkuo.stockholdings.service.DividendTest
+         Support.twseRows2025;
+       6 import static org.assertj.core.api.Assertions.assertThat;
+       7 
+     … +81 lines (ctrl+o to expand)
+
+● Write(src\test\java\io\hsiaopingkuo\stockholdings\service\DividendReplayIntegr
+       ationTest.java)
+  ⎿  Wrote 207 lines to src\test\java\io\hsiaopingkuo\stockholdings\service
+     \DividendReplayIntegrationTest.java
+       1 package io.hsiaopingkuo.stockholdings.service;
+       2 
+       3 import static io.hsiaopingkuo.stockholdings.service.DividendTest
+         Support.esunDetail;
+       4 import static io.hsiaopingkuo.stockholdings.service.DividendTest
+         Support.holdWithBuy;
+       5 import static io.hsiaopingkuo.stockholdings.service.DividendTest
+         Support.tpexRows2025;
+       6 import static io.hsiaopingkuo.stockholdings.service.DividendTest
+         Support.twseRows2025;
+     … +201 lines (ctrl+o to expand)
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● 相關的 7 個測試類別都通過了。QuoteConfig 也改了，所以再跑兩個會載入完整 Spring
+  設定的類別，加上換掉 provider 的 HoldingApiV1TradeTest。
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● 第 4b 階段做完了。我跑了 10 個相關的測試類別，共 84
+  個測試全部通過，沒有任何現有測試因為除權息而失敗。全部測試（./mvnw 
+  test）請你跑，跑完再告訴我結果。
+
+  測試結果（./mvnw -q test -Dtest=...）
+
+  ┌────────────────────────────────────────────────────────────┬──────┬──────┐
+  │                          測試類別                          │ 數量 │ 結果 │
+  ├────────────────────────────────────────────────────────────┼──────┼──────┤
+  │ DividendSyncServiceTest（新）                              │ 16   │ 通過 │
+  ├────────────────────────────────────────────────────────────┼──────┼──────┤
+  │ DividendReplayIntegrationTest（新，題目例子）              │ 5    │ 通過 │
+  ├────────────────────────────────────────────────────────────┼──────┼──────┤
+  │ V5DividendMigrationTest（新）                              │ 5    │ 通過 │
+  ├────────────────────────────────────────────────────────────┼──────┼──────┤
+  │ DividendStatusRuleTest（新）                               │ 7    │ 通過 │
+  ├────────────────────────────────────────────────────────────┼──────┼──────┤
+  │ DividendStatusServiceTest（新）                            │ 6    │ 通過 │
+  ├────────────────────────────────────────────────────────────┼──────┼──────┤
+  │ DatabaseDividendEventProviderTest（新）                    │ 2    │ 通過 │
+  ├────────────────────────────────────────────────────────────┼──────┼──────┤
+  │ HoldingServiceTest（只改 @Import）                         │ 24   │ 通過 │
+  ├────────────────────────────────────────────────────────────┼──────┼──────┤
+  │ HoldingApiV1TradeTest、NoOfficialCallTest、StockHoldingsAp │ 16 + │      │
+  │ plicationTests（現有，會載入改過的 QuoteConfig）           │  2 + │ 通過 │
+  │                                                            │  1   │      │
+  └────────────────────────────────────────────────────────────┴──────┴──────┘
+
+  題目的例子在 DividendReplayIntegrationTest 都驗證過：2330 現金股利 6,750；2884
+  變 2,020 股、平均成本 29.75，/api/v1 的 buy_price 也是 29.75；2884 買 1,550
+  股得現金 1,860、配股 15；8069 現金股利 4,990；2884
+  查不到明細時不計入，但明細仍列出這一筆。
+
+  改了哪些檔案
+
+  main（新增 14、修改 4、刪除 1）
+  - 新增：
+    - V5__create_dividend_event.sql
+    - entity/：DividendEvent、DividendDetailStatus、DividendFetchRange
+    - repository/：DividendEventRepository、DividendFetchRangeRepository
+    - service/：DividendSyncService、DividendEventWriter、DividendSyncResult、Da
+      tabaseDividendEventProvider、DividendStatusService
+    - calc/：DividendDataStatus、DividendStatusRule
+    - dto/CodeFirstTradeDate
+  - 修改：TradeRepository（加兩個查詢）、QuoteConfig（加 DividendSyncService 的
+    bean）、DividendEventProvider（只改註解）
+  - 刪除：NoDividendEventProvider。我用 git rm 刪的，所以這個刪除已經 
+    staged（已加入暫存區）。
+
+  test（新增 7、修改 1）：上表的 6 個新測試類別，加上共用的
+  DividendTestSupport；修改的是 HoldingServiceTest。
+
+  跟提案不一樣的地方（主動說明）
+
+  1. 多了 dto/CodeFirstTradeDate：Q2 要求「只查除權息日晚於那檔第一筆交易日的事
+     件」，需要一個查詢一次拿到每個代號的第一筆交易日。查詢結果要放進一個
+     record，提案時漏算了這個檔案。
+  2. DividendSyncResult 多了 ERROR 結果：提案只有
+     COMPLETED、NO_TRADES、BLOCKED、INTERRUPTED 四種。但我也承諾「不會丟例外」，
+     遇到沒預期到的例外（例如資料庫錯誤）時要有地方回報，所以補了這個結果。
+  3. 同一天兩列（Q3）存成「無法取得」時，明細狀態設成 
+     NOT_NEEDED：兩列分不出哪一列對，查明細也沒用。已經查過的 FOUND、NOT_FOUND
+     會保留。
+
+  怎麼驗證
+
+  - 跑 ./mvnw test，預期全部通過。
+  - 這一階段沒有接排程，所以啟動伺服器不會去抓除權息，網頁和 /api/v1
+    看起來跟之前一樣。可以打開 http://localhost:8080 確認清單照常顯示。
+
+  還沒做的部分
+
+  - 排程：啟動時抓一次、每天抓一次、被擋後冷卻，這些是 4c 的範圍。
+  - 股利資料狀態目前只有測試會用到，第 6 階段的網頁和 /api/v2 才會顯示。
+
+  Commit 前的提醒
+
+  - 建議只 git add src/，這樣 main 和 test 會一起進去，根目錄的
+    第6題第4b階段提案.md 也不會被加到。
+  - commit 訊息：feat: 第6題 第4b階段 除權息資料表、同步一輪與重播接上資料庫
+  - 設計文件 8-D 的表格還寫著「還有月份或明細沒抓完」，其他地方都已經改成年份，
+    這裡可能也要順手改。
+
+  每題結束時的提醒
+
+  - README：沒有新的環境變數，啟動方式也沒變，不用改。
+  - TESTLOG：目前沒有你實際操作時發現的問題。
+  - ai-log：記得匯出放進去，commit 前檢查有沒有密碼或 token。
+
+  另外，你說的「開發中只跑相關測試、全部測試由你跑」我已經記進記憶，之後都會照做
+  。
+
+✻ Crunched for 11m 2s · done 上午4:09
+
+※ recap: 我們在做第 6 題第 4b 階段：存除權息資料、同步一輪、接上重播計算，程式和測試都寫好了，相關的 84 個測試全部通過。下一步請你跑 `./mvnw test`，通過後用 `git add src/` 再 commit。

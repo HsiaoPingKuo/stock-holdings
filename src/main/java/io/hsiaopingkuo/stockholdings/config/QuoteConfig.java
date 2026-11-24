@@ -14,6 +14,7 @@ import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 import org.springframework.web.client.RestClient;
 
 import io.hsiaopingkuo.stockholdings.entity.Market;
+import io.hsiaopingkuo.stockholdings.quote.DividendListClient;
 import io.hsiaopingkuo.stockholdings.quote.HolidayCalendar;
 import io.hsiaopingkuo.stockholdings.quote.MarketCloseBatchClient;
 import io.hsiaopingkuo.stockholdings.quote.MarketResolver;
@@ -26,8 +27,13 @@ import io.hsiaopingkuo.stockholdings.quote.TpexOtcClient;
 import io.hsiaopingkuo.stockholdings.quote.TpexTradingStockClient;
 import io.hsiaopingkuo.stockholdings.quote.TwseMiIndexClient;
 import io.hsiaopingkuo.stockholdings.quote.TwseStockDayClient;
+import io.hsiaopingkuo.stockholdings.repository.DividendEventRepository;
+import io.hsiaopingkuo.stockholdings.repository.DividendFetchRangeRepository;
 import io.hsiaopingkuo.stockholdings.repository.HoldingRepository;
 import io.hsiaopingkuo.stockholdings.repository.QuoteRepository;
+import io.hsiaopingkuo.stockholdings.repository.TradeRepository;
+import io.hsiaopingkuo.stockholdings.service.DividendEventWriter;
+import io.hsiaopingkuo.stockholdings.service.DividendSyncService;
 import io.hsiaopingkuo.stockholdings.service.HoldingBackfillService;
 import io.hsiaopingkuo.stockholdings.service.Pause;
 import io.hsiaopingkuo.stockholdings.service.QuoteRefreshScheduler;
@@ -146,6 +152,18 @@ public class QuoteConfig {
 	@Bean
 	TpexDividendListClient tpexDividendListClient(QuoteProperties properties, JsonMapper jsonMapper) {
 		return new TpexDividendListClient(dividendRestClient(properties.tpex().baseUrl(), properties), jsonMapper);
+	}
+
+	// 同步一輪（第 4b 階段，還沒有排程）。上市列表 = 證交所 TWT49U、上櫃列表 = 櫃買 exDailyQ，只有上市要查明細；
+	// 請求之間的等待沿用行情的 Pause 和 3.2～5.8 秒的設定
+	@Bean
+	DividendSyncService dividendSyncService(TwseDividendListClient twseList, TpexDividendListClient tpexList,
+			TwseDividendDetailClient twseDetail, DividendEventWriter writer, DividendEventRepository eventRepository,
+			DividendFetchRangeRepository rangeRepository, TradeRepository tradeRepository, Pause pause,
+			RandomGenerator random, QuoteProperties properties, Clock clock) {
+		Map<Market, DividendListClient> listClients = Map.of(Market.TWSE, twseList, Market.TPEX, tpexList);
+		return new DividendSyncService(listClients, twseDetail, writer, eventRepository, rangeRepository,
+				tradeRepository, pause, random, properties.refresh(), clock);
 	}
 
 	private static RestClient restClient(String baseUrl, QuoteProperties properties) {
