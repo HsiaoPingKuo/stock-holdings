@@ -102,27 +102,25 @@ public class HoldingV2QueryService {
 				.toList());
 
 		return withTrades.stream()
-				.map(row -> {
-					List<Trade> trades = tradesByHolding.get(row.id());
-					return new HoldingV2View(row, trades,
-							replayOrNull(row, trades, eventsByCode.getOrDefault(row.code(), List.of())),
-							statusByCode.get(row.code()));
-				})
+				.map(row -> toView(row, tradesByHolding.get(row.id()),
+						eventsByCode.getOrDefault(row.code(), List.of()), statusByCode.get(row.code())))
 				.toList();
 	}
 
 	/**
 	 * 重播時超賣不往外丟（同 HoldingAssembler）：寫入前都檢查過超賣，讀取時還發生代表資料被手動改過。
-	 * 記 log、回 null 標成「資料異常」，其他持股照常顯示。
+	 * 記 log、replay 是 null 標成「資料異常」，並記下是哪一筆賣出（網頁明細要標出來），其他持股照常顯示。
 	 */
-	private static HoldingReplayResult replayOrNull(HoldingQuoteRow row, List<Trade> trades,
-			List<DividendEventInput> events) {
+	private static HoldingV2View toView(HoldingQuoteRow row, List<Trade> trades, List<DividendEventInput> events,
+			DividendDataStatus status) {
 		try {
-			return HoldingReplayCalculator.replay(row.code(), trades.stream().map(Trade::toInput).toList(), events,
+			HoldingReplayResult replay = HoldingReplayCalculator.replay(row.code(),
+					trades.stream().map(Trade::toInput).toList(), events,
 					row.hasClosePrice() ? row.closePrice() : null);
+			return new HoldingV2View(row, trades, replay, status, null);
 		} catch (OversellException e) {
 			log.warn("持股 {}（id={}）重播交易失敗，資料可能被手動修改：{}", row.code(), row.id(), e.getMessage());
-			return null;
+			return new HoldingV2View(row, trades, null, status, e.getTradeId());
 		}
 	}
 }

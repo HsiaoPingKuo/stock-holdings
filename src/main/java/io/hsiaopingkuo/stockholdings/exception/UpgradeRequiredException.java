@@ -2,7 +2,7 @@ package io.hsiaopingkuo.stockholdings.exception;
 
 /**
  * 這筆持股不能用 App 1.0 的方式修改、刪除（第 6 題決定 3）：有多筆交易、有零股，或配過股。
- * 訊息是 /api/v1 的 409 UPGRADE_REQUIRED；網頁另外顯示自己的訊息（見 HoldingController）。
+ * 訊息是 /api/v1 的 409 UPGRADE_REQUIRED；2.0 網頁改用交易的新增、修改、刪除，不會遇到。
  */
 public class UpgradeRequiredException extends RuntimeException {
 
