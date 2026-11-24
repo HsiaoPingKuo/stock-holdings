@@ -14,23 +14,30 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.flash;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.redirectedUrl;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
+import org.springframework.http.MediaType;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.test.web.servlet.MockMvc;
 
 import io.hsiaopingkuo.stockholdings.entity.Holding;
+import io.hsiaopingkuo.stockholdings.entity.Market;
 import io.hsiaopingkuo.stockholdings.exception.DuplicateCodeException;
 import io.hsiaopingkuo.stockholdings.exception.HoldingNotFoundException;
+import io.hsiaopingkuo.stockholdings.exception.MarketUnavailableException;
+import io.hsiaopingkuo.stockholdings.exception.StockCodeNotFoundException;
+import io.hsiaopingkuo.stockholdings.quote.StockLookup;
 import io.hsiaopingkuo.stockholdings.service.HoldingService;
 
 /**
@@ -47,10 +54,142 @@ class HoldingControllerTest {
 	private HoldingService holdingService;
 
 	private static Holding holding(long id, String code, int lots, String buyPrice) {
-		Holding h = new Holding(code, lots, new BigDecimal(buyPrice), LocalDateTime.of(2026, 11, 24, 14, 0));
+		return holding(id, code, null, null, lots, buyPrice);
+	}
+
+	private static Holding holding(long id, String code, String name, Market market, int lots, String buyPrice) {
+		Holding h = new Holding(code, name, market, lots, new BigDecimal(buyPrice), LocalDateTime.of(2026, 11, 24, 14, 0));
 		// id 平常由資料庫產生，測試裡直接塞值
 		ReflectionTestUtils.setField(h, "id", id);
 		return h;
+	}
+
+	@Test
+	void 清單顯示名稱與市場_舊資料沒有時顯示破折號() throws Exception {
+		given(holdingService.findAll()).willReturn(List.of(
+				holding(1, "2330", "台積電", Market.TWSE, 1, "1000.00"),
+				holding(2, "6488", "環球晶", Market.TPEX, 1, "460.50"),
+				holding(3, "0050", null, null, 1, "150.00")));
+
+		mockMvc.perform(get("/holdings"))
+				.andExpect(status().isOk())
+				.andExpect(content().string(containsString("<td>台積電</td>")))
+				.andExpect(content().string(containsString("<td>上市</td>")))
+				.andExpect(content().string(containsString("<td>環球晶</td>")))
+				.andExpect(content().string(containsString("<td>上櫃</td>")))
+				.andExpect(content().string(containsString("<td>—</td>")));
+	}
+
+	@Test
+	void 查無此代號_表單顯示錯誤且不導頁() throws Exception {
+		given(holdingService.create(anyString(), anyInt(), any())).willThrow(new StockCodeNotFoundException("9999"));
+
+		mockMvc.perform(post("/holdings").param("code", "9999").param("lots", "1").param("buyPrice", "1000"))
+				.andExpect(status().isOk())
+				.andExpect(content().string(containsString("查無此股票代號：9999（上市、上櫃都找不到）")));
+	}
+
+	@Test
+	void 官方連不上_表單顯示稍後再試且保留輸入內容() throws Exception {
+		given(holdingService.create(anyString(), anyInt(), any())).willThrow(new MarketUnavailableException());
+
+		mockMvc.perform(post("/holdings").param("code", "2330").param("lots", "3").param("buyPrice", "1000"))
+				.andExpect(status().isOk())
+				.andExpect(content().string(containsString("暫時無法連線官方網站確認代號，請稍後再試")))
+				// 使用者不用重打：剛才輸入的值還在表單上
+				.andExpect(content().string(containsString("value=\"2330\"")))
+				.andExpect(content().string(containsString("value=\"3\"")));
+	}
+
+	// ===== 輸入代號時的即時提示：GET /holdings/lookup =====
+
+	private static StockLookup found(Market market, String name) {
+		return StockLookup.found(market, name, LocalDate.of(2026, 11, 23), new BigDecimal("100.00"));
+	}
+
+	@Test
+	void 即時查詢_查到時回傳名稱與市場() throws Exception {
+		given(holdingService.lookupStock("2330")).willReturn(found(Market.TWSE, "台積電"));
+
+		mockMvc.perform(get("/holdings/lookup").param("code", "2330"))
+				.andExpect(status().isOk())
+				.andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
+				.andExpect(jsonPath("$.code").value("2330"))
+				.andExpect(jsonPath("$.name").value("台積電"))
+				.andExpect(jsonPath("$.market").value("TWSE"))
+				.andExpect(jsonPath("$.market_label").value("上市"));
+	}
+
+	@Test
+	void 即時查詢_回傳正規化後的代號() throws Exception {
+		given(holdingService.lookupStock("00631l")).willReturn(found(Market.TWSE, "元大台灣50正2"));
+
+		mockMvc.perform(get("/holdings/lookup").param("code", " 00631l "))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.code").value("00631L"));
+	}
+
+	@Test
+	void 即時查詢_名稱不明時輸出null而不是省略欄位() throws Exception {
+		given(holdingService.lookupStock("6488")).willReturn(found(Market.TPEX, null));
+
+		mockMvc.perform(get("/holdings/lookup").param("code", "6488"))
+				.andExpect(status().isOk())
+				.andExpect(content().string(containsString("\"name\":null")))
+				.andExpect(jsonPath("$.market_label").value("上櫃"));
+	}
+
+	@Test
+	void 即時查詢_查不到回404與錯誤格式() throws Exception {
+		given(holdingService.lookupStock("9999")).willThrow(new StockCodeNotFoundException("9999"));
+
+		mockMvc.perform(get("/holdings/lookup").param("code", "9999"))
+				.andExpect(status().isNotFound())
+				.andExpect(jsonPath("$.error.code").value("STOCK_NOT_FOUND"))
+				.andExpect(jsonPath("$.error.message").value("查無此股票代號：9999（上市、上櫃都找不到）"));
+	}
+
+	@Test
+	void 即時查詢_官方連不上回503與錯誤格式() throws Exception {
+		given(holdingService.lookupStock("2330")).willThrow(new MarketUnavailableException());
+
+		mockMvc.perform(get("/holdings/lookup").param("code", "2330"))
+				.andExpect(status().isServiceUnavailable())
+				.andExpect(jsonPath("$.error.code").value("QUOTE_UNAVAILABLE"))
+				.andExpect(jsonPath("$.error.message").value("暫時無法連線官方網站確認代號，請稍後再試"));
+	}
+
+	@Test
+	void 即時查詢_代號格式不對或沒給_回400且不查官方() throws Exception {
+		mockMvc.perform(get("/holdings/lookup").param("code", "23-30"))
+				.andExpect(status().isBadRequest())
+				.andExpect(jsonPath("$.error.code").value("INVALID_CODE"));
+		mockMvc.perform(get("/holdings/lookup").param("code", "12345678901"))
+				.andExpect(status().isBadRequest());
+		mockMvc.perform(get("/holdings/lookup"))
+				.andExpect(status().isBadRequest())
+				.andExpect(jsonPath("$.error.code").value("INVALID_CODE"));
+		verify(holdingService, never()).lookupStock(anyString());
+	}
+
+	@Test
+	void 新增表單有即時提示的位置和查詢網址() throws Exception {
+		given(holdingService.findAll()).willReturn(List.of());
+
+		mockMvc.perform(get("/holdings"))
+				.andExpect(status().isOk())
+				.andExpect(content().string(containsString("id=\"code-hint\"")))
+				.andExpect(content().string(containsString("data-lookup-url=\"/holdings/lookup\"")));
+	}
+
+	@Test
+	void 修改頁顯示名稱與市場() throws Exception {
+		given(holdingService.findById(1L)).willReturn(holding(1, "6488", "環球晶", Market.TPEX, 1, "460.50"));
+
+		mockMvc.perform(get("/holdings/1/edit"))
+				.andExpect(status().isOk())
+				.andExpect(content().string(containsString("<span id=\"name\">環球晶</span>")))
+				.andExpect(content().string(containsString("<span id=\"market\">上櫃</span>")));
 	}
 
 	@Test

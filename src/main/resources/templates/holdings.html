@@ -10,6 +10,10 @@
 		td.num { text-align: right; }
 		.error { color: #c00; }
 		.message { color: #070; }
+		.hint { margin-left: 0.5em; }
+		.hint.found { color: #036; font-weight: bold; }
+		.hint.muted { color: #888; }
+		.hint.error { color: #c00; }
 		form.inline { display: inline; }
 	</style>
 </head>
@@ -24,7 +28,9 @@
 	<!-- 欄位用 text 而不是 number：檢查規則以伺服器為準，錯誤訊息統一顯示在表單上 -->
 	<form th:action="@{/holdings}" th:object="${createForm}" method="post">
 		<p>
-			<label>股票代號 <input type="text" th:field="*{code}" maxlength="20" placeholder="例：2330"></label>
+			<label>股票代號 <input type="text" th:field="*{code}" maxlength="20" placeholder="例：2330" autocomplete="off"></label>
+			<!-- 輸入代號時即時顯示名稱與市場（下方 script 填入）；只是提示，按下新增時伺服器仍會重新檢查 -->
+			<span id="code-hint" class="hint" aria-live="polite" th:data-lookup-url="@{/holdings/lookup}"></span>
 			<span class="error" th:if="${#fields.hasErrors('code')}" th:errors="*{code}">錯誤</span>
 		</p>
 		<p>
@@ -42,11 +48,14 @@
 	<p th:if="${#lists.isEmpty(holdings)}">目前沒有持股。</p>
 	<table th:unless="${#lists.isEmpty(holdings)}">
 		<thead>
-			<tr><th>股票代號</th><th>張數</th><th>買進價</th><th>操作</th></tr>
+			<tr><th>股票代號</th><th>名稱</th><th>市場</th><th>張數</th><th>買進價</th><th>操作</th></tr>
 		</thead>
 		<tbody>
 			<tr th:each="h : ${holdings}">
 				<td th:text="${h.code}">2330</td>
+				<!-- 第 2 題時存的舊資料沒有名稱和市場（NULL），顯示「—」 -->
+				<td th:text="${h.name} ?: '—'">台積電</td>
+				<td th:text="${h.market} != null ? ${h.market.label} : '—'">上市</td>
 				<td class="num" th:text="${h.lots}">1</td>
 				<!-- 買進價固定顯示兩位小數、加千分位 -->
 				<td class="num" th:text="${#numbers.formatDecimal(h.buyPrice, 1, 'COMMA', 2, 'POINT')}">1,000.00</td>
@@ -61,5 +70,73 @@
 			</tr>
 		</tbody>
 	</table>
+
+	<script>
+		// 輸入股票代號時，在欄位旁顯示名稱與市場。
+		// 觸發時機：停止輸入 0.5 秒後，或游標離開欄位時；同一個代號不重複查（伺服器端另有 10 分鐘快取）。
+		(function () {
+			var input = document.getElementById('code');
+			var hint = document.getElementById('code-hint');
+			var lookupUrl = hint.dataset.lookupUrl;
+			// 少於 4 個字不查：台股代號至少 4 碼，打到一半就查只是浪費官方請求
+			var pattern = /^[A-Za-z0-9]{4,10}$/;
+			var timer = null;
+			var lastCode = null;
+			var requestSeq = 0; // 只採用最後一次查詢的結果，較早送出但較晚回來的回應要丟掉
+
+			function show(text, cssClass) {
+				// 用 textContent 而不是 innerHTML：內容不會被當成 HTML 執行
+				hint.textContent = text;
+				hint.className = 'hint' + (cssClass ? ' ' + cssClass : '');
+			}
+
+			function lookup() {
+				clearTimeout(timer);
+				var code = input.value.trim().toUpperCase();
+				if (code === lastCode) {
+					return;
+				}
+				lastCode = code;
+				if (!pattern.test(code)) {
+					show('');
+					return;
+				}
+				var seq = ++requestSeq;
+				show('查詢中…', 'muted');
+				fetch(lookupUrl + '?code=' + encodeURIComponent(code), { headers: { 'Accept': 'application/json' } })
+					.then(function (res) {
+						return res.json().then(function (body) { return { status: res.status, body: body }; });
+					})
+					.then(function (result) {
+						if (seq !== requestSeq) {
+							return;
+						}
+						if (result.status === 200) {
+							show((result.body.name || '（名稱未知）') + '（' + result.body.market_label + '）', 'found');
+						} else if (result.status === 404) {
+							show('查無此股票代號', 'error');
+						} else {
+							unavailable();
+						}
+					})
+					.catch(function () {
+						if (seq === requestSeq) {
+							unavailable();
+						}
+					});
+			}
+
+			function unavailable() {
+				show('暫時無法確認', 'muted');
+				lastCode = null; // 連不上可能只是暫時的，讓使用者離開欄位時可以再查一次
+			}
+
+			input.addEventListener('input', function () {
+				clearTimeout(timer);
+				timer = setTimeout(lookup, 500);
+			});
+			input.addEventListener('blur', lookup);
+		})();
+	</script>
 </body>
 </html>

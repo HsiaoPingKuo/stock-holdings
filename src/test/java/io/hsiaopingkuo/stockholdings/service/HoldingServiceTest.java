@@ -2,24 +2,37 @@ package io.hsiaopingkuo.stockholdings.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.BDDMockito.given;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 
 import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
 import io.hsiaopingkuo.stockholdings.entity.Holding;
+import io.hsiaopingkuo.stockholdings.entity.Market;
 import io.hsiaopingkuo.stockholdings.exception.DuplicateCodeException;
 import io.hsiaopingkuo.stockholdings.exception.HoldingNotFoundException;
+import io.hsiaopingkuo.stockholdings.exception.MarketUnavailableException;
+import io.hsiaopingkuo.stockholdings.exception.StockCodeNotFoundException;
+import io.hsiaopingkuo.stockholdings.quote.MarketResolver;
+import io.hsiaopingkuo.stockholdings.quote.StockLookup;
 import io.hsiaopingkuo.stockholdings.repository.HoldingRepository;
+import jakarta.persistence.EntityManager;
 
 /** Service 搭配真的資料庫（測試用 H2 記憶體模式 + Flyway）測試業務規則。 */
 @DataJpaTest
@@ -42,6 +55,83 @@ class HoldingServiceTest {
 
 	@Autowired
 	private HoldingRepository holdingRepository;
+
+	@Autowired
+	private EntityManager entityManager;
+
+	// 官方 API 的判斷另外在 MarketResolverTest 測；這裡用假的，專心測 service 的流程，也不會連網
+	@MockitoBean
+	private MarketResolver marketResolver;
+
+	@BeforeEach
+	void 預設任何代號都判斷為上市() {
+		given(marketResolver.resolve(anyString())).willAnswer(invocation -> StockLookup.found(
+				Market.TWSE, "測試股", LocalDate.of(2026, 11, 23), new BigDecimal("10.00")));
+	}
+
+	@Test
+	void 新增時存入官方查到的名稱和市場() {
+		given(marketResolver.resolve("6488")).willReturn(StockLookup.found(
+				Market.TPEX, "環球晶", LocalDate.of(2026, 11, 23), new BigDecimal("460.50")));
+
+		Holding created = holdingService.create("6488", 1, new BigDecimal("450.00"));
+		// 清掉 JPA 快取，確認是真的寫進資料庫
+		entityManager.flush();
+		entityManager.clear();
+
+		Holding saved = holdingRepository.findById(created.getId()).orElseThrow();
+		assertThat(saved.getMarket()).isEqualTo(Market.TPEX);
+		assertThat(saved.getName()).isEqualTo("環球晶");
+	}
+
+	@Test
+	void 交給官方查詢的是正規化後的代號() {
+		holdingService.create(" 00631l ", 1, new BigDecimal("20.00"));
+
+		verify(marketResolver).resolve("00631L");
+	}
+
+	@Test
+	void 上市上櫃都查不到_丟出錯誤且不儲存() {
+		given(marketResolver.resolve("9999")).willThrow(new StockCodeNotFoundException("9999"));
+
+		assertThatThrownBy(() -> holdingService.create("9999", 1, new BigDecimal("10.00")))
+				.isInstanceOf(StockCodeNotFoundException.class)
+				.hasMessage("查無此股票代號：9999（上市、上櫃都找不到）");
+		assertThat(holdingRepository.count()).isZero();
+	}
+
+	@Test
+	void 官方連不上無法確認_丟出錯誤且不儲存() {
+		given(marketResolver.resolve("2330")).willThrow(new MarketUnavailableException());
+
+		assertThatThrownBy(() -> holdingService.create("2330", 1, new BigDecimal("1000.00")))
+				.isInstanceOf(MarketUnavailableException.class)
+				.hasMessage("暫時無法連線官方網站確認代號，請稍後再試");
+		assertThat(holdingRepository.count()).isZero();
+	}
+
+	@Test
+	void 即時查詢_代號正規化後交給官方查詢_而且不會新增資料() {
+		given(marketResolver.resolve("00631L")).willReturn(StockLookup.found(
+				Market.TWSE, "元大台灣50正2", LocalDate.of(2026, 11, 23), new BigDecimal("20.00")));
+
+		StockLookup result = holdingService.lookupStock(" 00631l ");
+
+		assertThat(result.name()).isEqualTo("元大台灣50正2");
+		verify(marketResolver).resolve("00631L");
+		assertThat(holdingRepository.count()).isZero();
+	}
+
+	@Test
+	void 代號重複時不會去查官方() {
+		holdingService.create("2330", 1, new BigDecimal("1000.00"));
+
+		assertThatThrownBy(() -> holdingService.create("2330", 2, new BigDecimal("900.00")))
+				.isInstanceOf(DuplicateCodeException.class);
+		// 只有第一次新增查過官方
+		verify(marketResolver, times(1)).resolve("2330");
+	}
 
 	@Test
 	void 新增持股_時間用台北時區() {

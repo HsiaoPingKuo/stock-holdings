@@ -1,6 +1,11 @@
 package io.hsiaopingkuo.stockholdings.controller;
 
+import java.util.regex.Pattern;
+
 import org.springframework.beans.propertyeditors.StringTrimmerEditor;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Controller;
 import org.springframework.ui.Model;
 import org.springframework.validation.BindingResult;
@@ -12,13 +17,20 @@ import org.springframework.web.bind.annotation.ModelAttribute;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.ResponseBody;
 import org.springframework.web.servlet.mvc.support.RedirectAttributes;
 
+import io.hsiaopingkuo.stockholdings.dto.ErrorResponse;
 import io.hsiaopingkuo.stockholdings.dto.HoldingCreateForm;
+import io.hsiaopingkuo.stockholdings.dto.StockLookupResponse;
 import io.hsiaopingkuo.stockholdings.dto.HoldingUpdateForm;
 import io.hsiaopingkuo.stockholdings.entity.Holding;
 import io.hsiaopingkuo.stockholdings.exception.DuplicateCodeException;
 import io.hsiaopingkuo.stockholdings.exception.HoldingNotFoundException;
+import io.hsiaopingkuo.stockholdings.exception.MarketUnavailableException;
+import io.hsiaopingkuo.stockholdings.exception.StockCodeNotFoundException;
+import io.hsiaopingkuo.stockholdings.quote.StockLookup;
 import io.hsiaopingkuo.stockholdings.service.HoldingService;
 import jakarta.validation.Valid;
 
@@ -30,6 +42,9 @@ import jakarta.validation.Valid;
 @Controller
 @RequestMapping("/holdings")
 public class HoldingController {
+
+	// 和 HoldingCreateForm 的 @Pattern、@Size 相同：英數字、1～10 個字
+	private static final Pattern VALID_CODE = Pattern.compile("^[A-Za-z0-9]{1,10}$");
 
 	private final HoldingService holdingService;
 
@@ -64,6 +79,40 @@ public class HoldingController {
 			// 重複代號也當成「代號欄位的錯誤」顯示在表單上，不跳錯誤頁
 			bindingResult.rejectValue("code", "duplicate", e.getMessage());
 			return showList(model);
+		} catch (StockCodeNotFoundException e) {
+			// 第 3 題：上市、上櫃都查不到，資料不儲存，錯誤顯示在代號欄位
+			bindingResult.rejectValue("code", "notFound", e.getMessage());
+			return showList(model);
+		} catch (MarketUnavailableException e) {
+			// 第 3 題：官方連不上時不能出現錯誤頁，請使用者稍後再試；表單內容保留，不用重打
+			bindingResult.rejectValue("code", "unavailable", e.getMessage());
+			return showList(model);
+		}
+	}
+
+	/**
+	 * 新增表單輸入代號時，欄位旁即時顯示名稱與市場（畫面上的 JavaScript 呼叫）。
+	 * 只是提示：按下新增時伺服器仍會重新檢查，不能只相信畫面上的結果。
+	 * 回傳 JSON；錯誤格式和專案慣例一致：{"error":{"code":"...","message":"..."}}。
+	 */
+	@GetMapping(value = "/lookup", produces = MediaType.APPLICATION_JSON_VALUE)
+	@ResponseBody
+	public ResponseEntity<Object> lookup(@RequestParam(required = false) String code) {
+		// 和新增表單相同的格式規則；不合格的代號直接擋掉，不浪費官方查詢
+		if (code == null || !VALID_CODE.matcher(code.trim()).matches()) {
+			return ResponseEntity.badRequest()
+					.body(ErrorResponse.of("INVALID_CODE", "股票代號只能是英文字母或數字，最多 10 個字"));
+		}
+		try {
+			StockLookup lookup = holdingService.lookupStock(code);
+			// 回傳正規化後的代號（例如輸入 00631l 回 00631L），畫面顯示和實際儲存的一致
+			return ResponseEntity.ok(StockLookupResponse.of(HoldingService.normalizeCode(code), lookup));
+		} catch (StockCodeNotFoundException e) {
+			return ResponseEntity.status(HttpStatus.NOT_FOUND).body(ErrorResponse.of("STOCK_NOT_FOUND", e.getMessage()));
+		} catch (MarketUnavailableException e) {
+			// 503：伺服器本身正常，只是暫時拿不到官方資料
+			return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+					.body(ErrorResponse.of("QUOTE_UNAVAILABLE", e.getMessage()));
 		}
 	}
 

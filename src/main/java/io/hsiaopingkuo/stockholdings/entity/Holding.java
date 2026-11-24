@@ -5,13 +5,15 @@ import java.time.LocalDateTime;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.Enumerated;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 
 /**
- * 一筆持股，對應 V1__create_holding.sql 的 holding 表。
+ * 一筆持股，對應 V1__create_holding.sql 的 holding 表（V2 加上 name、market）。
  * 資料表由 Flyway 建立，這裡的 @Column 只是對應欄位，Hibernate 啟動時會檢查兩邊一致（ddl-auto=validate）。
  */
 @Entity
@@ -25,6 +27,15 @@ public class Holding {
 
 	@Column(name = "code", nullable = false, length = 10)
 	private String code;
+
+	// 第 3 題（V2 migration）加入；第 2 題時存的舊資料沒有名稱和市場，所以允許 null
+	@Column(name = "name", length = 50)
+	private String name;
+
+	// 存 enum 名稱（TWSE／TPEX）而不是序號：資料庫裡看得懂，日後調整 enum 順序也不會對錯
+	@Enumerated(EnumType.STRING)
+	@Column(name = "market", length = 4)
+	private Market market;
 
 	@Column(name = "lots", nullable = false)
 	private int lots;
@@ -43,8 +54,11 @@ public class Holding {
 	}
 
 	// 時間由呼叫端傳入（service 用台北時區的 Clock 算好），Entity 自己不碰系統時間
-	public Holding(String code, int lots, BigDecimal buyPrice, LocalDateTime now) {
+	// 名稱和市場在新增時由官方 API 判斷後一起存入，之後不能改（修改只開放張數和買進價）
+	public Holding(String code, String name, Market market, int lots, BigDecimal buyPrice, LocalDateTime now) {
 		this.code = code;
+		this.name = name;
+		this.market = market;
 		this.lots = lots;
 		this.buyPrice = buyPrice;
 		this.createdAt = now;
@@ -64,6 +78,14 @@ public class Holding {
 
 	public String getCode() {
 		return code;
+	}
+
+	public String getName() {
+		return name;
+	}
+
+	public Market getMarket() {
+		return market;
 	}
 
 	public int getLots() {
