@@ -1,0 +1,1341 @@
+ ▐▛███▛█   Claude Code v2.1.329
+▝▜██████▀  Opus 5.5 · Claude Pro
+ ▝▝   ▝▝   C:\TKA102_JavaApp\Workspace_for_practice\stock-holdings
+
+
+> /clear                                                                        
+
+> 【規則】先讀 CLAUDE.md，全程遵守。先提出方案，等我回覆「同意」才動手。只做這  
+  一階段的範圍。commit 由我執行。V1～V4 不能改。                                
+                                                                                
+  【背景】                                                                      
+  設計文件「第6題設計決定.md」第 1 節、第 8 節（決定 7）已經依照 2026-11-25     
+  的實測更新過，請完整讀過，特別是第 8 節 A 的「實測的回應格式」和 C            
+  的資料來源表。第 1～3 階段都已經合併進 master。                               
+                                                                                
+  【開始前】                                                                    
+  git fetch 後切到最新的 master，開分支 feature/q6-dividend-parsing。           
+                                                                                
+  【這一階段的目標】第 4a 階段：除權息 API                                      
+  的解析和資料來源規則（不碰資料庫、不排程）                                    
+  1. 測試資料：從 C:\TKA102_JavaApp\Workspace_for_practice\api-test\dividend-sa 
+  mples-20261125-0308\ 複製下面幾個檔案到                                       
+  src/test/resources/dividends/，檔名改成英文（照 src/test/resources/quotes/    
+  的命名慣例），並補一份 README.md 說明每個檔案的來源網址、抓取時間、用途：     
+     01（上市列表 2025-06～07）、03（上市列表                                   
+  2021-01）、04（上市列表沒有資料）、06（明細 2884 權息）、07（明細 2330        
+  息）、08（明細查不到）、09（上櫃列表 2025-06～07）、11（上櫃列表沒有資料）    
+     02、10（整年，約 230 KB）不用複製。                                        
+  2. 三個 client：上市列表 TWT49U、上市明細 TWT49UDetail、上櫃列表 exDailyQ。   
+     - 網址照設計文件第 8 節 A；主機沿用                                        
+  TWSE_BASE_URL、TPEX_BASE_URL；逾時沿用行情的設定方式。                        
+     - 欄位一律用名稱找，不要寫死索引；名稱的尾端空白要去掉。                   
+     - 回傳的結果要分得出三種情況：有資料、沒有資料（不是錯誤）、失敗（HTTP     
+  錯誤、回 HTML、格式不對）。                                                   
+  3. 資料來源的判斷：寫成純計算的類別，輸入是列表的一列（和查到的明細，可能沒有 
+  ），輸出是每股現金股利、每千股配股、來源（OFFICIAL／ESTIMATED／UNAVAILABLE）  
+  ，規則完全照第 8 節 C 的表。                                                  
+  4. 數字一律 BigDecimal；民國日期（114年06月12日、114/07/24）轉成              
+  LocalDate；明細的「1.2 元／股」「10 股」「4.50002                             
+  元／股」要去掉單位、全形斜線、千分位。                                        
+                                                                                
+  【測試至少要有】                                                              
+  - 用實測檔案解析：2330（2025-06-12，息，4.500020）、2884（2025-07-22，權息）  
+  、8069（2025-07-24，除息，4.99013930）的每個欄位都正確                        
+  - 明細：2884 → 現金 1.2、每千股 10 股；2330 → 4.50002；查不到 → 「沒有明細」  
+  - 沒有資料：上市 stat 是「很抱歉，沒有符合條件的資料!」、上櫃 data 是 0 列 →  
+  都是「沒有資料」，不是失敗                                                    
+  - 回 HTML、HTTP 500、JSON 壞掉 → 失敗                                         
+  - 資料來源規則：第 8 節 C 表的每一列至少一個例子，含 3311                     
+  閎暉（權，減除股利參考價 = 前收 → 配股 0、官方）和 6423 億而得-創（權，估算） 
+  - 民國日期、單位的解析邊界                                                    
+                                                                                
+  【不要做】                                                                    
+  不建資料表（4b 才做）、不存資料庫、不排程、不改                               
+  DividendEventProvider、不改網頁和 API。                                       
+                                                                                
+  【請先回覆】                                                                  
+  - 新增的類別、record 的名稱和欄位，放在哪個套件                               
+  - 三個 client 的網址、參數格式，和「有資料／沒有資料／失敗」怎麼判斷          
+  - 資料來源規則的方法設計                                                      
+  - 測試清單                                                                    
+  - 實測檔案裡你看到、但設計文件沒寫到的格式細節                                
+                                                                                
+  【規則再提醒】先提方案等「同意」；不碰資料庫和排程；只用 BigDecimal；兩份 md  
+  檔不 commit；commit 由我執行。                                                
+
+  Read 1 file, ran 4 shell commands · 1 failed (ctrl+o to expand)
+
+● 已切好分支
+  feature/q6-dividend-parsing，正在核對實測檔案的格式細節，接著看現有行情 client
+  的寫法，再提出方案。 · summary
+
+  Read 1 file, ran 5 shell commands (ctrl+o to expand)
+
+● 還在整理方案：最後驗證「詳細資料」欄和代號、日期是否一致，並算出估算例子的數字
+  。
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● 先說結論：分支 feature/q6-dividend-parsing 已從最新的 master 開好。設計文件和
+  8 個實測檔都看完了，下面是方案。還沒改任何檔案，有 4
+  個地方要請你先決定（放在最後）。
+
+  ---
+
+  一、新增的類別（放在哪個套件）
+
+  quote 套件（外部 API 都放這裡，才能共用現有的 QuoteHttp：它會把 403、429、回
+  HTML 判成「被擋」）
+
+  類別: DividendListRow
+  種類: record
+  欄位／方法:
+  market、exDate、code、name、kind(DividendKind)、prevClose(前收)、exRightRefere
+  nce(除權息參考價)、rightsPlusDividend(權值+息值)、dividendReference(減除股利參
+  考價)、listedCashPerShare、listedStockPerThousand（只有上櫃有值，上市是
+    null）、detailStockNo、detailDate（只有上市有值，從「詳細資料」2884,20250722
+    拆出來）
+  ────────────────────────────────────────
+  類別: DividendListResult
+  種類: record
+  欄位／方法: status、rows；Status { OK, NO_DATA, FAILED, BLOCKED
+    }；isFailure() 在 FAILED、BLOCKED 時都是 true
+  ────────────────────────────────────────
+  類別: TwseDividendDetail
+  種類: record
+  欄位／方法: code、cashPerShare、stockPerThousand
+  ────────────────────────────────────────
+  類別: DividendDetailResult
+  種類: record
+  欄位／方法: status、detail；Status { FOUND, NOT_FOUND, FAILED, BLOCKED }
+  ────────────────────────────────────────
+  類別: DividendListClient
+  種類: interface
+  欄位／方法: Market market()、DividendListResult fetchRange(LocalDate start,
+    LocalDate end)
+  ────────────────────────────────────────
+  類別: DividendDetailClient
+  種類: interface
+  欄位／方法: DividendDetailResult fetchDetail(String stockNo, LocalDate
+    exDate)
+  ────────────────────────────────────────
+  類別: TwseDividendListClient
+  種類: 實作
+  欄位／方法: 上市列表 TWT49U
+  ────────────────────────────────────────
+  類別: TpexDividendListClient
+  種類: 實作
+  欄位／方法: 上櫃列表 exDailyQ
+  ────────────────────────────────────────
+  類別: TwseDividendDetailClient
+  種類: 實作
+  欄位／方法: 上市明細 TWT49UDetail
+  ────────────────────────────────────────
+  類別: DividendParsing
+  種類: 套件內工具類別
+  欄位／方法: parseRocChineseDate("114年06月12日")、parseKind("息"/"除權息"…)、p
+  arseDetailAmount("1.2
+    元／股")
+
+  上市、上櫃的列表共用同一個 DividendListRow，4b 才能存進同一張 dividend_event
+  表。interface 的用途是讓 4b 的排程測試可以換成假的 client。
+
+  calc 套件
+  - DividendSourceRule：純計算，static ResolvedDividend resolve(DividendListRow 
+    row, TwseDividendDetail detail)。detail 可以是 null，代表沒有明細。
+  - ResolvedDividend(BigDecimal cashPerShare, BigDecimal stockPerThousand, 
+    DividendSource source)：來源是 UNAVAILABLE 時，兩個數字都是 null，跟現有
+    DividendEventInput 的規定一致。
+
+  修改：QuoteConfig 加 3 個 @Bean，用現有的 restClient(baseUrl, properties)
+  建立。主機沿用 quote.twse.base-url、quote.tpex.base-url。逾時見問題 2。
+
+  二、三個 client 的網址和判斷
+
+  上市列表
+  網址（主機之後）:
+  /rwd/zh/exRight/TWT49U?startDate=20250601&endDate=20250731&response=json
+  日期參數: yyyyMMdd
+  ────────────────────────────────────────
+  上市明細
+  網址（主機之後）:
+  /rwd/zh/exRight/TWT49UDetail?STK_NO=2884&T1=20250722&response=json
+  日期參數: yyyyMMdd
+  ────────────────────────────────────────
+  上櫃列表
+  網址（主機之後）: /www/zh-tw/bulletin/exDailyQ?startDate=2025/06/01&endDate=20
+  25/07/31&response=json
+  日期參數: yyyy/MM/dd，用 queryParam 組，斜線才不會被編碼成 %2F（沿用 otc
+    的作法）
+
+  判斷規則
+
+  ┌──────────┬────────────────────┬────────────────────┬────────────────────┐
+  │          │       有資料       │ 沒有資料（不是錯誤 │        失敗        │
+  │          │                    │         ）         │                    │
+  ├──────────┼────────────────────┼────────────────────┼────────────────────┤
+  │          │                    │ stat 含「沒有符合  │ 其他 stat、缺 data │
+  │ 上市列表 │ stat 是 OK（不分大 │ 條件的資料」，或   │ 、找不到需要的欄位 │
+  │          │ 小寫），data 有列  │ stat 是 OK 但 data │ 、日期或種類看不懂 │
+  │          │                    │  是空陣列          │                    │
+  ├──────────┼────────────────────┼────────────────────┼────────────────────┤
+  │          │ stat 是 ok，有代號 │ stat 是「無相關資  │ 其他 stat、回傳的  │
+  │ 上市明細 │ 相符的那一列       │ 料」，或 data      │ 代號跟查的不一樣、 │
+  │          │                    │ 是空的 → NOT_FOUND │ 數字看不懂         │
+  ├──────────┼────────────────────┼────────────────────┼────────────────────┤
+  │          │ stat 是            │ stat 是 ok，data   │ stat 不是 ok、沒有 │
+  │ 上櫃列表 │ ok，tables[0].data │ 是 0 列            │                    │
+  │          │  有列              │                    │ tables、找不到欄位 │
+  ├──────────┼────────────────────┼────────────────────┼────────────────────┤
+  │          │                    │                    │ HTTP 404／500、逾  │
+  │ 三支共用 │                    │                    │ 時、JSON 壞掉 → FA │
+  │          │                    │                    │ ILED；403、429、回 │
+  │          │                    │                    │  HTML → BLOCKED    │
+  └──────────┴────────────────────┴────────────────────┴────────────────────┘
+
+  - 欄位一律用名稱找，沿用 QuoteParsing.indexOfField（比對前會去掉所有空白，" c.
+    原股東認購" 也找得到）。代號、名稱讀出來後都會 strip()。
+  - 數字：列表沿用 QuoteParsing.parsePrice，會去掉千分位，-- 或空白當成
+    null。明細用
+    parseDetailAmount：先去千分位，再去單位（元／股、元/股、股），空字串當
+    0，負數或看不懂的字就丟例外，整筆算 FAILED。
+  - 種類對應：息／除息 → CASH，權／除權 → STOCK，權息／除權息 → CASH_AND_STOCK。
+
+  三、資料來源規則（完全照第 8 節 C 表，由上往下比對）
+
+  上櫃 → OFFICIAL(列表現金, 列表配股)；任一個是 null → UNAVAILABLE
+  上市且有明細 → OFFICIAL(明細現金, 明細配股)
+  上市沒有明細：
+    息：  參考價 = 減除股利參考價 → OFFICIAL(權值+息值, 0)，否則 → UNAVAILABLE
+    權：  減除股利參考價 = 前收   → OFFICIAL(0, 0)
+          參考價 = 減除股利參考價 → ESTIMATED(0, (前收 ÷ (前收 − 權值+息值) − 1)
+  × 1000)
+          其他                    → ESTIMATED(0, (前收 ÷ 減除股利參考價 − 1) × 
+  1000)
+    權息：UNAVAILABLE
+  需要的欄位是 null、分母 ≤ 0 → UNAVAILABLE
+
+  - 比較價格用 compareTo，不用 equals：4.500020 和 4.50002 的 scale 不同，用
+    equals 會判成不相等。
+  - 估算時，除法先算到小數 20 位，最後用 setScale(8, 
+    HALF_UP)，符合設計文件寫的「保留 8 位、HALF_UP」。
+  - 實測算出來的值：6423 → 20.26723367；2528 皇普 → 50.00001641。2528 很接近整數
+    50，表示公式是對的。
+
+  四、測試清單
+
+  測試資料：複製到 src/test/resources/dividends/，另外寫一份 README.md。網址照
+  test-dividend-apis.ps1 填，取得時間是 2026-11-25 03:08～03:09。
+
+  ┌──────┬────────────────────────────────────────────────┐
+  │ 原檔 │                     新檔名                     │
+  ├──────┼────────────────────────────────────────────────┤
+  │ 01   │ twse-twt49u-20250601-20250731.json             │
+  ├──────┼────────────────────────────────────────────────┤
+  │ 03   │ twse-twt49u-20210101-20210131.json             │
+  ├──────┼────────────────────────────────────────────────┤
+  │ 04   │ twse-twt49u-20250127-20250131-no-data.json     │
+  ├──────┼────────────────────────────────────────────────┤
+  │ 06   │ twse-twt49u-detail-2884-20250722.json          │
+  ├──────┼────────────────────────────────────────────────┤
+  │ 07   │ twse-twt49u-detail-2330-20250612.json          │
+  ├──────┼────────────────────────────────────────────────┤
+  │ 08   │ twse-twt49u-detail-9999-not-found.json         │
+  ├──────┼────────────────────────────────────────────────┤
+  │ 09   │ tpex-ex-daily-q-20250601-20250731.json         │
+  ├──────┼────────────────────────────────────────────────┤
+  │ 11   │ tpex-ex-daily-q-20250127-20250131-no-data.json │
+  └──────┴────────────────────────────────────────────────┘
+
+  TwseDividendListClientTest
+  - 檔案 01 共 673 列。2330
+    每個欄位都驗：2025-06-12、台積電、1065.00、1060.49、4.500020、CASH、明細參數
+    2330／2025-06-12；2884 也驗（2025-07-22、權息）。順便驗請求的網址。
+  - 檔案 03：15 列，2021 年的資料也能解析。
+  - 沒有資料：檔案 04 → NO_DATA；stat 是 OK 但 data 是空的 → NO_DATA；不認得的
+    stat → FAILED。
+  - 失敗：回 HTML、403 → BLOCKED；500、404、JSON 壞掉 →
+    FAILED；缺欄位、日期壞掉、種類不認得 → FAILED。
+  - 欄位順序調換後照樣解析正確，證明是用名稱找欄位。
+  - 某個價格是 -- → 那一列保留，該欄是 null。
+  - 主機換成別的網址時，請求真的送到新主機。
+
+  TpexDividendListClientTest
+  - 檔案 09 共 481 列。8069 每個欄位都驗：2025-07-24、元太（尾端空白已去掉）、CA
+    SH、4.99013930、0.00000000。6712 的 99.99999623
+    精度保留。網址裡的斜線沒有被編碼。
+  - 檔案 11 → NO_DATA。
+  - stat 不是 ok、沒有 tables、HTML、500、JSON 壞掉 → 都是失敗。
+  - 除權、除權息的種類對應正確。
+
+  TwseDividendDetailClientTest
+  - 2884 → 現金 1.2、每千股 10 股；2330 → 4.50002、配股 0；9999 → NOT_FOUND。
+  - 回傳的代號不一樣、單位看不懂、HTML、500、JSON 壞掉 → 失敗。
+
+  DividendParsingTest
+  - 民國日期：114年06月12日、114年6月2日、99年12月31日、前後有空白都能解析；114
+    年13月01日、2025-06-12、空字串會丟例外。114/07/24 沿用現有的解析。
+  - 單位：1.2 元／股、4.50002 元／股（scale 保留）、10 股、18,000,000 
+    股、0.00000000 股、空字串 → 0、半形 元/股；abc、-1 股、-- 會丟例外。
+  - 種類：6 種寫法都能對應；減資 會丟例外。
+
+  DividendSourceRuleTest（C 表每一列至少一個例子）
+  - 上櫃 8069 → OFFICIAL 4.99013930／0
+  - 上市有明細 2884 → OFFICIAL 1.2／10；2330 有明細時用明細的
+    4.50002，不用列表的值
+  - 息、參考價相等：2330 → OFFICIAL 4.500020／0
+  - 權、減除股利參考價 = 前收：3311 閎暉 → OFFICIAL 0／0
+  - 權、參考價相等：6423 → ESTIMATED 20.26723367；2528 → 50.00001641
+  - 權、參考價不相等：自己造一列 → ESTIMATED（依公式）
+  - 權息沒有明細：2884 → UNAVAILABLE，數字是 null
+  - 息、參考價不相等：自己造一列 → UNAVAILABLE（三份實測檔，包括 2024
+    整年，都沒有這種例子）
+  - 欄位是 null、分母 ≤ 0、上櫃數字是 null → UNAVAILABLE
+  - 整份檔案 01 跑一遍：息 638 筆都是 OFFICIAL；權 6 筆裡 3 筆 OFFICIAL、3 筆
+    ESTIMATED；權息 29 筆都是 UNAVAILABLE
+
+  五、實測檔案裡有、但設計文件沒寫到的格式
+
+  1. 上市明細的「代號」尾端也有空白（"2884  "），不只名稱。欄位名稱 " c. 
+     原股東認購" 開頭有空白。明細的數字也有千分位（18,000,000 股）。(增資配股) 
+     除權 在兩份樣本裡都是空字串。
+  2. 上櫃列表沒有 tables[0].date。最外層 date 是查詢範圍 20250601~20250731，不是
+     資料日期。上櫃的數字沒有千分位（1360.00），上市有（1,065.00）。
+  3. 上市列表最外層另外有 strDate、endDate、notes、extraNotes、formula。債券 ETF
+     的漲跌停是 9,999.95／0.01，EPS 有 N/A。這些欄位都不解析，不會影響結果。
+  4. 上市的「權值+息值」只有 6 位小數。上櫃 8069 的 息值 是 4.990139，現金股利
+     是 4.99013930。所以「息、沒有明細」那一列標「官方」，精度可能比真正的官方值
+     少。持股很多時，元以下捨去後可能差 1 元。
+  5. 上櫃有「除權」但配股是 0 的事件（例如 3349 寶德
+     114/06/25，只有現金增資）。上櫃直接用列表的值，結果是官方 0／0，沒有問題。
+  6. 三份上市檔案裡，「詳細資料」都等於「代號,西元除權息日」，沒有任何一筆不一致
+     。
+  7. 2025-06～07 的 6 筆「權」裡，3 筆是減除股利參考價 =
+     前收（3311、6541、1449）。2024 整年有權 77、權息 62
+     筆：沒有明細時，會有不少「無法取得」或「估算」。
+  8. 上市 2024 整年那次請求花了 4.97 秒，現在的 read-timeout 是 5 
+     秒，按年抓很可能逾時（見問題 2）。
+
+  六、需要你決定的地方
+
+  1. 要不要多一種「被擋」的狀態：你要求三種結果，我建議 FAILED 之外再分一個
+     BLOCKED（也算失敗，isFailure() 是 true）。原因是設計文件第 8 節 A 規定
+     403、429、回 HTML 要暫停 30 分鐘，4b 需要分得出來。測試裡「回 HTML」會驗
+     BLOCKED。
+  2. 讀取逾時：建議連線逾時沿用 3 秒，讀取逾時另設
+     quote.dividend-read-timeout=${DIVIDEND_READ_TIMEOUT:20s}。這只用在背景排程
+     ，不影響使用者等待的時間。另一個做法是維持 5 秒，4b 改成每半年抓一次。
+  3. 不認得的 stat 算失敗，不算沒有資料：這跟現有 MI_INDEX 的作法不同。4b
+     拿到「沒有資料」可能會把那段時間標成「抓完」，萬一其實是被限流的訊息，那段
+     的資料就永遠不會再抓。
+  4. 某一列的日期或種類看不懂時，整份算失敗，不是只略過那一列。原因同上：略過的
+     話，那次除權息會永遠消失。價格看不懂則只把該欄設成
+     null，由規則判成「無法取得」，事件保留。
+
+  建議（未實作）
+
+  - DividendKind.STOCK 的註解寫「權：只配股」，這是我之前寫錯的：3311
+    閎暉的「權」其實只有現金增資，沒有配股。建議改成「權：除權（配股或現金增資）
+    」，可以記進 REVIEW.md。
+  - 第 5 點提到的「息、沒有明細」精度差異，可以考慮寫進第 8 題 API.md。
+
+  確認上面 4 個問題後，回覆「同意」我就開始實作。
+
+✻ Brewed for 4m 3s · done 上午3:17
+
+> 將此次回覆內容生成md檔放在專案根目錄                                          
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Write(第6題第4a階段方案.md)
+  ⎿  Wrote 163 lines to 第6題第4a階段方案.md
+      1 # 第 6 題 第 4a 階段方案：除權息 API 的解析和資料來源規則
+      2 
+      3 - 分支：`feature/q6-dividend-parsing`（從最新的 master 開出）
+      4 - 狀態：提案中，等「同意」後實作；尚未修改任何程式檔
+      5 - 範圍：不碰資料庫、不排程、不改 `DividendEventProvider`、不改網
+        頁和 API
+      6 
+      7 ---
+      8 
+      9 ## 一、新增的類別（放在哪個套件）
+     … +154 lines (ctrl+o to expand)
+
+● I saved the proposal to 第6題第4a階段方案.md in the project root. The content
+  matches my previous reply (sections 1–6 plus the unimplemented suggestions). I
+  added a header noting the branch, the "proposal pending" status, and this
+  stage's scope.
+
+  Git doesn't ignore this file yet. 第6題設計決定.md is kept out of commits by
+  an entry in .git/info/exclude, but the new file has no such entry, so git add 
+  . would pick it up. If you don't want it committed, add one line to
+  .git/info/exclude:
+
+  /第6題第4a階段方案.md
+
+  Tell me if you want me to add it. The 4 questions in section 6 are still
+  waiting on you; once you've answered them and replied "同意" (agree), I'll
+  start implementing.
+
+✻ Baked for 45s · done 上午3:20
+
+> 同意這個方案。第六節的四點都照你的建議：                                      
+                                                                                
+  1. 加 BLOCKED 狀態，isFailure() 在 FAILED、BLOCKED 都是 true。                
+  2. 讀取逾時另設                                                               
+  quote.dividend-read-timeout=${DIVIDEND_READ_TIMEOUT:20s}，只用在除權息的      
+  client；連線逾時沿用 3 秒。                                                   
+  3. 不認得的 stat 算 FAILED。                                                  
+  4. 某一列的日期或種類看不懂，整份算 FAILED；log                               
+  要寫出是哪一列（代號、日期原文）。價格看不懂只把該欄設成 null。               
+                                                                                
+  另外：                                                                        
+  - DividendKind.STOCK                                                          
+  的註解請在這一階段一併改成「權：除權（配股或現金增資）」。                    
+  - 第五節第 4 點的精度差異維持標 OFFICIAL，我已經記進設計文件，第 8 題寫       
+  API.md 時說明。                                                               
+  - REVIEW.md 現在不要動。                                                      
+                                                                                
+  完成後跑 ./mvnw test，回報測試數量和結果，並提出 commit 訊息。                
+                                                                                
+  【規則再提醒】不碰資料庫和排程；只用 BigDecimal；兩份 md 檔不 commit；commit  
+  由我執行。                                                                    
+  剛剛生成的md檔已刪除                                                          
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● 先複製測試資料。
+
+● Bash(cd /c/TKA102_JavaApp/Workspace_for_practice &&
+      S=api-test/dividend-samples-20261125-0308 &&
+      D=stock-holdings/src/test/resources/dividends && mkdir -p $D && \
+      cp…)
+  ⎿  total 249
+     drwxr-xr-x 1 Ping 197121      0 Nov 25 03:23 .
+     drwxr-xr-x 1 Ping 197121      0 Nov 25 03:23 ..
+     … +18 lines (ctrl+o to expand)
+  ⎿  Shell cwd was reset to 
+     C:\TKA102_JavaApp\Workspace_for_practice\stock-holdings
+  ⎿  Created src\test\resources\dividends\tpex-ex-daily-q-20250127-20250131
+     -no-data.json +1
+      1 +{"date":"20250127~20250131","tables":[{"title":"","totalCount":0
+        +,"fields":["除權息日期","代號","名稱","除權息前收盤價","除權息參
+        +考價","權值","息值","權值+息值","權/息","漲停價","跌停價","開始 
+        +交易基準價","減除股利參考價","現金股利","每仟股無償配股","現金增
+        +資股數","現金增資認購價","公開承銷股數","員工認購股數","原股東認
+        +購股數","按持股比例仟股認購"],"data":[],"summary":[],"notes":[]}
+        +],"stat":"ok"}                                                  
+  ⎿  Created
+     src\test\resources\dividends\twse-twt49u-20210101-20210131.json +1
+      1 +{"stat":"OK","title":"110年01月01日 至 110年01月31日 除權除息計 
+        +算結果表","fields":["資料日期","股票代號","股票名稱","除權息前收
+        +盤價","除權息參考價","權值+息值","權/息","漲停價格","跌停價格","
+        +開盤競價基準","減除股利參考價","詳細資料","最近一次申報資料 季別
+        +/日期","最近一次申報每股 (單位)淨值","最近一次申報每股 (單位)盈 
+        +餘"],"data":[["110年01月05日","4108","懷特","25.20","24.28","0.9
+        +16328","權","27.70","21.90","25.20","25.20","4108,20210105","115
+        +年第3季(https://mops.twse.com.tw/mops/web/t163sb01)","10.17","-0
+        +.05"],["110年01月13日","2836","高雄銀","10.60","10.00","0.600000
+        +","權息","11.00","9.00","10.00","10.00","2836,20210113","115年第
+        +3季(https://mops.twse.com.tw/mops/web/t163sb01)","14.89","0.61"]
+        +,["110年01月13日","6224","聚鼎","103.00","101.05","1.942107","權
+        +","113.00","91.00","103.00","103.00","6224,20210113","115年第3季
+        +(https://mops.twse.com.tw/mops/web/t163sb01)","28.32","2.52"],["
+        +110年01月19日","00701","國泰股利精選30","21.92","21.19","0.73000
+        +0","息","23.30","19.08","21.19","21.19","00701,20210119","115年1
+        +1月24日(https://mops.twse.com.tw/mops/web/t78sb35)","40.30","N/A
+        +"],["110年01月19日","00702","國泰標普低波高息","17.91","17.73","
+        +0.180000","息","9,999.95","0.01","17.73","17.73","00702,20210119
+        +","","",""],["110年01月19日","00714","群益道瓊美國地產","18.39",
+        +"18.26","0.121000","息","9,999.95","0.01","18.26","18.26","00714
+        +,20210119","","",""],["110年01月19日","00717","富邦美國特別股","
+        +16.76","16.61","0.148000","息","9,999.95","0.01","16.61","16.61"
+        +,"00717,20210119","","",""],["110年01月19日","00735","國泰臺韓科
+        +技","33.77","32.74","1.030000","息","9,999.95","0.01","32.74","3
+        +2.74","00735,20210119","","",""],["110年01月19日","00736","國泰 
+        +新興市場","23.58","23.33","0.250000","息","9,999.95","0.01","23.
+        +33","23.33","00736,20210119","","",""],["110年01月19日","00770",
+        +"國泰北美科技","31.76","31.38","0.380000","息","9,999.95","0.01"
+        +,"31.38","31.38","00770,20210119","","",""],["110年01月19日","00
+        +830","國泰費城半導體","26.55","26.23","0.320000","息","9,999.95"
+        +,"0.01","26.23","26.23","00830,20210119","","",""],["110年01月21
+        +日","00728","第一金工業30","30.82","28.92","1.900000","息","31.8
+        +1","26.03","28.92","28.92","00728,20210121","115年11月24日(https
+        +://mops.twse.com.tw/mops/web/t78sb35)","51.69","N/A"],["110年01 
+        +月22 … [+1152 chars]                                            
+  ⎿  Created src\test\resources\dividends\twse-twt49u-20250127-20250131-no-
+     data.json +1
+      1 +{"stat":"很抱歉，沒有符合條件的資料!"}                          
+  ⎿  Created
+     src\test\resources\dividends\twse-twt49u-detail-2330-20250612.json +1
+      1 +{"stat":"ok","fields":["股票代號","股票名稱","(每股配發現金股利)
+        +除息","(增資配股) 除權","A. 按普通股股東持股比例每千股無償配股",
+        +"B. 員工紅利轉增資","C. (有償) 現金增資","每股認購金額","a. 公開
+        +承銷","b. 員工認購"," c. 原股東認購","按股東持股比例每千股認購"]
+        +,"data":[["2330  ","台積電          ","4.50002 元／股","","0 股"
+        +,"0 股","0 股","0 元／股","0 股","0 股","0 股","0.00000000 股"]]
+        +}                                                               
+  ⎿  Created
+     src\test\resources\dividends\twse-twt49u-detail-2884-20250722.json +1
+      1 +{"stat":"ok","fields":["股票代號","股票名稱","(每股配發現金股利)
+        +除息","(增資配股) 除權","A. 按普通股股東持股比例每千股無償配股",
+        +"B. 員工紅利轉增資","C. (有償) 現金增資","每股認購金額","a. 公開
+        +承銷","b. 員工認購"," c. 原股東認購","按股東持股比例每千股認購"]
+        +,"data":[["2884  ","玉山金          ","1.2 元／股","","10 股","1
+        +8,000,000 股","0 股","0 元／股","0 股","0 股","0 股","0.00000000
+        + 股"]]}                                                         
+  ⎿  … +3 files changed
+     src\test\resources\dividends\tpex-ex-daily-q-20250601-20250731.json
+     src\test\resources\dividends\twse-twt49u-20250601-20250731.json
+     src\test\resources\dividends\twse-twt49u-detail-9999-not-found.json
+
+● Write(src\test\resources\dividends\README.md)
+  ⎿  Wrote 25 lines to src\test\resources\dividends\README.md
+       1 # 除權息 API 測試資料
+       2 
+       3 這些檔案是從官方網站實際取得的回應，只給單元測試使用。單元測試不
+         連網（題目規定），改用這些檔案模擬官方回應。
+       4 
+       5 取得時間：2026-11-25 03:08～03:09（台北），內容未修改。
+       6 
+       7 ## 檔案來源
+       8 
+       9 | 檔案 | 用途 | 來源網址 |
+     … +16 lines (ctrl+o to expand)
+
+● Now the main code. First, fix the comment on DividendKind:
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\calc\DividendKind.java)
+  ⎿  Added 1 line, removed 1 line
+       4  public enum DividendKind {
+       5    /** 息：只發現金股利。 */
+       6    CASH,
+       7 -  /** 權：只配股。 */                                          
+       7 +  /** 權：除權（配股或現金增資）。只有現金增資時沒有配股，例如 
+         +3311 閎暉 2025-06-19。 */                                      
+       8    STOCK,
+       9    /** 權息：同一天現金和配股都有。 */
+      10    CASH_AND_STOCK
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\quote\DividendListRow.java)
+  ⎿  Wrote 27 lines to
+     src\main\java\io\hsiaopingkuo\stockholdings\quote\DividendListRow.java
+       1 package io.hsiaopingkuo.stockholdings.quote;
+       2 
+       3 import java.math.BigDecimal;
+       4 import java.time.LocalDate;
+       5 
+       6 import io.hsiaopingkuo.stockholdings.calc.DividendKind;
+       7 import io.hsiaopingkuo.stockholdings.entity.Market;
+       8 
+       9 /**
+      10  * 除權息列表（上市 TWT49U、上櫃 exDailyQ）的一列。
+     … +17 lines (ctrl+o to expand)
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\quote\DividendListResult.jav
+       a)
+  ⎿  Wrote 45 lines to src\main\java\io\hsiaopingkuo\stockholdings\quote\Di
+     videndListResult.java
+       1 package io.hsiaopingkuo.stockholdings.quote;
+       2 
+       3 import java.util.List;
+       4 
+       5 /**
+       6  * 查一次除權息列表的結果。
+       7  * - OK：有資料
+       8  * - NO_DATA：官方回應正常，但這段期間沒有除權息（不是錯誤）
+       9  * - FAILED：HTTP 錯誤、逾時、JSON 壞掉、格式和預期不同、不認得
+         的 stat → 之後重試
+     … +36 lines (ctrl+o to expand)
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\quote\TwseDividendDetail.jav
+       a)
+  ⎿  Wrote 12 lines to src\main\java\io\hsiaopingkuo\stockholdings\quote\Tw
+     seDividendDetail.java
+       1 package io.hsiaopingkuo.stockholdings.quote;
+       2 
+       3 import java.math.BigDecimal;
+       4 
+       5 /**
+       6  * 上市除權息明細（TWT49UDetail）裡用得到的官方數字。
+       7  *
+       8  * @param cashPerShare     「(每股配發現金股利)除息」，單位元
+       9  * @param stockPerThousand 「A. 按普通股股東持股比例每千股無償配
+         股」，單位股
+     … +3 lines (ctrl+o to expand)
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\quote\DividendDetailResult.j
+       ava)
+  ⎿  Wrote 42 lines to src\main\java\io\hsiaopingkuo\stockholdings\quote\Di
+     videndDetailResult.java
+       1 package io.hsiaopingkuo.stockholdings.quote;
+       2 
+       3 /**
+       4  * 查一次上市除權息明細的結果。
+       5  * - FOUND：查到明細
+       6  * - NOT_FOUND：官方回應正常，但沒有這筆明細（不是錯誤）→ 改用列
+         表的值判斷（第 6 題設計決定 7-C）
+       7  * - FAILED：HTTP 錯誤、逾時、JSON 壞掉、格式和預期不同、不認得
+         的 stat → 之後重試
+       8  * - BLOCKED：被官方擋下（403、429、回傳 HTML）→ 要暫停一段時間
+     … +34 lines (ctrl+o to expand)
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\quote\DividendListClient.jav
+       a)
+  ⎿  Wrote 21 lines to src\main\java\io\hsiaopingkuo\stockholdings\quote\Di
+     videndListClient.java
+       1 package io.hsiaopingkuo.stockholdings.quote;
+       2 
+       3 import java.time.LocalDate;
+       4 
+       5 import io.hsiaopingkuo.stockholdings.entity.Market;
+       6 
+       7 /**
+       8  * 查一段期間內、單一市場全部的除權息事件（列表）。
+       9  * 包成 interface，背景排程的測試才能換成假的實作，不必連網。
+      10  */
+     … +11 lines (ctrl+o to expand)
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\quote\DividendDetailClient.j
+       ava)
+  ⎿  Wrote 17 lines to src\main\java\io\hsiaopingkuo\stockholdings\quote\Di
+     videndDetailClient.java
+      1 package io.hsiaopingkuo.stockholdings.quote;
+      2 
+      3 import java.time.LocalDate;
+      4 
+      5 /**
+      6  * 查上市單一事件的除權息明細（每股現金股利、每千股配股）。
+      7  * 包成 interface，背景排程的測試才能換成假的實作；主考官的測試伺
+        服器可能沒有這支 API，呼叫端要有備援。
+      8  */
+      9 public interface DividendDetailClient {
+     … +8 lines (ctrl+o to expand)
+● 接著寫解析工具和三個 client。
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\quote\DividendParsing.java)
+  ⎿  Wrote 140 lines to
+     src\main\java\io\hsiaopingkuo\stockholdings\quote\DividendParsing.java
+      1 package io.hsiaopingkuo.stockholdings.quote;
+      2 
+      3 import java.math.BigDecimal;
+      4 import java.time.DateTimeException;
+      5 import java.time.LocalDate;
+      6 import java.time.format.DateTimeFormatter;
+      7 import java.time.format.DateTimeParseException;
+      8 import java.util.regex.Matcher;
+      9 import java.util.regex.Pattern;
+     … +131 lines (ctrl+o to expand)
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\quote\TwseDividendListClient
+       .java)
+  ⎿  Wrote 128 lines to src\main\java\io\hsiaopingkuo\stockholdings\quote\T
+     wseDividendListClient.java
+       1 package io.hsiaopingkuo.stockholdings.quote;
+       2 
+       3 import java.time.LocalDate;
+       4 import java.time.format.DateTimeFormatter;
+       5 import java.util.ArrayList;
+       6 import java.util.List;
+       7 
+       8 import org.slf4j.Logger;
+       9 import org.slf4j.LoggerFactory;
+      10 import org.springframework.web.client.RestClient;
+     … +118 lines (ctrl+o to expand)
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\quote\TpexDividendListClient
+       .java)
+  ⎿  Wrote 128 lines to src\main\java\io\hsiaopingkuo\stockholdings\quote\T
+     pexDividendListClient.java
+       1 package io.hsiaopingkuo.stockholdings.quote;
+       2 
+       3 import java.time.LocalDate;
+       4 import java.time.format.DateTimeFormatter;
+       5 import java.util.ArrayList;
+       6 import java.util.List;
+       7 
+       8 import org.slf4j.Logger;
+       9 import org.slf4j.LoggerFactory;
+      10 import org.springframework.web.client.RestClient;
+     … +118 lines (ctrl+o to expand)
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\quote\TwseDividendDetailClie
+       nt.java)
+  ⎿  Wrote 95 lines to src\main\java\io\hsiaopingkuo\stockholdings\quote\Tw
+     seDividendDetailClient.java
+      1 package io.hsiaopingkuo.stockholdings.quote;
+      2 
+      3 import java.math.BigDecimal;
+      4 import java.time.LocalDate;
+      5 import java.time.format.DateTimeFormatter;
+      6 
+      7 import org.slf4j.Logger;
+      8 import org.slf4j.LoggerFactory;
+      9 import org.springframework.web.client.RestClient;
+     … +86 lines (ctrl+o to expand)
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\calc\ResolvedDividend.java)
+  ⎿  Wrote 25 lines to
+     src\main\java\io\hsiaopingkuo\stockholdings\calc\ResolvedDividend.java
+       1 package io.hsiaopingkuo.stockholdings.calc;
+       2 
+       3 import java.math.BigDecimal;
+       4 
+       5 /**
+       6  * 一次除權息最後採用的數字和來源（第 6 題設計決定 7-C）。
+       7  *
+       8  * @param cashPerShare     每股現金股利；UNAVAILABLE 時是 null
+       9  * @param stockPerThousand 每千股無償配股；UNAVAILABLE 時是 null
+      10  */
+     … +15 lines (ctrl+o to expand)
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\calc\DividendSourceRule.java
+       )
+  ⎿  Wrote 115 lines to src\main\java\io\hsiaopingkuo\stockholdings\calc\Di
+     videndSourceRule.java
+       1 package io.hsiaopingkuo.stockholdings.calc;
+       2 
+       3 import java.math.BigDecimal;
+       4 import java.math.RoundingMode;
+       5 
+       6 import io.hsiaopingkuo.stockholdings.entity.Market;
+       7 import io.hsiaopingkuo.stockholdings.quote.DividendListRow;
+       8 import io.hsiaopingkuo.stockholdings.quote.TwseDividendDetail;
+       9 
+      10 /**
+     … +105 lines (ctrl+o to expand)
+
+● 接著改設定：QuoteProperties、QuoteConfig、兩份 properties。
+
+● Bash(python - 2>/dev/null; perl -0pi -e 's/ \* \@param refresh
+      背景更新行情的排程設定\n/ * \@param refresh
+      背景更新行情的排程設定\n * \@param dividendReadTimeout…)
+  ⎿  warning: in the working copy of 'src/main/java/io/hsiaopingkuo/stockho
+     ldings/config/QuoteProperties.java', CRLF will be replaced by LF the n
+     ext time Git touches it
+     … +16 lines (ctrl+o to expand)
+  ⎿  Updated src\main\java\io\hsiaopingkuo\stockholdings\config\QuoteProper
+     ties.java +1 -1
+      25  @ConfigurationProperties("quote")
+      26  public record QuoteProperties(Host twse, Host tpex, Duration co
+          nnectTimeout, Duration readTimeout,
+      27                  Duration lookupTimeout, Duration lookupCacheTtl
+          , Duration requestBudget, int maxConcurrentLookups,
+      28 -                Duration lookupMinRemaining, String holidayUrl,
+         - Refresh refresh) {                                            
+      28 +                Duration lookupMinRemaining, String holidayUrl,
+         + Refresh refresh, Duration dividendReadTimeout) {              
+      29 
+      30          /** @param baseUrl 主機網址，例如 https://www.twse.com.
+          tw；路徑和參數寫在 client 裡，不能改 */
+      31          public record Host(String baseUrl) {
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\config\QuoteProperties.java
+        )
+  ⎿  Added 2 lines
+      21   * @param lookupMinRemaining   剩下的預算少於這個值就不查官方，
+          直接回「暫時無法確認」（F-01）
+      22   * @param holidayUrl           證交所休市日表的完整網址（主機是
+           openapi.twse.com.tw，和行情不同，所以獨立設定）
+      23   * @param refresh              背景更新行情的排程設定
+      24 + * @param dividendReadTimeout  除權息 client 等待回應的上限：只
+         +在背景排程呼叫，一次查一整年實測約 5 秒，                      
+      25 + *                             行情的 readTimeout 不夠，所以另 
+         +外設定；建立連線的上限沿用 connectTimeout                      
+      26   */
+      27  @ConfigurationProperties("quote")
+      28  public record QuoteProperties(Host twse, Host tpex, Duration co
+          nnectTimeout, Duration readTimeout,
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\config\QuoteConfig.java)
+  ⎿  Added 28 lines, removed 2 lines
+      126          new RefreshSchedule(properties.refresh(), random), tas
+           kScheduler, clock, properties.refresh().enabled());
+      127    }
+      128 
+      129 +  // ===== 除權息（第 6 題）=====                             
+      130 +  // 主機和行情共用 TWSE_BASE_URL／TPEX_BASE_URL；等待回應的上
+          +限另外設（一次查一整年比查一天久）                            
+      131 +                                                              
+      132 +  @Bean                                                       
+      133 +  TwseDividendListClient twseDividendListClient(QuotePropertie
+          +s properties, JsonMapper jsonMapper) {                        
+      134 +    return new TwseDividendListClient(dividendRestClient(prope
+          +rties.twse().baseUrl(), properties), jsonMapper);             
+      135 +  }                                                           
+      136 +                                                              
+      137 +  @Bean                                                       
+      138 +  TwseDividendDetailClient twseDividendDetailClient(QuotePrope
+          +rties properties, JsonMapper jsonMapper) {                    
+      139 +    return new TwseDividendDetailClient(dividendRestClient(pro
+          +perties.twse().baseUrl(), properties), jsonMapper);           
+      140 +  }                                                           
+      141 +                                                              
+      142 +  @Bean                                                       
+      143 +  TpexDividendListClient tpexDividendListClient(QuotePropertie
+          +s properties, JsonMapper jsonMapper) {                        
+      144 +    return new TpexDividendListClient(dividendRestClient(prope
+          +rties.tpex().baseUrl(), properties), jsonMapper);             
+      145 +  }                                                           
+      146 +                                                              
+      147    private static RestClient restClient(String baseUrl, QuotePr
+           operties properties) {
+      148 +    return restClient(baseUrl, properties.connectTimeout(), pr
+          +operties.readTimeout());                                      
+      149 +  }                                                           
+      150 +                                                              
+      151 +  private static RestClient dividendRestClient(String baseUrl,
+          + QuoteProperties properties) {                                
+      152 +    return restClient(baseUrl, properties.connectTimeout(), pr
+          +operties.dividendReadTimeout());                              
+      153 +  }                                                           
+      154 +                                                              
+      155 +  private static RestClient restClient(String baseUrl, Duratio
+          +n connectTimeout, Duration readTimeout) {                     
+      156      // JDK 內建的 HTTP 連線就夠用，不用另外加套件；一定要設逾
+           時，否則官方卡住時會無限等待
+      157      SimpleClientHttpRequestFactory requestFactory = new Simple
+           ClientHttpRequestFactory();
+      132 -    requestFactory.setConnectTimeout(properties.connectTimeout
+          -());                                                          
+      133 -    requestFactory.setReadTimeout(properties.readTimeout());  
+      158 +    requestFactory.setConnectTimeout(connectTimeout);         
+      159 +    requestFactory.setReadTimeout(readTimeout);               
+      160      return RestClient.builder()
+      161          .baseUrl(baseUrl)
+      162          .requestFactory(requestFactory)
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\config\QuoteConfig.java)
+  ⎿  Added 1 line
+      1  package io.hsiaopingkuo.stockholdings.config;
+      2 
+      3  import java.time.Clock;
+      4 +import java.time.Duration;                                      
+      5  import java.util.Map;
+      6  import java.util.Random;
+      7  import java.util.random.RandomGenerator;
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\config\QuoteConfig.java)
+  ⎿  Added 3 lines
+      18  import io.hsiaopingkuo.stockholdings.quote.MarketCloseBatchClie
+          nt;
+      19  import io.hsiaopingkuo.stockholdings.quote.MarketResolver;
+      20  import io.hsiaopingkuo.stockholdings.quote.StockLookupClient;
+      21 +import io.hsiaopingkuo.stockholdings.quote.TpexDividendListClie
+         +nt;                                                            
+      22 +import io.hsiaopingkuo.stockholdings.quote.TwseDividendDetailCl
+         +ient;                                                          
+      23 +import io.hsiaopingkuo.stockholdings.quote.TwseDividendListClie
+         +nt;                                                            
+      24  import io.hsiaopingkuo.stockholdings.quote.TwseHolidayClient;
+      25  import io.hsiaopingkuo.stockholdings.quote.TpexOtcClient;
+      26  import io.hsiaopingkuo.stockholdings.quote.TpexTradingStockClie
+          nt;
+
+● Update(src\main\resources\application.properties)
+  ⎿  Added 5 lines
+      60  quote.refresh.cooldown=30m
+      61  # 伺服器啟動時，今天沒有資料最多往前找 10 天（涵蓋春節長假）
+      62  quote.refresh.startup-lookback-days=10
+      63 +                                                               
+      64 +# ===== 除權息（第 6 題）=====                                 
+      65 +# 主機沿用上面的 TWSE_BASE_URL、TPEX_BASE_URL，建立連線的上限沿
+         +用 quote.connect-timeout。                                     
+      66 +# 只在背景排程呼叫；一次查一整年的上市列表實測約 5 秒，行情的 5
+         + 秒不夠，所以等待回應的上限另外設 20 秒                        
+      67 +quote.dividend-read-timeout=${DIVIDEND_READ_TIMEOUT:20s}       
+
+● Update(src\test\resources\application.properties)
+  ⎿  Added 1 line
+      32  quote.refresh.per-request-delay-max=5800ms
+      33  quote.refresh.cooldown=30m
+      34  quote.refresh.startup-lookback-days=10
+      35 +quote.dividend-read-timeout=1s                                 
+
+  Read 1 file (ctrl+o to expand)
+
+● Update(src\test\java\io\hsiaopingkuo\stockholdings\service\RefreshTestSupport.
+        java)
+  ⎿  Added 1 line, removed 1 line
+      32    }
+      33 
+      34    static QuoteProperties propertiesWith(QuoteProperties.Refresh
+           refresh) {
+      35 -    return new QuoteProperties(null, null, null, null, null, nu
+         -ll, null, 0, null, null, refresh);                             
+      35 +    return new QuoteProperties(null, null, null, null, null, nu
+         +ll, null, 0, null, null, refresh, null);                       
+      36    }
+      37 
+      38    /** 可以手動往前撥的時鐘，時區固定台北。 */
+
+● 先編譯確認主程式沒問題，再寫測試。
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● Write(src\test\java\io\hsiaopingkuo\stockholdings\quote\DividendParsingTest.ja
+       va)
+  ⎿  Wrote 150 lines to src\test\java\io\hsiaopingkuo\stockholdings\quote\D
+     ividendParsingTest.java
+       1 package io.hsiaopingkuo.stockholdings.quote;
+       2 
+       3 import static org.assertj.core.api.Assertions.assertThat;
+       4 import static org.assertj.core.api.Assertions.assertThatThrownBy
+         ;
+       5 
+       6 import java.math.BigDecimal;
+       7 import java.time.LocalDate;
+       8 
+       9 import org.junit.jupiter.api.Test;
+     … +141 lines (ctrl+o to expand)
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+● Write(src\test\java\io\hsiaopingkuo\stockholdings\quote\TwseDividendListClient
+       Test.java)
+  ⎿  Wrote 268 lines to src\test\java\io\hsiaopingkuo\stockholdings\quote\T
+     wseDividendListClientTest.java
+      1 package io.hsiaopingkuo.stockholdings.quote;
+      2 
+      3 import static org.assertj.core.api.Assertions.assertThat;
+      4 import static org.springframework.test.web.client.match.MockRestR
+        equestMatchers.method;
+      5 import static org.springframework.test.web.client.match.MockRestR
+        equestMatchers.requestTo;
+      6 import static org.springframework.test.web.client.response.MockRe
+        stResponseCreators.withStatus;
+      7 import static org.springframework.test.web.client.response.MockRe
+     … +262 lines (~11 KB) (ctrl+o to expand)
+
+● Bash(cd /c/TKA102_JavaApp/Workspace_for_practice/stock-holdings/src/test/java/
+      io/hsiaopingkuo/stockholdings/quote && sed -i
+      's/org\.assertj\.core\.groups\.Tuple\.tup…)
+  ⎿  4:import static org.assertj.core.groups.Tuple.tuple;
+     118:
+     tuple(LocalDate.of(2025, 6, 19), DividendKind.STOCK),
+     119:
+     tuple(LocalDate.of(2025, 7, 3), DividendKind.CASH));
+  ⎿  Updated src\test\java\io\hsiaopingkuo\stockholdings\quote\TwseDividend
+     ListClientTest.java +3 -2
+      1  package io.hsiaopingkuo.stockholdings.quote;
+      2 
+      3  import static org.assertj.core.api.Assertions.assertThat;
+      4 +import static org.assertj.core.groups.Tuple.tuple;              
+      5  import static org.springframework.test.web.client.match.MockRest
+         RequestMatchers.method;
+      6  import static org.springframework.test.web.client.match.MockRest
+         RequestMatchers.requestTo;
+      7  import static org.springframework.test.web.client.response.MockR
+         estResponseCreators.withStatus;
+     ...
+      115                  assertThat(result.rows()).filteredOn(r -> r.co
+           de().equals("3311"))
+      116                                  .extracting(DividendListRow::e
+           xDate, DividendListRow::kind)
+      117                                  .containsExactly(
+      117 -                                                org.assertj.co
+          -re.groups.Tuple.tuple(LocalDate.of(2025, 6, 19), DividendKind.
+          -STOCK),                                                       
+      118 -                                                org.assertj.co
+          -re.groups.Tuple.tuple(LocalDate.of(2025, 7, 3), DividendKind.C
+          -ASH));                                                        
+      118 +                                                tuple(LocalDat
+          +e.of(2025, 6, 19), DividendKind.STOCK),                       
+      119 +                                                tuple(LocalDat
+          +e.of(2025, 7, 3), DividendKind.CASH));                        
+      120          }
+      121 
+      122          @Test
+● Main code is done and compiles. I'm writing the tests now; two test classes
+  are written so far.
+
+● Write(src\test\java\io\hsiaopingkuo\stockholdings\quote\TpexDividendListClient
+       Test.java)
+  ⎿  Wrote 186 lines to src\test\java\io\hsiaopingkuo\stockholdings\quote\T
+     pexDividendListClientTest.java
+       1 package io.hsiaopingkuo.stockholdings.quote;
+       2 
+       3 import static org.assertj.core.api.Assertions.assertThat;
+       4 import static org.springframework.test.web.client.match.MockRest
+         RequestMatchers.method;
+       5 import static org.springframework.test.web.client.match.MockRest
+         RequestMatchers.requestTo;
+       6 import static org.springframework.test.web.client.response.MockR
+         estResponseCreators.withStatus;
+       7 import static org.springframework.test.web.client.response.MockR
+     … +180 lines (~7 KB) (ctrl+o to expand)
+
+● Write(src\test\java\io\hsiaopingkuo\stockholdings\quote\TwseDividendDetailClie
+       ntTest.java)
+  ⎿  Wrote 160 lines to src\test\java\io\hsiaopingkuo\stockholdings\quote\T
+     wseDividendDetailClientTest.java
+       1 package io.hsiaopingkuo.stockholdings.quote;
+       2 
+       3 import static org.assertj.core.api.Assertions.assertThat;
+       4 import static org.springframework.test.web.client.match.MockRest
+         RequestMatchers.method;
+       5 import static org.springframework.test.web.client.match.MockRest
+         RequestMatchers.requestTo;
+       6 import static org.springframework.test.web.client.response.MockR
+         estResponseCreators.withStatus;
+       7 import static org.springframework.test.web.client.response.MockR
+     … +154 lines (~6 KB) (ctrl+o to expand)
+
+● Write(src\test\java\io\hsiaopingkuo\stockholdings\calc\DividendSourceRuleTest.
+       java)
+  ⎿  Wrote 255 lines to src\test\java\io\hsiaopingkuo\stockholdings\calc\Di
+     videndSourceRuleTest.java
+       1 package io.hsiaopingkuo.stockholdings.calc;
+       2 
+       3 import static org.assertj.core.api.Assertions.assertThat;
+       4 import static org.springframework.test.web.client.response.MockR
+         estResponseCreators.withSuccess;
+       5 
+       6 import java.math.BigDecimal;
+       7 import java.time.LocalDate;
+       8 import java.util.List;
+       9 import java.util.Map;
+     … +246 lines (ctrl+o to expand)
+
+● I accidentally left a meaningless assertion and a loose request matcher at the
+  end of the test; cleaning them up:
+
+● Update(src\test\java\io\hsiaopingkuo\stockholdings\calc\DividendSourceRuleTest
+        .java)
+  ⎿  Removed 1 line
+      250      assertThat(list.rows().stream().filter(row -> row.code().e
+           quals("6873")).findFirst()
+      251          .map(row -> DividendSourceRule.resolve(row, null).stoc
+           kPerThousand()))
+      252          .contains(new BigDecimal("142.08472045"));
+      253 -    assertThat(Function.<String>identity()).isNotNull();      
+      253    }
+      254  }
+
+● Update(src\test\java\io\hsiaopingkuo\stockholdings\calc\DividendSourceRuleTest
+        .java)
+  ⎿  Added 2 lines, removed 2 lines
+      225    void 實測2025年6到7月_沒有明細時_息全部官方_權3官方3估算_權
+           息全部無法取得() {
+      226      RestClient.Builder builder = RestClient.builder().baseUrl(
+           "https://www.twse.com.tw");
+      227      MockRestServiceServer server = MockRestServiceServer.bindT
+           o(builder).build();
+      228 -    server.expect(ExpectedCount.once(), request -> {          
+      229 -    }).andRespond(withSuccess(new ClassPathResource("dividends
+          -/twse-twt49u-20250601-20250731.json"),                        
+      228 +    server.expect(requestTo("https://www.twse.com.tw/rwd/zh/ex
+          +Right/TWT49U?startDate=20250601&endDate=20250731&response=json
+          +"))                                                           
+      229 +        .andRespond(withSuccess(new ClassPathResource("dividen
+          +ds/twse-twt49u-20250601-20250731.json"),                      
+      230          MediaType.APPLICATION_JSON));
+      231      DividendListResult list = new TwseDividendListClient(build
+           er.build(), JsonMapper.builder().build())
+      232          .fetchRange(LocalDate.of(2025, 6, 1), LocalDate.of(202
+           5, 7, 31));
+
+● Update(src\test\java\io\hsiaopingkuo\stockholdings\calc\DividendSourceRuleTest
+        .java)
+  ⎿  Added 1 line, removed 2 lines
+       1  package io.hsiaopingkuo.stockholdings.calc;
+       2 
+       3  import static org.assertj.core.api.Assertions.assertThat;
+       4 +import static org.springframework.test.web.client.match.MockRes
+         +tRequestMatchers.requestTo;                                    
+       5  import static org.springframework.test.web.client.response.Mock
+          RestResponseCreators.withSuccess;
+       6 
+       7  import java.math.BigDecimal;
+       8  import java.time.LocalDate;
+       9  import java.util.List;
+      10  import java.util.Map;
+      10 -import java.util.function.Function;                            
+      11  import java.util.stream.Collectors;
+      12 
+      13  import org.junit.jupiter.api.Test;
+      14  import org.springframework.core.io.ClassPathResource;
+      15  import org.springframework.http.MediaType;
+      16 -import org.springframework.test.web.client.ExpectedCount;      
+      16  import org.springframework.test.web.client.MockRestServiceServe
+          r;
+      17  import org.springframework.web.client.RestClient;
+      18 
+
+● Running the new tests first:
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● All 83 new tests pass. I want to confirm the log really shows which row was
+  bad, so I'll check the output of that test:
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● Log 裡的中文在這個 shell 顯示成亂碼，但能看出它記錄了第 2 列、代號 2884、日期
+  114/07/22。接下來我會跑全部測試。 · summary
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● 第 4a 階段做完了：./mvnw test 全部 467 個測試通過（0 失敗、0 錯誤），其中新增
+  83 個。還沒 commit。
+
+  改了哪些檔案
+
+  新增：quote 套件（10 個）
+  - DividendListRow、DividendListResult：列表的一列和查詢結果，結果分
+    OK／NO_DATA／FAILED／BLOCKED 四種，isFailure() 在 FAILED 和 BLOCKED 時是
+    true。
+  - TwseDividendDetail、DividendDetailResult：明細和查詢結果，分
+    FOUND／NOT_FOUND／FAILED／BLOCKED。
+  - DividendListClient、DividendDetailClient：兩個 interface，4b
+    的測試可以換成假的實作。
+  - TwseDividendListClient、TpexDividendListClient、TwseDividendDetailClient：三
+    個 client。
+  - DividendParsing：中文民國日期、明細的單位、種類文字、「詳細資料」參數的解析
+    。
+
+  新增：calc 套件（2 個）
+  - DividendSourceRule、ResolvedDividend：資料來源規則和它的結果。
+
+  修改（6 個）
+  - DividendKind.java：STOCK 的註解改成「權：除權（配股或現金增資）」，附上 3311
+    的例子。
+  - QuoteProperties.java：最後加一個欄位 dividendReadTimeout。
+  - QuoteConfig.java：加 3 個除權息 client 的 @Bean。主機沿用
+    TWSE_BASE_URL、TPEX_BASE_URL；連線逾時沿用 3 秒；讀取逾時用
+    quote.dividend-read-timeout，只給這 3 個 client 用。
+  - application.properties：加
+    quote.dividend-read-timeout=${DIVIDEND_READ_TIMEOUT:20s}。
+  - 測試用的 application.properties：加 quote.dividend-read-timeout=1s。
+  - RefreshTestSupport.java：QuoteProperties
+    多了一個欄位，建構子呼叫要跟著補一個 null。
+
+  測試
+  - 5 個測試類別：DividendParsingTest 30 個、TwseDividendListClientTest 16
+    個、TpexDividendListClientTest 11 個、TwseDividendDetailClientTest 11
+    個、DividendSourceRuleTest 15 個。
+  - src/test/resources/dividends/：8 個實測 JSON 和
+    README.md（每個檔的來源網址、取得時間、用途、格式重點）。
+
+  方案裡沒寫、實作時多做的地方
+
+  - 負數一律標「無法取得」：官方值是負數，或估算出負的配股率，都不猜數字。現有的
+    DividendEventInput 也不接受負數。
+  - 明細數字沒有單位也接受（例如 "1.2"）。1.2 元、--、負數仍然算失敗。
+  - 某一列日期或種類看不懂時，log
+    會寫出是第幾列、代號、日期原文。我跑測試確認過，log 裡有「第 2 列（代號
+    2884、日期 114/07/22）」。
+
+  怎麼驗證
+
+  - ./mvnw test：預期 Tests run: 467, Failures: 0 和 BUILD SUCCESS。
+  - 只跑新的測試：./mvnw test 
+    -Dtest="Dividend*Test,Twse*Dividend*Test,TpexDividend*Test"。
+  - 想看重點數字，可以讀 DividendSourceRuleTest：
+    - 6423 → 估算 20.26723367
+    - 2528 → 估算 50.00001641
+    - 3311 → 官方 0／0
+    - 2884 沒有明細 → 無法取得
+    - 整份 2025 年 6～7 月：息 638 筆全部官方；權 3 筆官方、3 筆估算；權息 29
+      筆全部無法取得
+  - 這一階段網頁和 API 都沒有變，啟動後看不到差別。新的 bean
+    只是被建立，不會發出任何請求。
+
+  還沒做的部分
+
+  照範圍，存資料庫、排程、DividendEventProvider、網頁和 API 都留到 4b 之後。
+
+  建議的 commit 訊息
+
+  feat: 第6題 第4a階段 除權息 API 解析與資料來源規則
+
+  每題結束的提醒
+
+  - README：這一階段多了環境變數 DIVIDEND_READ_TIMEOUT。我先記在待補清單，等第 6
+    題驗證後一起提出草稿。
+  - TESTLOG：這一階段沒有你實際操作時發現的問題，不用記。
+  - ai-log：記得匯出放進去，commit 前檢查有沒有密碼或 token。
+  - CLAUDE.md 和 第6題設計決定.md 我都沒有加進 git，commit 時用 git add src/
+    就不會帶到這兩份 md 檔。
+
+✻ Sautéed for 9m 17s · done 上午3:32
+
+※ recap: Stage 4a of question 6 is done: dividend API parsing and the data-source rules are written, and all 467 tests pass. Next, you commit on feature/q6-dividend-parsing with "feat: 第6題 第4a階段 除權息 API 解析與資料來源規則".
+
+> 程式我讀過了，DividendSourceRule 跟設計文件第 8 節 C                          
+  一致，你多做的三點（負數標無法取得、沒有單位也接受、log 寫出第幾列）都同意。  
+                                                                                
+  請 commit：                                                                   
+  feat: 第6題 第4a階段 除權息 API 解析與資料來源規則                            
+  用 git add src/，commit 由我執行。                                            
+                                                                                
+  README 的 DIVIDEND_READ_TIMEOUT 照你說的，第 6 題驗證後一起提出草稿。         
+                                                                                
+  這一階段到這裡結束，先不要開始 4b。                                           
+
+● 你說 commit 由你執行，所以我沒有動 git。直接在專案根目錄跑這兩行：
+
+  git add src/
+  git commit -m "feat: 第6題 第4a階段 除權息 API 解析與資料來源規則"
+
+  - git add src/ 會帶進 6 個修改檔、12 個新類別、5 個測試類別和
+    src/test/resources/dividends/。CLAUDE.md 和 第6題設計決定.md
+    在專案根目錄，不會被加進去。
+  - 加入暫存時，git 可能提醒 CRLF 會換成 LF。這是 .gitattributes
+    統一換行造成的，正常，不影響內容。
+  - commit 後可以用 git show --stat HEAD 確認，應該只有 src/ 底下的檔案。
+
+  README 的 DIVIDEND_READ_TIMEOUT 還在待補清單，第 6 題驗證後一起提出草稿。第 4a
+  階段到這裡結束，我不會開始做 4b。
+
+✻ Crunched for 5s · done 上午3:37
+
+> 我將src/main的檔案commit了，剩下的是要刪除的?                                 
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● 剩下的檔案不能刪，都要 commit。它們全在 src/test/ 底下，是這一階段的測試：
+
+  ┌────────────────────────────────────┬────────────────────────────────────┐
+  │             剩下的檔案             │               是什麼               │
+  ├────────────────────────────────────┼────────────────────────────────────┤
+  │ src/test/java/.../calc/DividendSou │                                    │
+  │ rceRuleTest.java 和 quote/ 底下 4  │ 新增的 83 個測試                   │
+  │ 個 *Test.java                      │                                    │
+  ├────────────────────────────────────┼────────────────────────────────────┤
+  │ src/test/resources/dividends/      │ 8 份實測 JSON 和 README            │
+  ├────────────────────────────────────┼────────────────────────────────────┤
+  │ src/test/resources/application.pro │ 測試用的                           │
+  │ perties                            │ quote.dividend-read-timeout=1s     │
+  ├────────────────────────────────────┼────────────────────────────────────┤
+  │ src/test/java/.../service/RefreshT │ QuoteProperties 多了一個欄位，這裡 │
+  │ estSupport.java                    │ 的建構子要跟著補參數               │
+  └────────────────────────────────────┴────────────────────────────────────┘
+
+  現在的 commit 917e3d0 單獨存在時，./mvnw test 會失敗。 QuoteProperties
+  多了一個欄位，RefreshTestSupport
+  裡的建構子還是舊的參數個數，測試會編譯不過。測試用的設定少了讀取逾時，也可能讓
+  啟動測試出錯。所以兩個缺口都得補上，測試才會通過。
+
+  這個分支還沒 push，建議把測試併進剛才那個
+  commit，讓它成為「可以獨立驗證」的一步：
+
+  git add src/test/
+  git commit --amend --no-edit
+
+  如果你想保留兩個 commit，也可以另外提交：
+
+  git add src/test/
+  git commit -m "test: 第6題 第4a階段 除權息解析與資料來源規則的測試"
+
+  缺點是 917e3d0 那一步本身跑不過測試，跟
+  CLAUDE.md「一題（或一個可以獨立驗證的小步驟）一個
+  commit」的精神不太一致，所以我建議用 amend。
+
+  這是我上一則回覆漏講的地方：我只說了 git add src/ 會帶進哪些檔案，沒有提醒
+  main 和 test 不能分開 commit。這可以記進 REVIEW.md 的「AI 犯過的錯」。
+
+  commit 後用 git status 確認，應該沒有剩下任何檔案（兩份 md 檔本來就被 exclude
+  了）。
+
+✻ Baked for 15s · done 上午3:41
+
+> json檔也都要留嗎?                                                             
+
+● 對，8 個 JSON 檔都要留，而且要 commit。
+
+  為什麼要留
+  - 測試直接讀這些檔案。TwseDividendListClientTest、TpexDividendListClientTest、
+    TwseDividendDetailClientTest、DividendSourceRuleTest 都用 new 
+    ClassPathResource("dividends/....json")
+    模擬官方回應，少一個檔，對應的測試就會失敗。
+  - CLAUDE.md 有規定：測試不可以連外網，實測存下的原始 JSON 要放在
+    src/test/resources/ 當測試資料。src/test/resources/quotes/ 的行情 JSON
+    也是這樣 commit 進去的。
+  - 這些檔案也是證據，證明解析是照官方真正的格式寫的，不是自己編的格式。主考官或
+    面試官問起來可以直接指給他看。
+
+  大小和內容
+  - 8 個檔加起來約 240 KB。比較大的兩個是
+    twse-twt49u-20250601-20250731.json（131 KB）和
+    tpex-ex-daily-q-20250601-20250731.json（95 KB），其他都在 5 KB 以下。
+  - 內容都是證交所、櫃買中心公開的除權息資料，沒有密碼、token
+    或個人資料，可以放在公開的 repo。
+  - 不能留的是 02、10 這兩個整年的檔案（約 230
+    KB），它們本來就沒有複製進來，還在 api-test/ 資料夾。
+
+  兩個大檔可以裁小，但不建議。測試會檢查「673 列」「481 列」，也會把整份 2025 年
+  6～7 月的資料跑一遍，驗證「息 638 筆全部官方；權 3 筆官方、3 筆估算；權息 29
+  筆全部無法取得」。裁掉後這些檢查就沒了，檔案內容也不再是官方原始的回應。
+
+  所以照上一則的做法，git add src/test/ 就會把 JSON 和測試一起加進去。
+
+✻ Baked for 9s · done 上午3:41
+
+> 好，檔案都commit了，確認要補充的文件                                          
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● 確認過了：工作目錄是乾淨的，這一階段的程式和測試已經在 917e3d0 和 fb2647a 兩個
+  commit 裡。這一階段不需要現在寫進 repo 的文件，只剩 ai-log
+  要匯出，下面逐項說明。
+
+  文件逐項確認（照 CLAUDE.md 5.3）
+
+  文件: README.md
+  這一階段要不要動: 現在不用
+  說明: 照之前講好的，第 6 題驗證後一起提出草稿。待補清單見下面
+  ────────────────────────────────────────
+  文件: TESTLOG.md
+  這一階段要不要動: 不用
+  說明: 這一階段沒有你實際操作時發現的問題
+  ────────────────────────────────────────
+  文件: REVIEW.md
+  這一階段要不要動: 不動
+  說明: 你說過現在不要動；素材先記在設計文件第 16 節（見下面）
+  ────────────────────────────────────────
+  文件: SECURITY.md
+  這一階段要不要動: 不用
+  說明: 這一階段沒有新增或升級任何相依套件
+  ────────────────────────────────────────
+  文件: ai-log/
+  這一階段要不要動: 要補
+  說明: 最新一份是 2026-11-25-025713，是這一階段開始之前的對話。請用 /export
+    匯出這次對話放進去，commit 前檢查有沒有密碼或 token
+  ────────────────────────────────────────
+  文件: src/test/resources/dividends/README.md
+  這一階段要不要動: 已完成
+  說明: 已經在 fb2647a 裡
+
+  README 待補清單（累積到第 6 題驗證後）
+
+  1. 新的環境變數 DIVIDEND_READ_TIMEOUT（預設 20 秒）：除權息 API
+     等待回應的上限，只在背景排程使用。
+  2. 「更換行情主機」那一段要補一句：除權息的三支 API 也用
+     TWSE_BASE_URL、TPEX_BASE_URL，路徑和參數不變。
+
+  設計文件第 16 節的素材（給第 9 題 REVIEW.md）
+
+  設計文件是你的檔案，我不會自己改。下面三列你可以直接貼上：
+
+  | 4a | 第 1 階段寫的 `DividendKind.STOCK` 註解是「權：只配股」，實測 3311
+  閎暉的「權」只有現金增資、沒有配股；4a 改成「權：除權（配股或現金增資）」 | AI
+  給錯、被實測資料抓到 |
+  | 4a | CLI 建議 `git add src/`，但沒有提醒 main 和 test 不能分開 commit；結果
+  main 先 commit（917e3d0），單獨這個 commit 測試編譯不過（`QuoteProperties`
+  多了欄位，`RefreshTestSupport` 還沒跟著改），補上 test 的
+  commit（fb2647a）後才通過 | AI 遺漏提醒 |
+  | 4a | CLI 寫測試時留下一行沒有意義的斷言和沒用到的
+  import，執行測試前自己發現並刪掉 | AI 自我更正 |
+
+  接下來
+
+  1. 匯出 ai-log，commit（例如 docs: 新增第6題 AI 對話紀錄-4）。
+  2. push 分支、開 PR，用一般 merge 合併回 master，不要用 squash merge。
+  3. 合併後照 CLAUDE.md 第 5 節，在另一個資料夾重新 clone，照 README
+     從頭啟動一次。這一階段網頁沒有變，能正常啟動、打開清單頁就算通過。
+
+  4b 等你通知再開始。
+
+✻ Cooked for 19s · done 上午3:43
