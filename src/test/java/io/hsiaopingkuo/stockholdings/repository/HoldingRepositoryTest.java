@@ -4,15 +4,20 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.List;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest;
 import org.springframework.dao.DataIntegrityViolationException;
 
+import io.hsiaopingkuo.stockholdings.dto.HoldingListItem;
 import io.hsiaopingkuo.stockholdings.entity.Holding;
 import io.hsiaopingkuo.stockholdings.entity.Market;
+import io.hsiaopingkuo.stockholdings.entity.Quote;
+import io.hsiaopingkuo.stockholdings.quote.DailyQuote;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceException;
 
@@ -105,5 +110,45 @@ class HoldingRepositoryTest {
 		assertThat(holdingRepository.findAllByOrderByCodeAsc())
 				.extracting(Holding::getCode)
 				.containsExactly("0050", "2330", "6488");
+	}
+
+	// ===== 第 3 題：清單 = 持股 LEFT JOIN 行情快取 =====
+
+	@Autowired
+	private QuoteRepository quoteRepository;
+
+	@Test
+	void 清單查詢_帶出收盤價與兩個日期_沒有行情的持股也列出來_依代號排序() {
+		LocalDate nov23 = LocalDate.of(2026, 11, 23);
+		LocalDate nov24 = LocalDate.of(2026, 11, 24);
+		holdingRepository.saveAndFlush(holding("6488", 1, new BigDecimal("450.00")));
+		holdingRepository.saveAndFlush(holding("2330", 1, new BigDecimal("1000.00")));
+		// 6488：11/24 無成交，最近一次成交是 11/23；2330 沒有行情
+		Quote quote = new Quote(DailyQuote.ofDay("6488", "環球晶", Market.TPEX, nov23, new BigDecimal("460.50")), NOW);
+		quote.apply(DailyQuote.ofDay("6488", "環球晶", Market.TPEX, nov24, null), NOW);
+		quoteRepository.saveAndFlush(quote);
+		entityManager.clear();
+
+		List<HoldingListItem> rows = holdingRepository.findAllForList();
+
+		assertThat(rows).extracting(HoldingListItem::code).containsExactly("2330", "6488");
+		HoldingListItem noQuote = rows.get(0);
+		assertThat(noQuote.closePrice()).isNull();
+		assertThat(noQuote.hasClosePrice()).isFalse();
+		HoldingListItem gw = rows.get(1);
+		assertThat(gw.closePrice()).isEqualByComparingTo("460.50");
+		assertThat(gw.closeDate()).isEqualTo(nov23);
+		assertThat(gw.latestTradeDate()).isEqualTo(nov24);
+		assertThat(gw.showsEarlierClose()).isTrue();
+	}
+
+	@Test
+	void 清單查詢_持股沒有名稱時用行情快取的名稱() {
+		holdingRepository.saveAndFlush(new Holding("2330", null, null, 1, new BigDecimal("1000.00"), NOW));
+		quoteRepository.saveAndFlush(new Quote(
+				DailyQuote.ofDay("2330", "台積電", Market.TWSE, LocalDate.of(2026, 11, 23), new BigDecimal("2030.00")), NOW));
+		entityManager.clear();
+
+		assertThat(holdingRepository.findAllForList().get(0).name()).isEqualTo("台積電");
 	}
 }

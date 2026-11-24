@@ -11,6 +11,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
+import io.hsiaopingkuo.stockholdings.dto.HoldingListItem;
 import io.hsiaopingkuo.stockholdings.entity.Holding;
 import io.hsiaopingkuo.stockholdings.exception.DuplicateCodeException;
 import io.hsiaopingkuo.stockholdings.exception.HoldingNotFoundException;
@@ -42,8 +43,9 @@ public class HoldingService {
 		this.clock = clock;
 	}
 
-	public List<Holding> findAll() {
-		return holdingRepository.findAllByOrderByCodeAsc();
+	/** 清單頁：持股加上收盤價。只讀資料庫（行情快取），不呼叫官方，打開清單才不會每次都打官方。 */
+	public List<HoldingListItem> findAllForList() {
+		return holdingRepository.findAllForList();
 	}
 
 	public Holding findById(Long id) {

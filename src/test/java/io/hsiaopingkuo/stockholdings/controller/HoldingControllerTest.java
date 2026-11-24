@@ -31,6 +31,7 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.test.web.servlet.MockMvc;
 
+import io.hsiaopingkuo.stockholdings.dto.HoldingListItem;
 import io.hsiaopingkuo.stockholdings.entity.Holding;
 import io.hsiaopingkuo.stockholdings.entity.Market;
 import io.hsiaopingkuo.stockholdings.exception.DuplicateCodeException;
@@ -64,12 +65,66 @@ class HoldingControllerTest {
 		return h;
 	}
 
+	private static final LocalDate NOV_23 = LocalDate.of(2026, 11, 23);
+	private static final LocalDate NOV_24 = LocalDate.of(2026, 11, 24);
+
+	/** 清單的一列；收盤價、兩個日期都可以是 null（沒有行情）。 */
+	private static HoldingListItem row(long id, String code, String name, Market market, int lots, String buyPrice,
+			String closePrice, LocalDate closeDate, LocalDate latestTradeDate) {
+		return new HoldingListItem(id, code, name, market, lots, new BigDecimal(buyPrice),
+				closePrice == null ? null : new BigDecimal(closePrice), closeDate, latestTradeDate);
+	}
+
+	private static HoldingListItem rowWithoutQuote(long id, String code, String name, Market market, int lots,
+			String buyPrice) {
+		return row(id, code, name, market, lots, buyPrice, null, null, null);
+	}
+
+	@Test
+	void 清單顯示收盤價與日期() throws Exception {
+		given(holdingService.findAllForList()).willReturn(List.of(
+				row(1, "2330", "台積電", Market.TWSE, 1, "1000.00", "2030.00", NOV_23, NOV_23)));
+
+		mockMvc.perform(get("/holdings"))
+				.andExpect(status().isOk())
+				.andExpect(content().string(containsString("收盤價日期")))
+				.andExpect(content().string(containsString("2,030.00")))
+				.andExpect(content().string(containsString("2026-11-23")))
+				// 比對完整的格子和提示句：HTML 註解裡也有「未取得」這幾個字
+				.andExpect(content().string(not(containsString("無成交，顯示"))))
+				.andExpect(content().string(not(containsString("<td>未取得</td>"))));
+	}
+
+	@Test
+	void 最近交易日沒有成交_顯示前一個有成交日的收盤價並提示() throws Exception {
+		given(holdingService.findAllForList()).willReturn(List.of(
+				row(1, "6488", "環球晶", Market.TPEX, 1, "450.00", "460.50", NOV_23, NOV_24)));
+
+		mockMvc.perform(get("/holdings"))
+				.andExpect(status().isOk())
+				.andExpect(content().string(containsString("460.50")))
+				.andExpect(content().string(containsString("2026-11-24 無成交，顯示 2026-11-23 收盤價")));
+	}
+
+	@Test
+	void 沒有行情或從沒成交過_收盤價顯示未取得_頁面正常() throws Exception {
+		given(holdingService.findAllForList()).willReturn(List.of(
+				rowWithoutQuote(1, "2330", "台積電", Market.TWSE, 1, "1000.00"),
+				// 有行情但從沒成交過：收盤價是 null
+				row(2, "1234", "測試股", Market.TWSE, 1, "10.00", null, null, NOV_24)));
+
+		mockMvc.perform(get("/holdings"))
+				.andExpect(status().isOk())
+				.andExpect(content().string(containsString("<td>未取得</td>")))
+				.andExpect(content().string(not(containsString("無成交，顯示"))));
+	}
+
 	@Test
 	void 清單顯示名稱與市場_舊資料沒有時顯示破折號() throws Exception {
-		given(holdingService.findAll()).willReturn(List.of(
-				holding(1, "2330", "台積電", Market.TWSE, 1, "1000.00"),
-				holding(2, "6488", "環球晶", Market.TPEX, 1, "460.50"),
-				holding(3, "0050", null, null, 1, "150.00")));
+		given(holdingService.findAllForList()).willReturn(List.of(
+				rowWithoutQuote(1, "2330", "台積電", Market.TWSE, 1, "1000.00"),
+				rowWithoutQuote(2, "6488", "環球晶", Market.TPEX, 1, "460.50"),
+				rowWithoutQuote(3, "0050", null, null, 1, "150.00")));
 
 		mockMvc.perform(get("/holdings"))
 				.andExpect(status().isOk())
@@ -174,7 +229,7 @@ class HoldingControllerTest {
 
 	@Test
 	void 新增表單有即時提示的位置和查詢網址() throws Exception {
-		given(holdingService.findAll()).willReturn(List.of());
+		given(holdingService.findAllForList()).willReturn(List.of());
 
 		mockMvc.perform(get("/holdings"))
 				.andExpect(status().isOk())
@@ -194,9 +249,9 @@ class HoldingControllerTest {
 
 	@Test
 	void 清單頁顯示所有持股() throws Exception {
-		given(holdingService.findAll()).willReturn(List.of(
-				holding(1, "0050", 2, "150.00"),
-				holding(2, "2330", 1, "1000.00")));
+		given(holdingService.findAllForList()).willReturn(List.of(
+				rowWithoutQuote(1, "0050", null, null, 2, "150.00"),
+				rowWithoutQuote(2, "2330", null, null, 1, "1000.00")));
 
 		mockMvc.perform(get("/holdings"))
 				.andExpect(status().isOk())
@@ -207,7 +262,7 @@ class HoldingControllerTest {
 
 	@Test
 	void 沒有持股時顯示提示() throws Exception {
-		given(holdingService.findAll()).willReturn(List.of());
+		given(holdingService.findAllForList()).willReturn(List.of());
 
 		mockMvc.perform(get("/holdings"))
 				.andExpect(status().isOk())

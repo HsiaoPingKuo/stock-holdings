@@ -155,7 +155,8 @@ public class HoldingController {
 	}
 
 	private String showList(Model model) {
-		model.addAttribute("holdings", holdingService.findAll());
+		// 第 3 題：收盤價來自資料庫的行情快取，這裡不會呼叫官方；官方連不上時清單照常顯示
+		model.addAttribute("holdings", holdingService.findAllForList());
 		return "holdings";
 	}
 }
