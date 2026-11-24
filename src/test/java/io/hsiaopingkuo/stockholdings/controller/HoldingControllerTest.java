@@ -11,6 +11,7 @@ import static org.mockito.BDDMockito.willThrow;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.flash;
@@ -27,11 +28,13 @@ import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
+import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.test.web.servlet.MockMvc;
 
+import io.hsiaopingkuo.stockholdings.config.SecurityConfig;
 import io.hsiaopingkuo.stockholdings.calc.HoldingReplayCalculator;
 import io.hsiaopingkuo.stockholdings.calc.PortfolioSummary;
 import io.hsiaopingkuo.stockholdings.calc.SummaryCalculator;
@@ -58,6 +61,8 @@ import io.hsiaopingkuo.stockholdings.support.TestHoldings;
  * Service 用假的（MockitoBean），業務規則另外在 HoldingServiceTest 測。
  */
 @WebMvcTest(HoldingController.class)
+// @WebMvcTest 不會載入一般的 @Configuration；不 import 的話會套用 Spring Security 預設（全部要登入）
+@Import(SecurityConfig.class)
 class HoldingControllerTest {
 
 	@Autowired
@@ -281,7 +286,7 @@ class HoldingControllerTest {
 	void 查無此代號_表單顯示錯誤且不導頁() throws Exception {
 		given(holdingService.create(anyString(), anyInt(), any())).willThrow(new StockCodeNotFoundException("9999"));
 
-		mockMvc.perform(post("/holdings").param("code", "9999").param("lots", "1").param("buyPrice", "1000"))
+		mockMvc.perform(post("/holdings").with(csrf()).param("code", "9999").param("lots", "1").param("buyPrice", "1000"))
 				.andExpect(status().isOk())
 				.andExpect(content().string(containsString("查無此股票代號：9999（上市、上櫃都找不到）")));
 	}
@@ -290,7 +295,7 @@ class HoldingControllerTest {
 	void 官方連不上_表單顯示稍後再試且保留輸入內容() throws Exception {
 		given(holdingService.create(anyString(), anyInt(), any())).willThrow(new MarketUnavailableException());
 
-		mockMvc.perform(post("/holdings").param("code", "2330").param("lots", "3").param("buyPrice", "1000"))
+		mockMvc.perform(post("/holdings").with(csrf()).param("code", "2330").param("lots", "3").param("buyPrice", "1000"))
 				.andExpect(status().isOk())
 				.andExpect(content().string(containsString("暫時無法連線官方網站確認代號，請稍後再試")))
 				// 使用者不用重打：剛才輸入的值還在表單上
@@ -302,7 +307,7 @@ class HoldingControllerTest {
 	void 兩個市場無法判斷_表單顯示請聯絡管理者且不導頁() throws Exception {
 		given(holdingService.create(anyString(), anyInt(), any())).willThrow(new MarketAmbiguousException("1234"));
 
-		mockMvc.perform(post("/holdings").param("code", "1234").param("lots", "1").param("buyPrice", "10"))
+		mockMvc.perform(post("/holdings").with(csrf()).param("code", "1234").param("lots", "1").param("buyPrice", "10"))
 				.andExpect(status().isOk())
 				.andExpect(content().string(containsString("無法判斷 1234 是上市或上櫃，請聯絡管理者")));
 	}
@@ -435,7 +440,7 @@ class HoldingControllerTest {
 	void 新增成功後導回清單() throws Exception {
 		given(holdingService.create("2330", 1, new BigDecimal("1000"))).willReturn(holding(1, "2330"));
 
-		mockMvc.perform(post("/holdings").param("code", " 2330 ").param("lots", "1").param("buyPrice", "1000"))
+		mockMvc.perform(post("/holdings").with(csrf()).param("code", " 2330 ").param("lots", "1").param("buyPrice", "1000"))
 				.andExpect(status().is3xxRedirection())
 				.andExpect(redirectedUrl("/holdings"))
 				.andExpect(flash().attribute("message", "已新增 2330"));
@@ -447,14 +452,14 @@ class HoldingControllerTest {
 	void 重複代號_表單顯示錯誤() throws Exception {
 		given(holdingService.create(anyString(), anyInt(), any())).willThrow(new DuplicateCodeException("2330"));
 
-		mockMvc.perform(post("/holdings").param("code", "2330").param("lots", "1").param("buyPrice", "1000"))
+		mockMvc.perform(post("/holdings").with(csrf()).param("code", "2330").param("lots", "1").param("buyPrice", "1000"))
 				.andExpect(status().isOk())
 				.andExpect(content().string(containsString("2330 已在持股中")));
 	}
 
 	@Test
 	void 代號空白_顯示請輸入且不儲存() throws Exception {
-		mockMvc.perform(post("/holdings").param("code", "   ").param("lots", "1").param("buyPrice", "1000"))
+		mockMvc.perform(post("/holdings").with(csrf()).param("code", "   ").param("lots", "1").param("buyPrice", "1000"))
 				.andExpect(status().isOk())
 				.andExpect(content().string(containsString("請輸入股票代號")));
 		verify(holdingService, never()).create(anyString(), anyInt(), any());
@@ -462,7 +467,7 @@ class HoldingControllerTest {
 
 	@Test
 	void 代號含英數字以外的字元_顯示錯誤() throws Exception {
-		mockMvc.perform(post("/holdings").param("code", "23-30").param("lots", "1").param("buyPrice", "1000"))
+		mockMvc.perform(post("/holdings").with(csrf()).param("code", "23-30").param("lots", "1").param("buyPrice", "1000"))
 				.andExpect(status().isOk())
 				.andExpect(content().string(containsString("股票代號只能是英文字母或數字")));
 		verify(holdingService, never()).create(anyString(), anyInt(), any());
@@ -470,7 +475,7 @@ class HoldingControllerTest {
 
 	@Test
 	void 代號超過10個字_顯示錯誤() throws Exception {
-		mockMvc.perform(post("/holdings").param("code", "12345678901").param("lots", "1").param("buyPrice", "1000"))
+		mockMvc.perform(post("/holdings").with(csrf()).param("code", "12345678901").param("lots", "1").param("buyPrice", "1000"))
 				.andExpect(status().isOk())
 				.andExpect(content().string(containsString("股票代號最多 10 個字")));
 	}
@@ -478,7 +483,7 @@ class HoldingControllerTest {
 	@Test
 	void 張數超出範圍_顯示錯誤() throws Exception {
 		for (String lots : new String[] { "0", "1000" }) {
-			mockMvc.perform(post("/holdings").param("code", "2330").param("lots", lots).param("buyPrice", "1000"))
+			mockMvc.perform(post("/holdings").with(csrf()).param("code", "2330").param("lots", lots).param("buyPrice", "1000"))
 					.andExpect(status().isOk())
 					.andExpect(content().string(containsString("張數必須是 1～999 的整數")));
 		}
@@ -487,7 +492,7 @@ class HoldingControllerTest {
 
 	@Test
 	void 張數是小數_不會被截成整數而是顯示錯誤() throws Exception {
-		mockMvc.perform(post("/holdings").param("code", "2330").param("lots", "1.5").param("buyPrice", "1000"))
+		mockMvc.perform(post("/holdings").with(csrf()).param("code", "2330").param("lots", "1.5").param("buyPrice", "1000"))
 				.andExpect(status().isOk())
 				.andExpect(content().string(containsString("張數必須是 1～999 的整數")));
 		verify(holdingService, never()).create(anyString(), anyInt(), any());
@@ -495,14 +500,14 @@ class HoldingControllerTest {
 
 	@Test
 	void 買進價不大於0_顯示錯誤() throws Exception {
-		mockMvc.perform(post("/holdings").param("code", "2330").param("lots", "1").param("buyPrice", "0"))
+		mockMvc.perform(post("/holdings").with(csrf()).param("code", "2330").param("lots", "1").param("buyPrice", "0"))
 				.andExpect(status().isOk())
 				.andExpect(content().string(containsString("買進價必須大於 0")));
 	}
 
 	@Test
 	void 買進價超過兩位小數_顯示錯誤() throws Exception {
-		mockMvc.perform(post("/holdings").param("code", "2330").param("lots", "1").param("buyPrice", "10.123"))
+		mockMvc.perform(post("/holdings").with(csrf()).param("code", "2330").param("lots", "1").param("buyPrice", "10.123"))
 				.andExpect(status().isOk())
 				.andExpect(content().string(containsString("買進價最多兩位小數")));
 		verify(holdingService, never()).create(anyString(), anyInt(), any());
@@ -510,7 +515,7 @@ class HoldingControllerTest {
 
 	@Test
 	void 買進價不是數字_顯示錯誤() throws Exception {
-		mockMvc.perform(post("/holdings").param("code", "2330").param("lots", "1").param("buyPrice", "abc"))
+		mockMvc.perform(post("/holdings").with(csrf()).param("code", "2330").param("lots", "1").param("buyPrice", "abc"))
 				.andExpect(status().isOk())
 				.andExpect(content().string(containsString("買進價必須是數字")));
 	}
@@ -530,7 +535,7 @@ class HoldingControllerTest {
 	void 修改成功後導回清單() throws Exception {
 		given(holdingService.update(1L, 2, new BigDecimal("980.5"))).willReturn(holding(1, "2330"));
 
-		mockMvc.perform(post("/holdings/1").param("lots", "2").param("buyPrice", "980.5"))
+		mockMvc.perform(post("/holdings/1").with(csrf()).param("lots", "2").param("buyPrice", "980.5"))
 				.andExpect(status().is3xxRedirection())
 				.andExpect(redirectedUrl("/holdings"))
 				.andExpect(flash().attribute("message", "已修改 2330"));
@@ -540,7 +545,7 @@ class HoldingControllerTest {
 	void 修改時欄位錯誤_留在修改頁顯示錯誤() throws Exception {
 		given(holdingService.findById(1L)).willReturn(holding(1, "2330"));
 
-		mockMvc.perform(post("/holdings/1").param("lots", "1000").param("buyPrice", "1000"))
+		mockMvc.perform(post("/holdings/1").with(csrf()).param("lots", "1000").param("buyPrice", "1000"))
 				.andExpect(status().isOk())
 				.andExpect(content().string(containsString("修改持股")))
 				.andExpect(content().string(containsString("張數必須是 1～999 的整數")));
@@ -549,7 +554,7 @@ class HoldingControllerTest {
 
 	@Test
 	void 刪除後導回清單() throws Exception {
-		mockMvc.perform(post("/holdings/1/delete"))
+		mockMvc.perform(post("/holdings/1/delete").with(csrf()))
 				.andExpect(status().is3xxRedirection())
 				.andExpect(redirectedUrl("/holdings"));
 		verify(holdingService).delete(1L);
@@ -559,7 +564,7 @@ class HoldingControllerTest {
 	void 刪除已不存在的持股_導回清單並顯示訊息而不是錯誤頁() throws Exception {
 		willThrow(new HoldingNotFoundException(99L)).given(holdingService).delete(eq(99L));
 
-		mockMvc.perform(post("/holdings/99/delete"))
+		mockMvc.perform(post("/holdings/99/delete").with(csrf()))
 				.andExpect(status().is3xxRedirection())
 				.andExpect(redirectedUrl("/holdings"))
 				.andExpect(flash().attribute("errorMessage", "找不到這筆持股（id=99），可能已被刪除"));
@@ -621,7 +626,7 @@ class HoldingControllerTest {
 		// 例如修改頁開著時，App 2.0 加了一筆交易
 		given(holdingService.update(1L, 2, new BigDecimal("980.5"))).willThrow(new UpgradeRequiredException());
 
-		mockMvc.perform(post("/holdings/1").param("lots", "2").param("buyPrice", "980.5"))
+		mockMvc.perform(post("/holdings/1").with(csrf()).param("lots", "2").param("buyPrice", "980.5"))
 				.andExpect(status().is3xxRedirection())
 				.andExpect(redirectedUrl("/holdings"))
 				.andExpect(flash().attribute("errorMessage", WEB_UPGRADE_MESSAGE));
@@ -631,7 +636,7 @@ class HoldingControllerTest {
 	void 刪除_不符合條件_導回清單顯示訊息而不是錯誤頁() throws Exception {
 		willThrow(new UpgradeRequiredException()).given(holdingService).delete(eq(1L));
 
-		mockMvc.perform(post("/holdings/1/delete"))
+		mockMvc.perform(post("/holdings/1/delete").with(csrf()))
 				.andExpect(status().is3xxRedirection())
 				.andExpect(redirectedUrl("/holdings"))
 				.andExpect(flash().attribute("errorMessage", WEB_UPGRADE_MESSAGE));
@@ -645,7 +650,7 @@ class HoldingControllerTest {
 		mockMvc.perform(get("/holdings/1/edit"))
 				.andExpect(redirectedUrl("/holdings"))
 				.andExpect(flash().attribute("errorMessage", "這筆持股的交易資料異常，請聯絡管理者"));
-		mockMvc.perform(post("/holdings/1/delete"))
+		mockMvc.perform(post("/holdings/1/delete").with(csrf()))
 				.andExpect(redirectedUrl("/holdings"))
 				.andExpect(flash().attribute("errorMessage", "這筆持股正在被其他裝置修改，請稍後再試"));
 	}
@@ -655,7 +660,7 @@ class HoldingControllerTest {
 		given(holdingService.findAllForList()).willReturn(List.of());
 		given(holdingService.create(anyString(), anyInt(), any())).willThrow(new HoldingBusyException(null));
 
-		mockMvc.perform(post("/holdings").param("code", "2330").param("lots", "1").param("buyPrice", "1000"))
+		mockMvc.perform(post("/holdings").with(csrf()).param("code", "2330").param("lots", "1").param("buyPrice", "1000"))
 				.andExpect(status().isOk())
 				.andExpect(model().attributeHasFieldErrors("createForm", "code"))
 				.andExpect(content().string(containsString("這筆持股正在被其他裝置修改，請稍後再試")));

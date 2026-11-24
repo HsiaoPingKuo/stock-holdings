@@ -14,9 +14,14 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Import;
 import org.springframework.test.web.servlet.MockMvc;
 
+import io.hsiaopingkuo.stockholdings.config.SecurityConfig;
+
 @WebMvcTest(HomeController.class)
+// @WebMvcTest 不會載入一般的 @Configuration；不 import 的話會套用 Spring Security 預設（全部要登入）
+@Import(SecurityConfig.class)
 class HomeControllerTest {
 
 	// UTC 06:00 = 台北 14:00；頁面要顯示 14:00 才代表真的用台北時區

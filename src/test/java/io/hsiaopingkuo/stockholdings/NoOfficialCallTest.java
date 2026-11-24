@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.containsString;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -111,7 +112,7 @@ class NoOfficialCallTest {
 				.andExpect(status().isOk())
 				.andExpect(jsonPath("$.name").value("環球晶"))
 				.andExpect(jsonPath("$.market").value("TPEX"));
-		mockMvc.perform(post("/holdings").param("code", "6488").param("lots", "1").param("buyPrice", "450"))
+		mockMvc.perform(post("/holdings").with(csrf()).param("code", "6488").param("lots", "1").param("buyPrice", "450"))
 				.andExpect(redirectedUrl("/holdings"));
 
 		assertThat(holdingRepository.findAll()).singleElement()
