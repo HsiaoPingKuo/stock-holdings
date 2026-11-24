@@ -1,0 +1,3508 @@
+ ▐▛███▛█   Claude Code v2.1.329
+▝▜██████▀  Opus 5.5 · Claude Pro
+ ▝▝   ▝▝   C:\TKA102_JavaApp\Workspace_for_practice\stock-holdings
+
+
+> /clear                                                                        
+
+> 【規則】                                                                      
+  請先讀 CLAUDE.md。這次只做「提案」，不要修改任何檔案。                        
+  列出做法、要新增或修改的檔案、建議的 commit 拆法，等我回覆「同意」才動手。    
+                                                                                
+  【任務資料開始】                                                              
+  第 5 題：給手機 App 用的 API（分支 feature/q5-app-api-v1，從目前的 master     
+  開出）。                                                                      
+  規格在 考試用檔案/持股記帳上機考_PartA與附件-曉平.pdf 的附件《App 1.0 API     
+  規格》，                                                                      
+  請「完全照規格實作，欄位名稱、型別、HTTP 狀態碼都要一樣」。App                
+  已經發布，不會再改。                                                          
+                                                                                
+  ■ 規格重點（以 PDF 原文為準，下面是摘要）                                     
+  - 路徑開頭一律 /api/v1，回應 JSON（UTF-8）                                    
+  - 欄位名稱小寫加底線（buy_price，不是 buyPrice）                              
+  - 金額（pnl、total_cost、market_value）是整數，單位元                         
+  - 價格是數字，最多兩位小數；日期 YYYY-MM-DD（西元）                           
+  - 少了規格上的欄位、或型別不對，App 會顯示「資料格式錯誤」；App               
+  會忽略不認得的欄位                                                            
+  - 錯誤格式一律：{ "error": { "code": "DUPLICATE_CODE", "message": "2330       
+  已在持股中" } }，App 直接顯示 message                                         
+  - API 清單：                                                                  
+    GET    /api/v1/holdings       200 持股物件陣列，沒有持股回 []               
+    GET    /api/v1/holdings/{id}  200 持股物件；404 NOT_FOUND                   
+    POST   /api/v1/holdings       201 新建的持股物件；400 VALIDATION_ERROR、404 
+  STOCK_NOT_FOUND、409 DUPLICATE_CODE                                           
+    PUT    /api/v1/holdings/{id}  200 修改後的持股物件；400                     
+  VALIDATION_ERROR、404 NOT_FOUND                                               
+    DELETE /api/v1/holdings/{id}  204 沒有內容；404 NOT_FOUND                   
+    GET    /api/v1/summary        200 總計物件                                  
+  - POST 請求：{ "code": "2330", "lots": 1, "buy_price": 1000 }                 
+  - PUT 請求（代號不能改）：{ "lots": 2, "buy_price": 980.5 }                   
+  - 持股物件：id（整數）、code（字串）、name（字串）、market（"TWSE" 或         
+  "TPEX"）、lots（整數）、                                                      
+    buy_price（數字）、current_price（數字或 null）、price_date（字串或         
+  null）、                                                                      
+    pnl（整數或 null）、return_pct（數字或 null）                               
+  - 總計物件：total_cost、market_value、pnl（整數）、return_pct（數字）、quote_ 
+  missing（整數）                                                               
+                                                                                
+  ■ 規格以外、我已經決定的事                                                    
+  1. 新增時兩種規格沒有定義的情況，照規格的錯誤格式回 503：                     
+     - 官方連不上、無法確認代號：503，code QUOTE_UNAVAILABLE，                  
+       message「暫時無法連線官方網站確認代號，請稍後再試」                      
+     - 兩邊都查到且日期相同：503，code MARKET_UNDETERMINED，                    
+       message「無法判斷 {代號} 是上市或上櫃，請聯絡管理者」                    
+       （/holdings/lookup 目前也是回 503 QUOTE_UNAVAILABLE，兩邊一致）          
+  2. 新增的流程、時間預算、同時查詢上限，和網頁新增「完全共用」同一個           
+  service（第 3 題 F-01 修好的那一套）。                                        
+  3. 計算一律共用第 4 題的 calc                                                 
+  套件（ProfitCalculator、SummaryCalculator），不可以另外寫一套。               
+  4. 全部持股都沒有收盤價時，網頁顯示「—」，但 API                              
+  的總計照規格回數字（0），不可以回 null。                                      
+                                                                                
+  ■ 容易漏掉的陷阱（請在提案中說明各自怎麼處理）                                
+  1. 型別要嚴格（App 不會先檢查輸入，你填什麼就送什麼）：                       
+     - lots 送 1.5 → 400，不可以被截成 1                                        
+     - lots 送 "1"（字串）、buy_price 送 "1000"（字串）→ 400。                  
+       注意 Jackson 預設會把字串自動轉成數字，要關掉這個自動轉換。              
+       Spring Boot 4 用的是 Jackson 3（套件 tools.jackson），設定方式和 3.x     
+  不同，請先確認。                                                              
+     - buy_price 送 1000（整數）要接受；超過兩位小數（980.555）→ 400            
+     - 欄位缺少、null、JSON 格式壞掉、Content-Type 不對 → 400                   
+  VALIDATION_ERROR，照錯誤格式                                                  
+  2. 「所有」錯誤都要是 {"error":{...}} 格式，包括：                            
+     路徑不存在（404）、方法不支援（405）、{id}                                 
+  不是數字、非預期的例外（500，不可以露出 stack trace）。                       
+     請列出每一種情況回的狀態碼和 code。                                        
+  3. 值是 null 的欄位一定要輸出（"current_price":                               
+  null），不可以省略。確認沒有全域設定 NON_NULL。                               
+  4. name、market 規格是字串，不可以是 null：                                   
+     第 2 題時存的舊持股可能還沒補到名稱或市場。請說明這種情況怎麼回，才不會讓  
+  App 顯示「資料格式錯誤」                                                      
+     （例如 name 用 quote 的名稱、再沒有就用空字串；market                      
+  沒有時怎麼辦請提出方案讓我決定）。                                            
+  5. 價格輸出：buy_price、current_price 用 BigDecimal 輸出成數字（例如          
+  1000.00），不要輸出成字串。                                                   
+  6. price_date 用收盤價本身的日期（當天無成交時，就是前一個有成交日，和        
+  current_price 對應）。                                                        
+  7. PUT 請求裡如果帶了                                                         
+  code，忽略它（代號不能改），不要因此回錯誤；其他不認得的欄位也忽略。          
+  8. 之後網頁可能會加上 CSRF 防護，/api/v1/** 要能排除，不能影響                
+  App。現在不用實作 CSRF，                                                      
+     但設計上不要讓 API 依賴網頁的 session 或表單。                             
+                                                                                
+  ■ 單元測試（不可以連網）                                                      
+  1. 每一支 API 的成功情況：狀態碼、每個欄位的「型別」（用 jsonPath 檢查        
+  isNumber、isString、nullValue），                                             
+     不只檢查值                                                                 
+  2. 持股沒有收盤價時，current_price、price_date、pnl、return_pct 都是          
+  null，而且欄位存在                                                            
+  3. 沒有持股時 GET /api/v1/holdings 回 []                                      
+  4. POST：400（含 1.5、字串數字、超過兩位小數、缺欄位、JSON 壞掉）、404        
+  STOCK_NOT_FOUND、                                                             
+     409 DUPLICATE_CODE、503 QUOTE_UNAVAILABLE、503 MARKET_UNDETERMINED         
+  5. PUT：200、400、404；帶了 code 時忽略                                       
+  6. DELETE：204（沒有內容）、404                                               
+  7. summary：照第 4 題規則，含 quote_missing；全部沒有收盤價時回數字 0，不是   
+  null                                                                          
+  8. 路徑不存在、方法不支援、{id} 不是數字：都是 {"error":{...}} 格式           
+  9. 用題目的例子 2330、1 張、1000.00、收盤 1100.00 → pnl 93708、return_pct     
+  9.36                                                                          
+                                                                                
+  ■ 手動驗證（請寫出步驟給我）                                                  
+  1. 用 PowerShell 的 Invoke-RestMethod 或 curl 測每一支 API                    
+  2. 用 Android Studio 模擬器安裝 App 1.0（持股記帳-App1.0.apk），設定伺服器    
+  http://10.0.2.2:8080，                                                        
+     測新增、修改、刪除、清單、總計                                             
+  3. 截圖：清單畫面要有至少兩筆持股和總計，存成 screenshots/v1-app1-list.png    
+                                                                                
+  ■ 文件（只提出草稿，我確認後才寫入）                                          
+  - README：App API 一覽、App 1.0 怎麼連（模擬器                                
+  http://10.0.2.2:8080，實體手機用區網 IP、防火牆要開放埠號）、                 
+    規格以外的 503 兩種情況                                                     
+    【任務資料結束】                                                            
+                                                                                
+  【規則】再提醒一次：                                                          
+  - 先提案：做法、新增／修改的檔案、每個陷阱怎麼處理、commit 拆法（格式：feat:  
+  第5題 …），                                                                   
+    等我回覆「同意」才動手。                                                    
+  - 只做第 5 題，範圍外的功能列在「建議（未實作）」。                           
+  - 不要自己 commit；README、TESTLOG、REVIEW 只提出草稿。                       
+  - 完成後回報：改了哪些檔案、我怎麼驗證（含模擬器步驟）、./mvnw test           
+  結果、還沒做的部分。                                                          
+
+  Read 1 file, ran 4 shell commands · 3 failed (ctrl+o to expand)
+
+● PDF 附件規格已讀完（與你的摘要一致），接著讀現有的 service、controller、calc
+  程式碼，確認可以共用哪些部分。
+
+  Ran 7 shell commands (ctrl+o to expand)
+
+● 第 5 題提案：給 App 1.0 用的 /api/v1 API
+
+  結論：新增一個 api 套件，放 REST controller
+  和錯誤處理。新增、修改、刪除完全共用現有的 HoldingService，計算完全共用
+  ProfitCalculator、SummaryCalculator。JSON 的嚴格型別檢查用一個
+  JsonMapperBuilderCustomizer（Spring Boot 提供的「調整 JSON
+  轉換器設定」的掛勾）集中設定。
+
+  有 3 件事要你決定（在最後），決定後我才動手。目前分支 feature/q5-app-api-v1
+  已經在 master 最新的 ff0bf38 上，不用另外開分支。
+
+  ---
+
+  一、做法
+
+  ┌──────────────┬───────────────────────────────────────────────────────────┐
+  │     項目     │                           做法                            │
+  ├──────────────┼───────────────────────────────────────────────────────────┤
+  │              │ api/HoldingApiController，@RestController +               │
+  │ Controller   │ @RequestMapping("/api/v1")，6 支 API。只做「JSON ↔        │
+  │              │ service」的轉換，不放業務規則                             │
+  ├──────────────┼───────────────────────────────────────────────────────────┤
+  │ 新增         │ 呼叫 HoldingService.create(...)，和網頁同一套：時間預算、 │
+  │              │ 同時查詢上限、快取優先都一樣                              │
+  ├──────────────┼───────────────────────────────────────────────────────────┤
+  │              │ 新增、修改、單筆查詢之後，再用「清單同一個查詢、只多加    │
+  │ 回傳持股物件 │ where h.id = :id」讀一次 HoldingListItem。所以 API        │
+  │              │ 和網頁的收盤價、盈虧一定相同                              │
+  ├──────────────┼───────────────────────────────────────────────────────────┤
+  │ 總計         │ SummaryCalculator.summarize(...)，和網頁頁首同一行程式    │
+  ├──────────────┼───────────────────────────────────────────────────────────┤
+  │ 金額輸出     │ pnl、total_cost、market_value 用 longValueExact()         │
+  │              │ 轉成整數（見下方說明）                                    │
+  ├──────────────┼───────────────────────────────────────────────────────────┤
+  │ 價格輸出     │ buy_price、current_price 直接輸出 BigDecimal，資料庫是    │
+  │              │ DECIMAL(12,2)，所以會輸出成數字 1000.00，不是字串         │
+  ├──────────────┼───────────────────────────────────────────────────────────┤
+  │              │ price_date 在 DTO 裡用 ISO_LOCAL_DATE 先轉成字串          │
+  │ 日期輸出     │ "2026-11-12"。不依賴 Jackson 3                            │
+  │              │ 的日期預設值，規格寫什麼就輸出什麼                        │
+  ├──────────────┼───────────────────────────────────────────────────────────┤
+  │ 不碰 session │ API 不讀寫 HttpSession、不用 flash 訊息。測試會確認呼叫   │
+  │              │ API 後沒有建立 session                                    │
+  └──────────────┴───────────────────────────────────────────────────────────┘
+
+  為什麼用 longValueExact()：ProfitCalculator 算出來的盈虧是 93708.00（scale
+  2，也就是帶兩位小數）。直接輸出的話 JSON 會是 93708.00，App
+  可能判定「不是整數」。
+
+  - 價格最多兩位小數，股數是 1000 的倍數，所以金額一定是整數元。
+  - 用 longValueExact()
+    轉換：萬一真的有小數，代表算錯了，會直接丟例外，不會偷偷捨入掉。
+
+  ---
+
+  二、新增／修改的檔案
+
+  新增（main）
+
+  - config/JacksonConfig.java：JSON 嚴格型別檢查（陷阱 1）
+  - api/HoldingApiController.java
+  - api/ApiExceptionHandler.java：只套用在 api 套件，負責業務錯誤、驗證錯誤、500
+  - api/ApiRouteErrorHandler.java：負責「還沒進到 controller」的錯誤，也就是 404
+    路徑不存在、405 方法不支援。只處理 /api/
+    開頭的路徑，其他路徑原樣丟回，網頁的行為不變
+  - dto/ApiHoldingCreateRequest.java、dto/ApiHoldingUpdateRequest.java、dto/ApiH
+    oldingResponse.java、dto/ApiSummaryResponse.java
+
+  修改（main）
+
+  - repository/HoldingRepository.java：
+    - 新增 findListItemById(id)
+    - findAllForList 的 market 改成 coalesce(h.market, q.market)（陷阱
+      4，要你決定）
+  - service/HoldingService.java：新增 findListItem(id)，查不到時丟
+    HoldingNotFoundException
+
+  新增／修改（test）
+
+  - api/HoldingApiControllerTest.java：@SpringBootTest + MockMvc。資料庫是真的
+    H2 記憶體，MarketResolver 用假的，所以不連網。完整走過真實的 Jackson
+    設定、查詢和計算
+  - api/ApiErrorResponseTest.java：各種錯誤的格式，包括 500。500 的測試用
+    @WebMvcTest 搭配假的 service 丟例外
+  - repository/HoldingRepositoryTest.java：補上 findListItemById 和 market
+    補值的測試
+
+  Flyway migration 不需要新增，資料表不變。
+
+  ---
+
+  三、陷阱怎麼處理
+
+  陷阱 1：型別要嚴格
+
+  我先查了實際用到的版本：Spring Boot 4.2.0、Jackson
+  tools.jackson.core:jackson-databind:3.1.8。
+
+  - 怎麼關掉自動轉換：Jackson 3 的「字串轉數字」不是用 DeserializationFeature
+    這類開關控制，要用 coercion config（型別轉換規則）。spring.jackson.*
+    屬性設定不到這一塊，所以要寫 JsonMapperBuilderCustomizer bean，在裡面用
+    withCoercionConfig(...) 設定：
+    - 整數欄位（LogicalType.Integer）：遇到字串、浮點數、布林值 → 失敗。1.5 和
+      1.0 都回 400
+    - 小數欄位（LogicalType.Float，BigDecimal 屬於這類）：遇到字串、布林值 →
+      失敗；遇到整數 → 接受，所以 1000 可以
+    - 文字欄位（LogicalType.Textual）：遇到數字、布林值 → 失敗，所以 "code": 
+      2330 回 400
+  - 我不確定的一點：Jackson 3 的 String 轉換是否完全照 Textual 的 coercion
+    規則。我會先寫測試確認；如果不行，改成只對 code 欄位掛一個自訂的
+    deserializer（負責把 JSON 轉成 Java 物件的類別）。
+  - 會不會影響其他地方：這是全域設定，但影響範圍只有 API 的請求內容：
+    - 網頁表單走 Spring 的資料綁定，不經過 Jackson。
+    - 行情 client 用 readTree 讀成樹狀結構，coercion 規則不會套用。
+    - 現有測試會一起跑，確認沒有被影響。
+  - 不認得的欄位：請求 DTO 明確加上 @JsonIgnoreProperties(ignoreUnknown = 
+    true)，不依賴預設值。
+  - 超過兩位小數：Jackson 解析成 BigDecimal 會保留原文，所以 980.555
+    不會被四捨五入成 980.56，交給 @Digits(fraction = 2) 擋下。
+  - 其他檢查規則：和網頁表單相同，包括 @NotNull、張數 1～999、買進價大於
+    0。代號在 record 的建構子裡先去掉前後空白，再交給 @NotBlank 和 @Pattern
+    檢查，和網頁一樣。
+
+  陷阱 2：所有錯誤都是 {"error":{...}} 格式
+
+  情況: 欄位檢查沒過（缺欄位、null、張數超出範圍、超過兩位小數、代號格式錯）
+  狀態碼: 400
+  code: VALIDATION_ERROR
+  message（示意）:
+  各欄位的訊息依序用「；」串起來，例如「請輸入張數；買進價最多兩位小數」
+  ────────────────────────────────────────
+  情況: 型別不對（1.5、"1"、"1000"）
+  狀態碼: 400
+  code: VALIDATION_ERROR
+  message（示意）: 從例外裡找出是哪個欄位，例如「張數必須是 1～999 的整數」
+  ────────────────────────────────────────
+  情況: JSON 格式壞掉、沒有請求內容
+  狀態碼: 400
+  code: VALIDATION_ERROR
+  message（示意）: 「請求內容不是正確的 JSON」
+  ────────────────────────────────────────
+  情況: Content-Type 不對或沒帶
+  狀態碼: 400
+  code: VALIDATION_ERROR
+  message（示意）: 「請用 application/json 送出」（照你的指定回
+    400，不是標準的 415）
+  ────────────────────────────────────────
+  情況: {id} 找不到
+  狀態碼: 404
+  code: NOT_FOUND
+  message（示意）: 沿用現有訊息「找不到這筆持股（id=…），可能已被刪除」
+  ────────────────────────────────────────
+  情況: {id} 不是數字或太大
+  狀態碼: 404 或 400
+  code: 要你決定（決定 2）
+  message（示意）:
+  ────────────────────────────────────────
+  情況: 代號上市、上櫃都查不到
+  狀態碼: 404
+  code: STOCK_NOT_FOUND
+  message（示意）: 沿用現有訊息
+  ────────────────────────────────────────
+  情況: 代號重複
+  狀態碼: 409
+  code: DUPLICATE_CODE
+  message（示意）: 「2330 已在持股中」
+  ────────────────────────────────────────
+  情況: 官方連不上
+  狀態碼: 503
+  code: QUOTE_UNAVAILABLE
+  message（示意）: 沿用現有訊息，文字和你指定的一字不差
+  ────────────────────────────────────────
+  情況: 兩個市場都查到且日期相同
+  狀態碼: 503
+  code: MARKET_UNDETERMINED
+  message（示意）: 沿用現有訊息，文字和你指定的一字不差
+  ────────────────────────────────────────
+  情況: 路徑不存在（/api/...）
+  狀態碼: 404
+  code: NOT_FOUND
+  message（示意）: 「找不到這個 API：GET /api/v1/xxx」
+  ────────────────────────────────────────
+  情況: 方法不支援（例如 PATCH）
+  狀態碼: 405
+  code: METHOD_NOT_ALLOWED
+  message（示意）: 「不支援 PATCH /api/v1/holdings」
+  ────────────────────────────────────────
+  情況: 非預期的例外
+  狀態碼: 500
+  code: INTERNAL_ERROR
+  message（示意）: 「伺服器發生錯誤，請稍後再試」。stack trace 只寫進伺服器
+    log，不放進回應
+
+  為什麼 404、405 要另外寫一個 handler：
+
+  - 這兩種錯誤發生在 Spring「選 controller」的階段，那時還不知道是哪個
+    controller。
+  - 所以只套用在 api 套件的 @RestControllerAdvice(basePackages = ...)
+    接不到這兩種錯誤。
+  - 因此另外寫一個全域的 handler，只認 /api/
+    開頭的路徑；其他路徑把例外原樣丟回，交給 Spring 預設處理，網頁的 404 照舊。
+  - 測試會同時確認「網頁 404 沒有變成 JSON」。
+
+  Content-Type 錯誤一定接得到：請求的 Content-Type
+  不對時，例外是在讀取請求內容時才丟出，那時已經選好 controller，所以
+  ApiExceptionHandler 接得到。為了這一點，POST 和 PUT 刻意不寫
+  consumes；寫了的話，這個錯誤會提早在選 controller 時發生。
+
+  陷阱 3：null 的欄位也要輸出
+
+  - 我確認過，application.properties 裡沒有設定 default-property-inclusion。
+  - 測試會用 jsonPath(...).value(nullValue()) 搭配
+    exists()，同時確認「欄位存在」而且「值是 null」。
+
+  陷阱 4：name、market 不能是 null
+
+  - name：現有查詢已經寫了 coalesce(h.name, 
+    q.name)，也就是持股沒有名稱時改用行情快取的名稱；兩邊都沒有時，API 輸出
+    ""（空字串）。
+  - market：建議分兩層：
+    a. 查詢改成 coalesce(h.market, 
+       q.market)，持股沒有市場時改用行情快取的市場（quote.market 欄位是 NOT
+       NULL）。只要背景排程抓過一次行情，舊持股就有值。這個改動會讓網頁清單也一
+       起受惠，原本顯示「—」的會改顯示上市或上櫃。
+    b. 連行情快取也沒有時，例如第 2
+       題存的舊持股、官方又一直連不上：要你決定（決定 1）。
+
+  陷阱 5～8
+
+  - 5. 價格輸出成數字：DTO 欄位型別是 BigDecimal，Jackson 會輸出成數字。測試用
+    isNumber() 檢查。
+  - 6. price_date 的來源：用 closeDate，也就是「最近一個有成交日」，和
+    current_price 來自同一列資料。判斷規則沿用
+    HoldingListItem.hasClosePrice()，收盤價是 0 也當成
+    null，和網頁顯示「未取得」完全一致。
+  - 7. PUT 帶了 code：ApiHoldingUpdateRequest 根本沒有 code
+    欄位，再加上「忽略不認得的欄位」的設定，會直接被丟掉，不會回錯誤。
+  - 8. CSRF：API 不用 session、cookie、表單。之後加上 Spring Security 時，只要寫
+    csrf(c -> c.ignoringRequestMatchers("/api/**")) 就能排除。這次不實作，只在
+    controller 的註解寫一行說明。另外，App 是原生
+    Android，不是瀏覽器，不需要設定 CORS（跨網域請求的限制）。
+
+  ---
+
+  四、單元測試對照（全部不連網）
+
+  #: 1
+  測試內容: 6 支 API 的成功情況：狀態碼，加上每個欄位的
+    isNumber、isString、nullValue
+  ────────────────────────────────────────
+  #: 2
+  測試內容: 沒有收盤價：current_price、price_date、pnl、return_pct
+    四個欄位都存在，而且值是 null
+  ────────────────────────────────────────
+  #: 3
+  測試內容: 沒有持股：GET /api/v1/holdings 回 []
+  ────────────────────────────────────────
+  #: 4
+  測試內容: POST 的錯誤：<br>• 400：張數 1.5、1.0、"1"；買進價 "1000"；代號
+    2330（數字）；980.555；缺欄位；null；JSON 壞掉；空內容；text/plain<br>•
+    404 STOCK_NOT_FOUND<br>• 409 DUPLICATE_CODE<br>• 503
+    QUOTE_UNAVAILABLE、MARKET_UNDETERMINED<br>• buy_price:
+    1000（整數）可以接受
+  ────────────────────────────────────────
+  #: 5
+  測試內容: PUT：200；400；404；帶了 code 會被忽略，資料庫裡的代號不變
+  ────────────────────────────────────────
+  #: 6
+  測試內容: DELETE：204 而且內容是空的；404
+  ────────────────────────────────────────
+  #: 7
+  測試內容: summary：包含 quote_missing；全部沒有收盤價時 total_cost
+    有值，market_value、pnl 是數字 0，return_pct 是數字
+  ────────────────────────────────────────
+  #: 8
+  測試內容: 路徑不存在、方法不支援、{id} 不是數字、500：都是 {"error":{...}}
+    格式，而且內容沒有 at io. 這類 stack trace；網頁 404 不受影響
+  ────────────────────────────────────────
+  #: 9
+  測試內容: 題目的例子：2330、1 張、1000.00、收盤 1100.00 → pnl 是
+    93708（isNumber，而且不是 93708.00 這種小數）、return_pct 是 9.36
+  ────────────────────────────────────────
+  #: 另加
+  測試內容: 呼叫 API 後沒有建立 session；中文訊息用 UTF-8 解碼正確
+
+  ---
+
+  五、commit 拆法
+
+  1. feat: 第5題 App API 查詢（持股清單、單筆、總計）與 /api/v1 統一錯誤格式
+  2. feat: 第5題 App API 新增、修改、刪除與 JSON 嚴格型別檢查
+  3. docs: 第5題 README 補上 App API 一覽與 App 1.0 
+     連線方式：等你看過草稿、同意之後才寫入
+  4. docs: 第5題 App 1.0 清單截圖：你截好圖後自己 commit
+  5. docs: 新增第五題 AI 對話紀錄：你自己放進 ai-log/ 並 commit
+
+  每個 commit 結束前，./mvnw test 都要全部通過。
+
+  ---
+
+  六、手動驗證步驟（完成後我會寫成完整版）
+
+  1. 用 curl 測每一支 API
+
+  - 在 PowerShell 裡請用 curl.exe，不要用 Invoke-RestMethod。原因有兩個：
+    - Invoke-RestMethod 遇到 4xx 會直接丟例外，看不到回應內容。
+    - PowerShell 5.1 在回應沒有標明 charset 時會用錯編碼，中文變亂碼。
+  - 先執行一次 chcp 65001，主控台才會正確顯示中文。
+  - 我會給一組指令：新增 2330、新增重複代號、lots=1.5、PUT、DELETE、summary、PAT
+    CH。每一個都寫出預期的狀態碼和內容。
+
+  2. 用模擬器測 App 1.0
+
+  1. Android Studio → Device Manager → 建立 Pixel、API 34 的模擬器並開機。
+  2. 把 ApXpert_Test/Android/持股記帳-App1.0.apk 拖進模擬器視窗安裝。
+  3. 打開 App →「設定」→ 伺服器填 http://10.0.2.2:8080。
+  4. 依序測：新增兩筆（一筆上市、一筆上櫃）→ 清單 → 修改 → 刪除 →
+     新增重複代號（應顯示「已在持股中」）→ 總計。
+
+  3. 截圖：清單畫面要有至少兩筆持股和總計，存成 screenshots/v1-app1-list.png。
+
+  ---
+
+  七、需要你決定
+
+  決定 1：舊持股連行情快取都沒有市場時，market 要回什麼？
+
+  - A（建議）：回空字串 ""。型別正確，App
+    不會因為型別不對而顯示「資料格式錯誤」。風險是 App 如果把 market
+    當成只有兩個值的列舉，可能還是會出錯。
+  - B：暫時回 "TWSE"。App 一定能顯示，但資料可能是錯的。
+  - C：清單不列出這筆。不建議，會讓清單和總計的筆數對不起來。
+
+  可以問主考官的一句話：「第 2 題存的舊持股，如果暫時判斷不出上市或上櫃，API 的
+  market 回空字串可以嗎？還是有指定的值？」
+
+  決定 2：{id} 不是數字（例如 /api/v1/holdings/abc）時要回什麼？
+
+  - 建議回 404 NOT_FOUND：規格裡 GET 和 DELETE 單筆的失敗情況只列了
+    404，不存在的 id 本來就是「找不到」。
+  - 另一個選項是 400 VALIDATION_ERROR。
+
+  決定 3：要不要讓 findAllForList 也改用 coalesce(h.market, q.market)？
+
+  - 這會讓網頁清單也顯示補上的市場。
+  - 如果你希望網頁完全不受影響，我就讓 API
+    改用另一個查詢，代價是多一份幾乎一樣的 JPQL。
+
+  ---
+
+  建議（未實作）
+
+  1. /holdings/lookup 的錯誤代碼不一致：你說 lookup 和 API
+     一致，但我看了程式碼，「兩個市場都查到」的情況下，lookup 目前回的是 409 
+     MARKET_AMBIGUOUS（HoldingController.java 第 128 行），和這次 API 要回的 503
+     MARKET_UNDETERMINED 不同。只有官方連不上的 QUOTE_UNAVAILABLE
+     是一致的。要不要改成一致，由你決定。
+  2. 在 Content-Type 明確加上 charset=UTF-8：
+     - JSON 規格本身就規定用 UTF-8，Spring 預設也不加 charset。
+     - 但有些不按規範的客戶端（例如 PowerShell 5.1）會因此用錯編碼。
+     - App 用的 HTTP 函式庫不確定，如果擔心可以加。
+  3. 少數錯誤不會經過 Spring MVC：例如網址含有 Tomcat
+     直接拒絕的字元，這類錯誤會回 Spring Boot 預設的 JSON 錯誤格式，不是
+     {"error":...}。App 不會送出這種請求，所以這次沒有處理。
+
+✻ Cogitated for 4m 30s · done 下午8:32
+
+※ recap: 我們在做第 5 題：照規格給 App 1.0 用的 /api/v1 API，提案已經寫好，還沒改任何檔案。下一步要請你決定三件事：沒有市場時 market 回什麼、{id} 不是數字時回 404 或 400、網頁清單要不要共用補市場的查詢。決定後回覆「同意」，我就開始實作。
+
+> 提案同意，三個決定如下：                                                      
+                                                                                
+  決定 1：選 A，market 回空字串 ""。                                            
+    理由：只有第 2 題的舊持股、而且官方一直連不上時才會發生，驗收時從全新資料庫 
+  開始，幾乎不會遇到。                                                          
+    不用問主考官。請在 README 草稿或 REVIEW 記下這個情況。                      
+                                                                                
+  決定 2：同意，{id} 不是數字或太大時回 404 NOT_FOUND。                         
+                                                                                
+  決定 3：同意，findAllForList 也改用 coalesce(h.market, q.market)，網頁和 API  
+  共用同一個查詢。                                                              
+                                                                                
+  建議（未實作）的處理：                                                        
+  1. 這次一起改：/holdings/lookup 在兩個市場日期相同時，改回 503                
+  MARKET_UNDETERMINED，                                                         
+     和 API 一致。請補測試，並在 REVIEW 草稿記下這是我之前講錯、由你發現的。    
+     可以單獨一個 commit：fix: 第3題 即時提示判斷不出市場時改回 503             
+  MARKET_UNDETERMINED，和 App API 一致                                          
+  2. 這次一起做：/api/v1 的回應 Content-Type 明確加上                           
+  charset=UTF-8（規格寫「JSON（UTF-8）」），                                    
+     錯誤回應也要。請補測試確認 header。                                        
+  3. 不處理，請在 REVIEW 草稿的「刻意不做或簡化的部分」記下。                   
+                                                                                
+  手動驗證：APK 我會用主考官發給我的那一份，不用 ApXpert_Test 資料夾裡的。      
+  請把步驟裡的路徑改成「主考官提供的 持股記帳-App1.0.apk」。                    
+                                                                                
+  以上同意，請開始實作。                                                        
+
+● 開始實作。先看幾個要動到的地方：網頁 lookup 的 JavaScript 怎麼處理
+  409、現有測試的寫法。
+
+  Ran 4 shell commands (ctrl+o to expand)
+
+● 先將第一個 commit 的範圍改為讓 /holdings/lookup 回傳 503
+  MARKET_UNDETERMINED。網頁的 JavaScript 原本靠 409
+  辨識市場無法判斷的情況，所以改成看 error.code，避免和連線失敗混在一起。 
+  · summary
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\controller\HoldingControlle
+        r.java)
+  ⎿  Added 4 lines, removed 2 lines
+      122        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILA
+           BLE)
+      123            .body(ErrorResponse.of("QUOTE_UNAVAILABLE", e.getMes
+           sage()));
+      124      } catch (MarketAmbiguousException e) {
+      125 -      // 409：兩個市場的資料互相衝突；和 503 分開，畫面才不會 
+          -叫使用者「稍後再試」                                          
+      126 -      return ResponseEntity.status(HttpStatus.CONFLICT).body(E
+          -rrorResponse.of("MARKET_AMBIGUOUS", e.getMessage()));         
+      125 +      // 和 App API（POST /api/v1/holdings）相同：503 + MARKET
+          +_UNDETERMINED。                                               
+      126 +      // 狀態碼和「連不上」一樣是 503，畫面用 error.code 分辨 
+          +，才不會叫使用者「稍後再試」                                  
+      127 +      return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILA
+          +BLE)                                                          
+      128 +          .body(ErrorResponse.of("MARKET_UNDETERMINED", e.getM
+          +essage()));                                                   
+      129      }
+      130    }
+      131 
+
+● Update(src\main\resources\templates\holdings.html)
+  ⎿  Added 3 lines, removed 2 lines
+      194                show((result.body.name || '（名稱未知）') + '（'
+            + result.body.market_label + '）', 'found');
+      195              } else if (result.status === 404) {
+      196                show('查無此股票代號', 'error');
+      197 -            } else if (result.status === 409) {               
+      198 -              // 兩個市場都查到、無法判斷：顯示伺服器的訊息（ 
+          -請聯絡管理者），重試也不會好，所以不重設 lastCode             
+      197 +            } else if (result.body && result.body.error && res
+          +ult.body.error.code === 'MARKET_UNDETERMINED') {              
+      198 +              // 兩個市場都查到、無法判斷：顯示伺服器的訊息（ 
+          +請聯絡管理者），重試也不會好，所以不重設 lastCode。           
+      199 +              // 狀態碼和「連不上」同樣是 503，所以看 error.co
+          +de 分辨                                                       
+      200                show(result.body.error.message, 'error');
+      201              } else {
+      202                unavailable();
+
+● Update(src\test\java\io\hsiaopingkuo\stockholdings\controller\HoldingControlle
+        rTest.java)
+  ⎿  Added 3 lines, removed 3 lines
+      355    }
+      356 
+      357    @Test
+      358 -  void 即時查詢_兩個市場無法判斷回409與錯誤格式() throws Excep
+          -tion {                                                        
+      358 +  void 即時查詢_兩個市場無法判斷回503與MARKET_UNDETERMINED_和A
+          +ppAPI一致() throws Exception {                                
+      359      given(holdingService.lookupStock("1234")).willThrow(new Ma
+           rketAmbiguousException("1234"));
+      360 
+      361      mockMvc.perform(get("/holdings/lookup").param("code", "123
+           4"))
+      362 -        .andExpect(status().isConflict())                     
+      363 -        .andExpect(jsonPath("$.error.code").value("MARKET_AMBI
+          -GUOUS"))                                                      
+      362 +        .andExpect(status().isServiceUnavailable())           
+      363 +        .andExpect(jsonPath("$.error.code").value("MARKET_UNDE
+          +TERMINED"))                                                   
+      364          .andExpect(jsonPath("$.error.message").value("無法判斷
+            1234 是上市或上櫃，請聯絡管理者"));
+      365    }
+      366 
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+● lookup 修正完成。接著做第二個 commit 的範圍：查詢 API 和統一錯誤格式。先改
+  repository 和 service。
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\repository\HoldingRepositor
+        y.java)
+  ⎿  Added 12 lines, removed 5 lines
+      47        @Param("now") LocalDateTime now);
+      48 
+      49    /**
+      50 -   * 清單頁用：持股 LEFT JOIN 行情快取，一個查詢就拿到全部要顯 
+         -示的欄位。                                                     
+      50 +   * 清單一列的查詢（清單頁、App API 共用）：持股 LEFT JOIN 行 
+         +情快取，一個查詢就拿到全部要顯示的欄位。                       
+      51     * LEFT JOIN：還沒有行情的持股也要列出來（收盤價顯示「未取得
+          」）。
+      52     * 兩張表沒有設外鍵，所以用 on 自己指定用代號對應。
+      53 +   * 名稱、市場：持股自己沒有時（第 2 題存的舊資料）用行情快取 
+         +的補上，App API 規格這兩個欄位不能是 null。                    
+      54 +   * 寫成常數：下面兩個查詢共用同一段，網頁和 API 的單筆、清單 
+         +才不會各寫一份而對不起來。                                     
+      55     */
+      54 -  @Query("""                                                   
+      56 +  String LIST_ITEM_QUERY = """                                 
+      57        select new io.hsiaopingkuo.stockholdings.dto.HoldingListI
+          tem(
+      56 -        h.id, h.code, coalesce(h.name, q.name), h.market, h.lot
+         -s, h.buyPrice,                                                 
+      58 +        h.id, h.code, coalesce(h.name, q.name), coalesce(h.mark
+         +et, q.market), h.lots, h.buyPrice,                             
+      59          q.closePrice, q.closeDate, q.latestTradeDate)
+      60        from Holding h left join Quote q on q.code = h.code
+      59 -      order by h.code                                          
+      60 -      """)                                                     
+      61 +      """;                                                     
+      62 +                                                               
+      63 +  @Query(LIST_ITEM_QUERY + " order by h.code")                 
+      64    List<HoldingListItem> findAllForList();
+      65 +                                                               
+      66 +  // 第 5 題：App API 的單筆查詢，以及新增、修改後回傳的持股物 
+         +件                                                             
+      67 +  @Query(LIST_ITEM_QUERY + " where h.id = :id")                
+      68 +  Optional<HoldingListItem> findListItemById(@Param("id") Long 
+         +id);                                                           
+      69  }
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\repository\HoldingRepositor
+        y.java)
+  ⎿  Added 1 line
+      2 
+      3  import java.time.LocalDateTime;
+      4  import java.util.List;
+      5 +import java.util.Optional;                                      
+      6 
+      7  import org.springframework.data.jpa.repository.JpaRepository;
+      8  import org.springframework.data.jpa.repository.Modifying;
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\service\HoldingService.java
+        )
+  ⎿  Added 5 lines
+      75      return holdingRepository.findAllForList();
+      76    }
+      77 
+      78 +  /** App API 的單筆持股：和清單同一個查詢，收盤價、盈虧和清單 
+         +上的那一列一定相同。 */                                        
+      79 +  public HoldingListItem findListItem(Long id) {               
+      80 +    return holdingRepository.findListItemById(id).orElseThrow((
+         +) -> new HoldingNotFoundException(id));                        
+      81 +  }                                                            
+      82 +                                                               
+      83    public Holding findById(Long id) {
+      84      return holdingRepository.findById(id).orElseThrow(() -> new
+           HoldingNotFoundException(id));
+      85    }
+
+● Repository 和 service 改好了。接著寫回應 DTO。
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\dto\ApiHoldingResponse.java)
+  ⎿  Wrote 65 lines to src\main\java\io\hsiaopingkuo\stockholdings\dto\ApiH
+     oldingResponse.java
+      1 package io.hsiaopingkuo.stockholdings.dto;
+      2 
+      3 import java.math.BigDecimal;
+      4 import java.time.format.DateTimeFormatter;
+      5 
+      6 import com.fasterxml.jackson.annotation.JsonProperty;
+      7 import com.fasterxml.jackson.annotation.JsonPropertyOrder;
+      8 
+      9 import io.hsiaopingkuo.stockholdings.calc.ProfitResult;
+     … +56 lines (ctrl+o to expand)
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\dto\ApiSummaryResponse.java)
+  ⎿  Wrote 37 lines to src\main\java\io\hsiaopingkuo\stockholdings\dto\ApiS
+     ummaryResponse.java
+       1 package io.hsiaopingkuo.stockholdings.dto;
+       2 
+       3 import java.math.BigDecimal;
+       4 
+       5 import com.fasterxml.jackson.annotation.JsonProperty;
+       6 import com.fasterxml.jackson.annotation.JsonPropertyOrder;
+       7 
+       8 import io.hsiaopingkuo.stockholdings.calc.PortfolioSummary;
+       9 
+      10 /**
+     … +27 lines (ctrl+o to expand)
+
+● 接著寫 api 套件：共用的 JSON 回應工具、controller，以及兩個錯誤處理類別。
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\api\ApiJson.java)
+  ⎿  Wrote 26 lines to
+     src\main\java\io\hsiaopingkuo\stockholdings\api\ApiJson.java
+       1 package io.hsiaopingkuo.stockholdings.api;
+       2 
+       3 import org.springframework.http.HttpStatusCode;
+       4 import org.springframework.http.MediaType;
+       5 import org.springframework.http.ResponseEntity;
+       6 
+       7 import io.hsiaopingkuo.stockholdings.dto.ErrorResponse;
+       8 
+       9 /**
+      10  * App API 共用的回應格式。
+     … +16 lines (ctrl+o to expand)
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\api\HoldingApiController.jav
+       a)
+  ⎿  Wrote 53 lines to src\main\java\io\hsiaopingkuo\stockholdings\api\Hold
+     ingApiController.java
+       1 package io.hsiaopingkuo.stockholdings.api;
+       2 
+       3 import java.util.List;
+       4 
+       5 import org.springframework.web.bind.annotation.GetMapping;
+       6 import org.springframework.web.bind.annotation.PathVariable;
+       7 import org.springframework.web.bind.annotation.RequestMapping;
+       8 import org.springframework.web.bind.annotation.RestController;
+       9 
+      10 import io.hsiaopingkuo.stockholdings.calc.SummaryCalculator;
+     … +43 lines (ctrl+o to expand)
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\api\ApiExceptionHandler.java
+       )  ⎿  Wrote 50 lines to src\main\java\io\hsiaopingkuo\stockholdings\api\ApiE
+     xceptionHandler.java
+      1 package io.hsiaopingkuo.stockholdings.api;
+      2 
+      3 import org.slf4j.Logger;
+      4 import org.slf4j.LoggerFactory;
+      5 import org.springframework.http.HttpStatus;
+      6 import org.springframework.http.ResponseEntity;
+      7 import org.springframework.web.bind.annotation.ExceptionHandler;
+      8 import org.springframework.web.bind.annotation.RestControllerAdvi
+        ce;
+      9 import org.springframework.web.method.annotation.MethodArgumentTy
+     … +42 lines (~2 KB) (ctrl+o to expand)
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\api\ApiRouteErrorHandler.jav
+       a)
+  ⎿  Wrote 58 lines to src\main\java\io\hsiaopingkuo\stockholdings\api\ApiR
+     outeErrorHandler.java
+       1 package io.hsiaopingkuo.stockholdings.api;
+       2 
+       3 import java.util.Set;
+       4 
+       5 import org.springframework.http.HttpMethod;
+       6 import org.springframework.http.HttpStatus;
+       7 import org.springframework.http.ResponseEntity;
+       8 import org.springframework.web.HttpRequestMethodNotSupportedExce
+         ption;
+       9 import org.springframework.web.bind.annotation.ExceptionHandler;
+     … +49 lines (ctrl+o to expand)
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\api\ApiRouteErrorHandler.ja
+        va)
+  ⎿  Added 6 lines, removed 6 lines
+      41      if (!isApi(request)) {
+      42        throw e;
+      43      }
+      44 -    ResponseEntity<ErrorResponse> response = ApiJson.error(Http
+         -Status.METHOD_NOT_ALLOWED, "METHOD_NOT_ALLOWED",               
+      45 -        "不支援 " + request.getMethod() + " " + request.getRequ
+         -estURI());                                                     
+      44 +    ResponseEntity.BodyBuilder builder = ResponseEntity.status(
+         +HttpStatus.METHOD_NOT_ALLOWED)                                 
+      45 +        .contentType(ApiJson.JSON_UTF8);                       
+      46      // HTTP 規定 405 要附上 Allow 標頭，告訴客戶端這個路徑支援
+          哪些方法
+      47      Set<HttpMethod> supported = e.getSupportedHttpMethods();
+      48 -    if (supported == null || supported.isEmpty()) {            
+      49 -      return response;                                         
+      48 +    if (supported != null && !supported.isEmpty()) {           
+      49 +      builder.allow(supported.toArray(HttpMethod[]::new));     
+      50      }
+      51 -    return ResponseEntity.status(response.getStatusCode()).cont
+         -entType(ApiJson.JSON_UTF8)                                     
+      52 -        .allow(supported.toArray(HttpMethod[]::new)).body(respo
+         -nse.getBody());                                                
+      51 +    return builder.body(ErrorResponse.of("METHOD_NOT_ALLOWED", 
+      52 +        "不支援 " + request.getMethod() + " " + request.getRequ
+         +estURI()));                                                    
+      53    }
+      54 
+      55    private static boolean isApi(HttpServletRequest request) {
+
+● commit 範圍的主程式寫完了，接著寫測試。
+
+● Write(src\test\java\io\hsiaopingkuo\stockholdings\api\HoldingApiControllerTest
+       .java)
+  ⎿  Wrote 295 lines to src\test\java\io\hsiaopingkuo\stockholdings\api\Hol
+     dingApiControllerTest.java
+       1 package io.hsiaopingkuo.stockholdings.api;
+       2 
+       3 import static org.assertj.core.api.Assertions.assertThat;
+       4 import static org.hamcrest.Matchers.containsString;
+       5 import static org.hamcrest.Matchers.hasSize;
+       6 import static org.hamcrest.Matchers.nullValue;
+       7 import static org.springframework.test.web.servlet.request.MockM
+         vcRequestBuilders.get;
+       8 import static org.springframework.test.web.servlet.result.MockMv
+         cResultMatchers.content;
+     … +287 lines (ctrl+o to expand)
+
+● Write(src\test\java\io\hsiaopingkuo\stockholdings\api\ApiErrorResponseTest.jav
+       a)
+  ⎿  Wrote 95 lines to src\test\java\io\hsiaopingkuo\stockholdings\api\ApiE
+     rrorResponseTest.java
+       1 package io.hsiaopingkuo.stockholdings.api;
+       2 
+       3 import static org.assertj.core.api.Assertions.assertThat;
+       4 import static org.hamcrest.Matchers.containsString;
+       5 import static org.mockito.BDDMockito.given;
+       6 import static org.springframework.test.web.servlet.request.MockM
+         vcRequestBuilders.get;
+       7 import static org.springframework.test.web.servlet.request.MockM
+         vcRequestBuilders.patch;
+       8 import static org.springframework.test.web.servlet.result.MockMv
+     … +88 lines (~4 KB) (ctrl+o to expand)
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+● Update(src\test\java\io\hsiaopingkuo\stockholdings\repository\HoldingRepositor
+        yTest.java)
+  ⎿  Added 33 lines
+      157 
+      158      assertThat(holdingRepository.findAllForList().get(0).name(
+           )).isEqualTo("台積電");
+      159    }
+      160 +                                                              
+      161 +  @Test                                                       
+      162 +  void 清單查詢_持股沒有市場時用行情快取的市場_持股自己有的不 
+          +會被蓋掉() {                                                  
+      163 +    // 第 2 題的舊持股：沒有市場                              
+      164 +    holdingRepository.saveAndFlush(new Holding("6488", null, n
+          +ull, 1, new BigDecimal("450.00"), NOW));                      
+      165 +    quoteRepository.saveAndFlush(new Quote(                   
+      166 +        DailyQuote.ofDay("6488", "環球晶", Market.TPEX, LocalD
+          +ate.of(2026, 11, 23), new BigDecimal("460.50")), NOW));       
+      167 +    // 持股自己有市場：以持股為準（故意和行情快取不同，確認不 
+          +會被蓋掉）                                                    
+      168 +    holdingRepository.saveAndFlush(holding("2330", 1, new BigD
+          +ecimal("1000.00")));                                          
+      169 +    quoteRepository.saveAndFlush(new Quote(                   
+      170 +        DailyQuote.ofDay("2330", "台積電", Market.TPEX, LocalD
+          +ate.of(2026, 11, 23), new BigDecimal("2030.00")), NOW));      
+      171 +    entityManager.clear();                                    
+      172 +                                                              
+      173 +    List<HoldingListItem> rows = holdingRepository.findAllForL
+          +ist();                                                        
+      174 +                                                              
+      175 +    assertThat(rows).extracting(HoldingListItem::code, Holding
+          +ListItem::market)                                             
+      176 +        .containsExactly(tuple("2330", Market.TWSE), tuple("64
+          +88", Market.TPEX));                                           
+      177 +  }                                                           
+      178 +                                                              
+      179 +  @Test                                                       
+      180 +  void 單筆查詢_和清單同一列的內容相同_找不到時是empty() {    
+      181 +    Holding saved = holdingRepository.saveAndFlush(holding("23
+          +30", 1, new BigDecimal("1000.00")));                          
+      182 +    holdingRepository.saveAndFlush(holding("6488", 1, new BigD
+          +ecimal("450.00")));                                           
+      183 +    quoteRepository.saveAndFlush(new Quote(                   
+      184 +        DailyQuote.ofDay("2330", "台積電", Market.TWSE, LocalD
+          +ate.of(2026, 11, 23), new BigDecimal("1100.00")), NOW));      
+      185 +    entityManager.clear();                                    
+      186 +                                                              
+      187 +    HoldingListItem one = holdingRepository.findListItemById(s
+          +aved.getId()).orElseThrow();                                  
+      188 +                                                              
+      189 +    assertThat(one).isEqualTo(holdingRepository.findAllForList
+          +().get(0));                                                   
+      190 +    assertThat(one.profit().profit()).isEqualByComparingTo("93
+          +708");                                                        
+      191 +    assertThat(holdingRepository.findListItemById(-1L)).isEmpt
+          +y();                                                          
+      192 +  }                                                           
+      193  }
+
+● Update(src\test\java\io\hsiaopingkuo\stockholdings\repository\HoldingRepositor
+        yTest.java)
+  ⎿  Added 1 line
+      2 
+      3  import static org.assertj.core.api.Assertions.assertThat;
+      4  import static org.assertj.core.api.Assertions.assertThatThrownBy
+         ;
+      5 +import static org.assertj.core.api.Assertions.tuple;            
+      6 
+      7  import java.math.BigDecimal;
+      8  import java.time.LocalDate;
+
+● 測試寫好了，跑全部測試。
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● 輸出的是預期中的 log。改看 surefire 報告確認結果：
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● 前兩個 commit 的範圍做完了，./mvnw test 全部通過：267 個測試，0 失敗、0 錯誤。
+
+  請先 commit 這兩個，我再繼續做新增、修改、刪除。 下一步會改到同一批檔案（Holdi
+  ngApiController、ApiExceptionHandler、HoldingApiControllerTest），先 commit
+  才分得開。
+
+  Commit 1（第 3 題的修正）
+
+  git add
+  src/main/java/io/hsiaopingkuo/stockholdings/controller/HoldingController.java
+  src/main/resources/templates/holdings.html src/test/java/io/hsiaopingkuo/stock
+  holdings/controller/HoldingControllerTest.java
+  git commit -m "fix: 第3題 即時提示判斷不出市場時改回 503 
+  MARKET_UNDETERMINED，和 App API 一致"
+
+  - HoldingController.java：兩個市場都查到、日期又相同時，lookup 從 409
+    MARKET_AMBIGUOUS 改成 503 MARKET_UNDETERMINED。
+  - holdings.html：這是提案時沒想到的連帶修改。 網頁的 JavaScript 原本用「狀態碼
+    409」分辨這種情況。改成 503 之後，會和「連不上（503）」撞在一起，畫面會誤顯
+    示「暫時無法確認」，還會一直重查。所以 JavaScript 改成看 error.code === 
+    'MARKET_UNDETERMINED' 來分辨。
+  - HoldingControllerTest.java：測試改成預期 503 MARKET_UNDETERMINED。
+
+  Commit 2（第 5 題：查詢 API）
+
+  git add src/main/java/io/hsiaopingkuo/stockholdings/api
+  src/main/java/io/hsiaopingkuo/stockholdings/dto/ApiHoldingResponse.java
+  src/main/java/io/hsiaopingkuo/stockholdings/dto/ApiSummaryResponse.java
+  src/main/java/io/hsiaopingkuo/stockholdings/repository/HoldingRepository.java
+  src/main/java/io/hsiaopingkuo/stockholdings/service/HoldingService.java
+  src/test/java/io/hsiaopingkuo/stockholdings/api src/test/java/io/hsiaopingkuo/
+  stockholdings/repository/HoldingRepositoryTest.java
+  git commit -m "feat: 第5題 App API 查詢（持股清單、單筆、總計）與 /api/v1 
+  統一錯誤格式"
+
+  這個 commit 做了什麼
+
+  - 三支查詢 API：GET /api/v1/holdings、GET /api/v1/holdings/{id}、GET 
+    /api/v1/summary。成功的回應 Content-Type 都是
+    application/json;charset=UTF-8。
+  - 錯誤處理：
+    - ApiExceptionHandler：只處理 api 套件的錯誤，包括找不到持股、{id}
+      不是數字（都回 404），以及非預期的例外（500）。
+    - ApiRouteErrorHandler：處理 /api/ 開頭的 404（路徑不存在）和
+      405（方法不支援），405 會附上 Allow
+      標頭。其他路徑把例外原樣丟回，網頁的行為不變。
+  - 查詢共用：清單和單筆查詢用同一段 JPQL
+    常數。名稱和市場都改成「持股沒有時用行情快取的補上」，網頁和 API 共用（決定
+    3）。
+  - 金額是整數：pnl 輸出 93708，不是 93708.00。測試同時用原始字串確認。
+  - 舊持股的 name、market：持股和行情快取都沒有時，輸出空字串 ""（決定 1）。
+
+  新增的測試
+
+  測試類別: HoldingApiControllerTest
+  數量: 11
+  涵蓋內容: 題目例子 2330 → pnl 93708、return_pct 9.36；ETF
+    例子；沒有收盤價時四個 null 欄位都存在；空陣列；總計全部沒有收盤價時回
+    0；舊持股補值；呼叫 API 不建立 session
+  ────────────────────────────────────────
+  測試類別: ApiErrorResponseTest
+  數量: 5
+  涵蓋內容: 404 路徑、405 和 Allow、abc／超長數字／1.5 當 {id}、500
+    不露出例外內容、網頁 404 不受影響
+  ────────────────────────────────────────
+  測試類別: HoldingRepositoryTest
+  數量: 新增 2
+  涵蓋內容: 市場補值、單筆查詢
+
+  你可以先手動確認的地方
+
+  啟動後打開
+  http://localhost:8080/api/v1/holdings、/api/v1/summary、/api/v1/xxx（應該回
+  {"error":{"code":"NOT_FOUND",...}}）。
+
+  還沒做的部分
+
+  - 新增、修改、刪除 API：POST、PUT、DELETE，加上 JSON
+    嚴格型別檢查（JacksonConfig），以及對應的 400、409、503 測試。
+  - README、REVIEW 草稿：最後一起提出，會包含：
+    - 決定 1：market 回空字串的情況。
+    - 409 這件事：除了你說要記的，REVIEW.md 第 133 行原本也寫著「即時提示回
+      409」，草稿裡會一起更正。
+    - 建議 3：刻意不做的部分。
+  - 手動驗證步驟：會把 APK 路徑改成「主考官提供的 持股記帳-App1.0.apk」。
+
+  MARKET_UNDETERMINED
+  在網頁上很難手動觸發，因為要兩個市場都查到同一個代號，而且日期相同。前端這段
+  JavaScript 沒有自動測試，只有後端的狀態碼和 error.code 有測試保護。
+
+✻ Sautéed for 5m 39s · done 下午9:43
+
+> 我忘記切回main了，先幫我記得剛剛生成的部分，等我切回main然後拉到最新進度後，  
+  再幫我重新生成一次可以嗎?                                                     
+
+  Ran 3 shell commands (ctrl+o to expand)
+
+● 可以，剛剛做的內容已經備份好了。你切好分支後告訴我，我會還原並重跑一次測試，不
+  用從頭重寫。
+
+  先說明現在的狀態
+
+  - 你目前在 fix/q3-no-trade-backfill，不在 feature/q5-app-api-v1。
+    剛剛的修改是做在這個分支上的。
+  - fix/q3-no-trade-backfill 已經透過 PR #5 合併進遠端的 master（4dd2908）。我比
+    對過，兩邊的程式碼完全一樣，所以剛剛的修改可以直接放到最新的 master
+    上，不會有衝突。
+  - feature/q5-app-api-v1 還停在舊的 ff0bf38，沒有自己的
+    commit，可以直接快轉到最新的 master。
+  - 備註：這個 repo 的作答分支是 master，不是 main（CLAUDE.md 的約定）。
+
+  備份位置
+
+  - 已追蹤檔案的修改（5
+    個）：C:\Users\Ping\AppData\Local\Temp\claude\d50855ca92fd132e\dcc42ec7-902a
+    -4c40-88d2-f2d5e738ac8d\scratchpad\q5-backup\tracked.patch
+  - 新增的檔案（8 個）：C:\Users\Ping\AppData\Local\Temp\claude\d50855ca92fd132e
+    \dcc42ec7-902a-4c40-88d2-f2d5e738ac8d\scratchpad\q5-backup\untracked\
+
+  請你執行
+
+  git stash -u                               # 把剛剛的修改（含新檔案）先收起來
+  git switch master
+  git pull
+  git switch feature/q5-app-api-v1
+  git merge --ff-only master                 # 快轉到最新 
+  master（這個分支沒有自己的 commit，不會產生 merge commit）
+
+  做完告訴我，接下來由我處理：
+
+  1. 用 git stash pop 還原修改；萬一 stash 出問題，就改用上面的備份還原。
+  2. 重跑 ./mvnw test，確認在最新的 master 上仍然全部通過。
+  3. 再請你照上次說的兩組 git add 和 git commit 指令提交，內容不變。
+
+✻ Crunched for 43s · done 下午9:45
+
+※ recap: 我們在做第 5 題 App API。查詢 API 和第 3 題 lookup 的修正都已做完並備份，現在等你 stash、切到 master 並 pull，再切到 feature/q5-app-api-v1 快轉；做完告訴我，我會還原修改並重跑測試。
+
+> 我把分支刪掉重新對齊了，請幫我確認                                            
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● 分支已經對齊了。不過 HoldingService.java
+  不在修改清單裡，我上次加的方法可能不見了。逐一和備份比對：
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● 只有 HoldingService.java 的 findListItem 方法遺失，其餘 12
+  個檔案都與備份相同；因為 HoldingApiController
+  會因此編譯失敗，我接著把這個方法補回去。 · summary
+
+  Read 1 file (ctrl+o to expand)
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\service\HoldingService.java
+        )
+  ⎿  Added 5 lines
+      75      return holdingRepository.findAllForList();
+      76    }
+      77 
+      78 +  /** App API 的單筆持股：和清單同一個查詢，收盤價、盈虧和清單 
+         +上的那一列一定相同。 */                                        
+      79 +  public HoldingListItem findListItem(Long id) {               
+      80 +    return holdingRepository.findListItemById(id).orElseThrow((
+         +) -> new HoldingNotFoundException(id));                        
+      81 +  }                                                            
+      82 +                                                               
+      83    public Holding findById(Long id) {
+      84      return holdingRepository.findById(id).orElseThrow(() -> new
+           HoldingNotFoundException(id));
+      85    }
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● 分支已經對齊好了，剛剛做的內容也全部還原，./mvnw test 全部通過：267 個測試，0
+  失敗、0 錯誤。
+
+  確認結果
+
+  ┌──────────────────────────┬───────────────────────────────────────────────┐
+  │           項目           │                     結果                      │
+  ├──────────────────────────┼───────────────────────────────────────────────┤
+  │ 目前分支                 │ feature/q5-app-api-v1                         │
+  ├──────────────────────────┼───────────────────────────────────────────────┤
+  │ HEAD                     │ 4dd2908，和 origin/master 相同                │
+  ├──────────────────────────┼───────────────────────────────────────────────┤
+  │ 8                        │                                               │
+  │ 個新增的檔案（api/、兩個 │ 和備份完全一致                                │
+  │  DTO、兩個測試）         │                                               │
+  ├──────────────────────────┼───────────────────────────────────────────────┤
+  │ 已追蹤的檔案             │ 有 1 處和備份不同，已補回（見下方），補完後和 │
+  │                          │ 備份完全一致                                  │
+  └──────────────────────────┴───────────────────────────────────────────────┘
+
+  補回的部分：HoldingService.java 裡的 findListItem(id) 方法不見了，其他檔案的修
+  改都在。可能是你重新對齊時這個檔案被還原了。少了這個方法，HoldingApiController
+  會編譯失敗，所以我照備份原樣補回，內容和上次完全相同。
+
+  請你 commit
+
+  Commit 1（第 3 題的修正）
+
+  git add
+  src/main/java/io/hsiaopingkuo/stockholdings/controller/HoldingController.java
+  src/main/resources/templates/holdings.html src/test/java/io/hsiaopingkuo/stock
+  holdings/controller/HoldingControllerTest.java
+  git commit -m "fix: 第3題 即時提示判斷不出市場時改回 503 
+  MARKET_UNDETERMINED，和 App API 一致"
+
+  Commit 2（第 5 題：查詢 API）
+
+  git add src/main/java/io/hsiaopingkuo/stockholdings/api
+  src/main/java/io/hsiaopingkuo/stockholdings/dto/ApiHoldingResponse.java
+  src/main/java/io/hsiaopingkuo/stockholdings/dto/ApiSummaryResponse.java
+  src/main/java/io/hsiaopingkuo/stockholdings/repository/HoldingRepository.java
+  src/main/java/io/hsiaopingkuo/stockholdings/service/HoldingService.java
+  src/test/java/io/hsiaopingkuo/stockholdings/api src/test/java/io/hsiaopingkuo/
+  stockholdings/repository/HoldingRepositoryTest.java
+  git commit -m "feat: 第5題 App API 查詢（持股清單、單筆、總計）與 /api/v1 
+  統一錯誤格式"
+
+  commit 完之後，git status
+  應該是乾淨的，沒有任何修改。告訴我之後，我就接著做新增、修改、刪除 API 和 JSON
+  嚴格型別檢查。
+
+✻ Worked for 1m 10s · done 下午9:53
+
+> 還是有錯，public ApiHoldingResponse get(@PathVariable Long id) {              
+          return ApiHoldingResponse.from(holdingService.findListItem(id));      
+      }這邊有紅底線                                                             
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● 程式碼本身沒有錯，紅底線是 IDE（Eclipse/STS）的畫面沒有更新。
+
+  為什麼這樣判斷
+
+  - 檔案在磁碟上是對的：HoldingService.java 第 79 行有
+    findListItem，HoldingRepository.java 第 69 行有 findListItemById。
+  - Maven 編譯沒問題：剛剛 ./mvnw test 會先編譯全部程式，267
+    個測試都通過了。如果這個方法真的不存在，Maven 會直接編譯失敗。
+  - 所以問題在 IDE：Eclipse 看到的還是舊版的
+    HoldingService.java（沒有這個方法），所以在 controller 那行畫紅線。
+  - 上次方法消失，很可能也是同一個原因：Eclipse
+    的編輯器開著舊內容，存檔時把我補上的方法蓋掉了。
+
+  請照這個順序處理
+
+  1. 先看 HoldingService.java 的分頁標籤。如果檔名前面有 *，代表有沒存的舊內容。
+     請關掉這個分頁，選「不儲存」；存檔的話，方法又會被蓋掉。
+  2. 在 Project Explorer 對專案按右鍵 →「Refresh」，或選取專案後按 F5。
+  3. 如果跳出「檔案已在外部修改，要重新載入嗎？」，選「是」。
+  4. 紅底線還在的話：選單「Project → Clean…」→ 勾選 stock-holdings → Clean。
+  5. 確認：打開 HoldingService.java，第 78～81 行應該是這段：
+
+          /** App API 
+  的單筆持股：和清單同一個查詢，收盤價、盈虧和清單上的那一列一定相同。 */
+          public HoldingListItem findListItem(Long id) {
+                  return holdingRepository.findListItemById(id).orElseThrow(()
+  -> new HoldingNotFoundException(id));
+          }
+
+  處理完如果紅線還在，請把滑鼠移到紅線上，貼給我 Eclipse 顯示的錯誤訊息。
+
+  確認沒問題後，就可以照上一則訊息的兩組指令 commit。commit 前建議先跑 git diff 
+  --stat，確認 HoldingService.java 還在修改清單裡（新增 5 行）。
+✻ Baked for 18s · done 下午9:55
+
+> findListItem找不到來源                                                        
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● 我又檢查了一次，檔案本身確定是對的，問題出在 Eclipse 沒有讀到最新版本。
+
+  確認過的事
+
+  - 磁碟上的 HoldingService.java 有 findListItem（第 79 行），檔案時間是我補回的
+    21:52:45，之後沒有再被改過。
+  - git diff --stat 顯示 HoldingService.java 有「+5 行」的修改，就是這個方法。
+  - Maven 編譯出來的 target/classes/.../HoldingService.class 也是正常的，267
+    個測試都通過。
+  - 我搜尋了整個 C:\TKA102_JavaApp，HoldingService.java 只有這一份，Eclipse
+    不可能開到別的資料夾的版本。（stock-holdings-tw
+    是另一個專案，裡面沒有這個檔案。）
+
+  所以 Java 程式碼沒有問題，是 Eclipse 的快取還停在舊的檔案內容。
+
+  請依序試試看
+
+  1. 用 Eclipse 打開 HoldingService.java，看第 78～81 行有沒有 findListItem：
+     - 沒有：代表 Eclipse
+       顯示的是舊內容。請關掉這個分頁，不要存檔，然後在專案上按
+       F5（Refresh），再重新打開。
+     - 有：繼續下一步。
+  2. 在專案上按右鍵 →「Maven → Update Project…」（或按 Alt+F5）→ 勾選
+     stock-holdings → OK。
+  3. 選單「Project」→ 確認「Build Automatically」有打勾 → 再按「Clean…」→ 選
+     stock-holdings → Clean。
+
+  如果還是有紅線
+
+  我不確定是哪一步出了問題，需要多一點資訊。請給我：
+
+  1. 滑鼠移到紅線上，Eclipse 顯示的完整錯誤訊息（例如「The method
+     findListItem(Long) is undefined for the type
+     HoldingService」），或「Problems」分頁裡那一行的截圖。
+  2. 第 1 步裡，Eclipse 的 HoldingService.java 有沒有看到 findListItem。
+
+  這不影響 commit：commit 的是磁碟上的檔案，而那個檔案是對的。只是在 Eclipse
+  修好之前，不要在 Eclipse 裡存 
+  HoldingService.java，不然這個方法會再被蓋掉一次。
+
+✻ Worked for 25s · done 下午9:57
+
+> 喔沒事，他好了，替我確認commit的訊息                                          
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● 你還沒有 commit。目前 HEAD 還是 4dd2908，10 個修改都還在工作區。兩個 commit
+  的檔案沒有重疊，加起來剛好涵蓋全部 10 個修改，可以照下面的順序提交。
+
+  Commit 1
+
+  git add
+  src/main/java/io/hsiaopingkuo/stockholdings/controller/HoldingController.java
+  src/main/resources/templates/holdings.html src/test/java/io/hsiaopingkuo/stock
+  holdings/controller/HoldingControllerTest.java
+  git commit -m "fix: 第3題 即時提示判斷不出市場時改成 503 
+  MARKET_UNDETERMINED，和 App API 一致"
+
+  我把你原本訊息裡的「改回」換成「改成」：lookup 從第 3 題開始一直是
+  409，從來不是
+  503。寫「改回」會讓人以為是在還原舊的行為。如果你想保留原文，也可以。
+
+  Commit 2
+
+  git add src/main/java/io/hsiaopingkuo/stockholdings/api
+  src/main/java/io/hsiaopingkuo/stockholdings/dto/ApiHoldingResponse.java
+  src/main/java/io/hsiaopingkuo/stockholdings/dto/ApiSummaryResponse.java
+  src/main/java/io/hsiaopingkuo/stockholdings/repository/HoldingRepository.java
+  src/main/java/io/hsiaopingkuo/stockholdings/service/HoldingService.java
+  src/test/java/io/hsiaopingkuo/stockholdings/api src/test/java/io/hsiaopingkuo/
+  stockholdings/repository/HoldingRepositoryTest.java
+  git commit -m "feat: 第5題 App API 查詢（持股清單、單筆、總計）與 /api/v1 
+  統一錯誤格式"
+
+  我檢查過的地方
+
+  - 格式：兩則都是「英文類型 + :  + 中文描述（含第幾題）」，符合 CLAUDE.md
+    的規定，也沒有加 AI 署名行。
+  - 類型：第一則是修改第 3 題已經有的行為，用 fix；第二則是第 5 題的新功能，用
+    feat。
+  - 每個 commit 都能單獨編譯、測試：Commit 1 只改 lookup 和它的測試，不依賴
+    Commit 2；Commit 2 也不依賴 Commit 1 的內容。
+
+  兩個都 commit 完之後，git status
+  應該是乾淨的。告訴我之後，我就接著做新增、修改、刪除 API。
+
+✻ Brewed for 15s · done 下午9:59
+
+> 替我commitfix: 第3題 即時提示判斷不出市場時改成 503 MARKET_UNDETERMINED，和   
+  App API 一致                                                                  
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● 已經 commit 好了：b546f42，訊息是 fix: 第3題 即時提示判斷不出市場時改成 503 
+  MARKET_UNDETERMINED，和 App API 一致。
+
+  這個 commit 只包含三個檔案：
+
+  - HoldingController.java
+  - holdings.html
+  - HoldingControllerTest.java
+
+  依照你的設定，沒有加 AI 署名行，也還沒有 push。
+
+  剩下的修改都是第 5 題查詢 API 的，還在工作區：
+
+  - 已有的檔案改了 3
+    個：HoldingRepository.java、HoldingService.java、HoldingRepositoryTest.java
+  - 新增 api/ 資料夾（主程式和測試各一個），以及兩個 DTO
+
+  要 commit 的話，請執行上一則訊息裡的 Commit 2 指令，或者也可以叫我幫你
+  commit。
+
+✻ Cooked for 10s · done 下午10:02
+
+> 也替我commit feat: 第5題 App API 查詢（持股清單、單筆、總計）與 /api/v1       
+  統一錯誤格式                                                                  
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● 第二個 commit 也好了：54c81a9，訊息是 feat: 第5題 App API 
+  查詢（持股清單、單筆、總計）與 /api/v1 統一錯誤格式。共 11 個檔案，新增 731
+  行、刪除 5 行，沒有加 AI 署名行。
+
+  目前分支 feature/q5-app-api-v1 上有兩個新的
+  commit，工作區已經沒有未提交的修改：
+
+  54c81a9 feat: 第5題 App API 查詢（持股清單、單筆、總計）與 /api/v1 
+  統一錯誤格式
+  b546f42 fix: 第3題 即時提示判斷不出市場時改成 503 MARKET_UNDETERMINED，和 App 
+  API 一致
+
+  兩個 commit 都還沒有 push。
+
+  commit 時 Git 跳出「LF will be replaced by
+  CRLF」的警告，可以不用理會。原因是我新增的檔案用的是 Unix 換行（LF），而你的
+  Git 設定會在 Windows 上自動轉換換行字元，程式內容不受影響。
+
+  接下來是最後一個程式 commit：新增、修改、刪除 API，以及 JSON
+  嚴格型別檢查。做完後我會提出 README 和 REVIEW
+  的草稿，還有完整的手動驗證步驟。要我現在開始嗎？
+
+✻ Baked for 12s · done 下午10:03
+
+> 【規則】                                                                      
+  請重讀 CLAUDE.md。照已同意的提案繼續，不用再提案。                            
+                                                                                
+  【任務】                                                                      
+  繼續第 5 題提案的第 2 個 commit：                                             
+  feat: 第5題 App API 新增、修改、刪除與 JSON 嚴格型別檢查                      
+                                                                                
+  範圍：                                                                        
+  - POST /api/v1/holdings：201 回新建的持股物件；400 VALIDATION_ERROR、404      
+  STOCK_NOT_FOUND、                                                             
+    409 DUPLICATE_CODE、503 QUOTE_UNAVAILABLE、503 MARKET_UNDETERMINED          
+  - PUT /api/v1/holdings/{id}：200 回修改後的持股物件；400、404；請求帶了 code  
+  時忽略                                                                        
+  - DELETE /api/v1/holdings/{id}：204 沒有內容；404                             
+  - JacksonConfig：整數欄位不接受字串、浮點數、布林值；小數欄位不接受字串、布林 
+  值，接受整數；                                                                
+    文字欄位不接受數字、布林值                                                  
+  - 新增流程完全共用                                                            
+  HoldingService（時間預算、同時查詢上限、快取優先、沒有收盤價時補查）          
+                                                                                
+  完成後請特別回報這幾件事：                                                    
+  1. 提案時說「不確定 Jackson 3 的 String 是否照 Textual 的規則」：             
+     實際測試結果是什麼？"code": 2330（數字）有沒有回 400？如果改用自訂         
+  deserializer，說明原因。                                                      
+  2. 全域 JSON 設定改了之後，原本的所有測試（網頁、行情                         
+  client、排程）是否都還通過。                                                  
+  3. POST 回傳的 pnl、return_pct 型別：用題目例子 2330、1 張、1000.00、收盤     
+  1100.00，                                                                     
+     確認 pnl 是整數 93708（不是 93708.00）、return_pct 是 9.36。               
+  4. 錯誤回應也有 Content-Type: application/json;charset=UTF-8。                
+                                                                                
+  【規則】再提醒一次：                                                          
+  - 不要自己 commit，完成後提出 commit 訊息。                                   
+  - 範圍外的發現列在「建議（未實作）」。                                        
+  - 完成後回報：改了哪些檔案、./mvnw test 結果、上面 4 件事的結果。             
+  - 這個 commit 完成後，請接著給我「完整版的手動驗證步驟」（curl.exe 測每一支   
+  API、                                                                         
+    Android Studio 模擬器 + App 1.0 的操作與截圖），以及 README 草稿。README    
+  等我驗證通過後才寫入。                                                        
+
+● 先讀目前 HoldingService.create 的最新內容，因為第 3 題的修正（PR
+  #5）有改過它。
+
+  Ran 4 shell commands (ctrl+o to expand)
+
+● 行情 client 只用 readTree，不受 coercion 設定影響，而 Spring Boot 4.2 與
+  Jackson 3.1.8 所需的兩個 API 也都確認存在，接下來開始寫程式。 · summary
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\config\JacksonConfig.java)
+  ⎿  Wrote 46 lines to
+     src\main\java\io\hsiaopingkuo\stockholdings\config\JacksonConfig.java
+      1 package io.hsiaopingkuo.stockholdings.config;
+      2 
+      3 import org.springframework.boot.jackson.autoconfigure.JsonMapperB
+        uilderCustomizer;
+      4 import org.springframework.context.annotation.Bean;
+      5 import org.springframework.context.annotation.Configuration;
+      6 
+      7 import tools.jackson.databind.cfg.CoercionAction;
+      8 import tools.jackson.databind.cfg.CoercionInputShape;
+      9 import tools.jackson.databind.type.LogicalType;
+     … +37 lines (ctrl+o to expand)
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\dto\ApiHoldingCreateRequest.
+       java)
+  ⎿  Wrote 47 lines to src\main\java\io\hsiaopingkuo\stockholdings\dto\ApiH
+     oldingCreateRequest.java
+       1 package io.hsiaopingkuo.stockholdings.dto;
+       2 
+       3 import java.math.BigDecimal;
+       4 
+       5 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+       6 import com.fasterxml.jackson.annotation.JsonProperty;
+       7 
+       8 import jakarta.validation.constraints.DecimalMin;
+       9 import jakarta.validation.constraints.Digits;
+      10 import jakarta.validation.constraints.Max;
+     … +37 lines (ctrl+o to expand)
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\dto\ApiHoldingUpdateRequest.
+       java)
+  ⎿  Wrote 31 lines to src\main\java\io\hsiaopingkuo\stockholdings\dto\ApiH
+     oldingUpdateRequest.java
+       1 package io.hsiaopingkuo.stockholdings.dto;
+       2 
+       3 import java.math.BigDecimal;
+       4 
+       5 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+       6 import com.fasterxml.jackson.annotation.JsonProperty;
+       7 
+       8 import jakarta.validation.constraints.DecimalMin;
+       9 import jakarta.validation.constraints.Digits;
+      10 import jakarta.validation.constraints.Max;
+     … +21 lines (ctrl+o to expand)
+
+● Controller 加上新增、修改、刪除：
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\api\HoldingApiController.ja
+        va)
+  ⎿  Added 26 lines
+      43      return ApiHoldingResponse.from(holdingService.findListItem(
+          id));
+      44    }
+      45 
+      46 +  /**                                                          
+      47 +   * 新增：和網頁新增呼叫同一個 HoldingService.create（時間預算
+         +、同時查詢上限、快取優先、沒有收盤價時補查都一樣）。           
+      48 +   * 成功回 201 和新建的持股物件；存好之後用清單同一個查詢再讀 
+         +一次，收盤價、盈虧和清單上的一定相同。                         
+      49 +   * 不寫 consumes：Content-Type 不對時錯誤發生在讀取請求內容的
+         +階段，ApiExceptionHandler 才接得到、回 400。                   
+      50 +   */                                                          
+      51 +  @PostMapping("/holdings")                                    
+      52 +  public ResponseEntity<ApiHoldingResponse> create(@Valid @Requ
+         +estBody ApiHoldingCreateRequest request) {                     
+      53 +    Holding created = holdingService.create(request.code(), req
+         +uest.lots(), request.buyPrice());                              
+      54 +    return ResponseEntity.status(HttpStatus.CREATED)           
+      55 +        .body(ApiHoldingResponse.from(holdingService.findListIt
+         +em(created.getId())));                                         
+      56 +  }                                                            
+      57 +                                                               
+      58 +  /** 修改：只能改張數和買進價（代號不能改），和網頁修改呼叫同 
+         +一個 HoldingService.update。 */                                
+      59 +  @PutMapping("/holdings/{id}")                                
+      60 +  public ApiHoldingResponse update(@PathVariable Long id, @Vali
+         +d @RequestBody ApiHoldingUpdateRequest request) {              
+      61 +    holdingService.update(id, request.lots(), request.buyPrice(
+         +));                                                            
+      62 +    return ApiHoldingResponse.from(holdingService.findListItem(
+         +id));                                                          
+      63 +  }                                                            
+      64 +                                                               
+      65 +  /** 刪除成功回 204，沒有內容。 */                            
+      66 +  @DeleteMapping("/holdings/{id}")                             
+      67 +  public ResponseEntity<Void> delete(@PathVariable Long id) {  
+      68 +    holdingService.delete(id);                                 
+      69 +    return ResponseEntity.noContent().build();                 
+      70 +  }                                                            
+      71 +                                                               
+      72    /** 總計：和網頁頁首同一個計算（第 4 題 SummaryCalculator），
+          用清單每一列已算好的盈虧加總。 */
+      73    @GetMapping("/summary")
+      74    public ApiSummaryResponse summary() {
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\api\HoldingApiController.ja
+        va)
+  ⎿  Added 10 lines
+       2 
+       3  import java.util.List;
+       4 
+       5 +import org.springframework.http.HttpStatus;                    
+       6 +import org.springframework.http.ResponseEntity;                
+       7 +import org.springframework.web.bind.annotation.DeleteMapping;  
+       8  import org.springframework.web.bind.annotation.GetMapping;
+       9  import org.springframework.web.bind.annotation.PathVariable;
+      10 +import org.springframework.web.bind.annotation.PostMapping;    
+      11 +import org.springframework.web.bind.annotation.PutMapping;     
+      12 +import org.springframework.web.bind.annotation.RequestBody;    
+      13  import org.springframework.web.bind.annotation.RequestMapping;
+      14  import org.springframework.web.bind.annotation.RestController;
+      15 
+      16  import io.hsiaopingkuo.stockholdings.calc.SummaryCalculator;
+      17 +import io.hsiaopingkuo.stockholdings.dto.ApiHoldingCreateReques
+         +t;                                                             
+      18  import io.hsiaopingkuo.stockholdings.dto.ApiHoldingResponse;
+      19 +import io.hsiaopingkuo.stockholdings.dto.ApiHoldingUpdateReques
+         +t;                                                             
+      20  import io.hsiaopingkuo.stockholdings.dto.ApiSummaryResponse;
+      21  import io.hsiaopingkuo.stockholdings.dto.HoldingListItem;
+      22 +import io.hsiaopingkuo.stockholdings.entity.Holding;           
+      23  import io.hsiaopingkuo.stockholdings.service.HoldingService;
+      24 +import jakarta.validation.Valid;                               
+      25 
+      26  /**
+      27   * 給 Android App 1.0 用的 API（第 5 題），完全照附件《App 1.0
+          API 規格》。App 已發布，/api/v1 之後也不能改壞。
+
+● Exception handler 加上 400、404、409、503 的轉換：
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\api\ApiExceptionHandler.jav
+        a)
+  ⎿  Added 53 lines
+      38      return ApiJson.error(HttpStatus.NOT_FOUND, "NOT_FOUND", "找
+          不到這筆持股（id=" + e.getValue() + "）");
+      39    }
+      40 
+      41 +  // ===== 新增時的業務錯誤（和網頁用同一組例外，訊息也相同） =
+         +====                                                           
+      42 +                                                               
+      43 +  @ExceptionHandler(StockCodeNotFoundException.class)          
+      44 +  ResponseEntity<ErrorResponse> stockNotFound(StockCodeNotFound
+         +Exception e) {                                                 
+      45 +    return ApiJson.error(HttpStatus.NOT_FOUND, "STOCK_NOT_FOUND
+         +", e.getMessage());                                            
+      46 +  }                                                            
+      47 +                                                               
+      48 +  @ExceptionHandler(DuplicateCodeException.class)              
+      49 +  ResponseEntity<ErrorResponse> duplicateCode(DuplicateCodeExce
+         +ption e) {                                                     
+      50 +    return ApiJson.error(HttpStatus.CONFLICT, "DUPLICATE_CODE",
+         + e.getMessage());                                              
+      51 +  }                                                            
+      52 +                                                               
+      53 +  // 規格沒有定義的兩種情況（使用者決定）：503 表示伺服器本身正
+         +常，只是現在無法確認代號                                       
+      54 +  @ExceptionHandler(MarketUnavailableException.class)          
+      55 +  ResponseEntity<ErrorResponse> quoteUnavailable(MarketUnavaila
+         +bleException e) {                                              
+      56 +    return ApiJson.error(HttpStatus.SERVICE_UNAVAILABLE, "QUOTE
+         +_UNAVAILABLE", e.getMessage());                                
+      57 +  }                                                            
+      58 +                                                               
+      59 +  @ExceptionHandler(MarketAmbiguousException.class)            
+      60 +  ResponseEntity<ErrorResponse> marketUndetermined(MarketAmbigu
+         +ousException e) {                                              
+      61 +    return ApiJson.error(HttpStatus.SERVICE_UNAVAILABLE, "MARKE
+         +T_UNDETERMINED", e.getMessage());                              
+      62 +  }                                                            
+      63 +                                                               
+      64 +  // ===== 請求內容不對：一律 400 VALIDATION_ERROR =====       
+      65 +                                                               
+      66    /**
+      67 +   * 欄位檢查沒過（缺欄位、null、張數超出範圍、超過兩位小數…） 
+         +。                                                             
+      68 +   * 可能同時有好幾個錯誤，依欄位順序（代號、張數、買進價）串成
+         +一句，App 直接顯示 message；                                   
+      69 +   * Bean Validation 回報錯誤的順序不固定，所以自己排序，同樣的
+         +輸入每次都得到同樣的訊息。                                     
+      70 +   */                                                          
+      71 +  @ExceptionHandler(MethodArgumentNotValidException.class)     
+      72 +  ResponseEntity<ErrorResponse> invalidFields(MethodArgumentNot
+         +ValidException e) {                                            
+      73 +    String message = e.getBindingResult().getFieldErrors().stre
+         +am()                                                           
+      74 +        .sorted(Comparator.comparingInt((FieldError error) -> F
+         +IELD_ORDER.indexOf(error.getField()))                          
+      75 +            .thenComparing(FieldError::getDefaultMessage, Compa
+         +rator.nullsLast(Comparator.naturalOrder())))                   
+      76 +        .map(FieldError::getDefaultMessage)                    
+      77 +        .distinct()                                            
+      78 +        .collect(Collectors.joining("；"));                    
+      79 +    return ApiJson.error(HttpStatus.BAD_REQUEST, "VALIDATION_ER
+         +ROR", message);                                                
+      80 +  }                                                            
+      81 +                                                               
+      82 +  /** JSON 格式壞掉、沒有請求內容，或型別不對（張數 1.5、"1"， 
+         +買進價 "1000"，代號 2330 這類數字）。 */                       
+      83 +  @ExceptionHandler(HttpMessageNotReadableException.class)     
+      84 +  ResponseEntity<ErrorResponse> unreadable(HttpMessageNotReadab
+         +leException e) {                                               
+      85 +    return ApiJson.error(HttpStatus.BAD_REQUEST, "VALIDATION_ER
+         +ROR", unreadableMessage(e));                                   
+      86 +  }                                                            
+      87 +                                                               
+      88 +  /** Content-Type 不是 application/json（或沒帶）。標準是 415 
+         +，規格只列了 400，照使用者決定回 400。 */                      
+      89 +  @ExceptionHandler(HttpMediaTypeNotSupportedException.class)  
+      90 +  ResponseEntity<ErrorResponse> unsupportedMediaType(HttpMediaT
+         +ypeNotSupportedException e) {                                  
+      91 +    return ApiJson.error(HttpStatus.BAD_REQUEST, "VALIDATION_ER
+         +ROR", "請用 Content-Type: application/json 送出 JSON");        
+      92 +  }                                                            
+      93 +                                                               
+      94 +  /**                                                          
+      95     * 最後防線：其他沒預料到的錯誤。完整的 stack trace 只寫進伺
+          服器 log（之後才查得出原因），
+      96     * 回應只給一句固定的訊息，不把例外內容送到 App。
+      97     */
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\api\ApiExceptionHandler.jav
+        a)
+  ⎿  Added 35 lines
+      100      log.error("App API 發生未預期的錯誤：{} {}", request.getMe
+           thod(), request.getRequestURI(), e);
+      101      return ApiJson.error(HttpStatus.INTERNAL_SERVER_ERROR, "IN
+           TERNAL_ERROR", "伺服器發生錯誤，請稍後再試");
+      102    }
+      103 +                                                              
+      104 +  /**                                                         
+      105 +   * 讀不懂請求內容時，盡量告訴使用者是哪個欄位錯了：         
+      106 +   * - JSON 語法壞掉（少括號、多逗號）→ 一句通用訊息          
+      107 +   * - 型別不對 → Jackson 的例外會帶「是哪個欄位」（path），換
+          +成那個欄位的中文訊息                                          
+      108 +   * Jackson 原本的英文訊息含有類別名稱等內部資訊，不直接回給 
+          +App。                                                         
+      109 +   */                                                         
+      110 +  private static String unreadableMessage(HttpMessageNotReadab
+          +leException e) {                                              
+      111 +    for (Throwable cause = e.getCause(); cause != null; cause 
+          += cause.getCause()) {                                         
+      112 +      // 數字太大（張數 99999999999）雖然也是 StreamReadExcept
+          +ion，但屬於「型別不對」，要往下看是哪個欄位                   
+      113 +      if (cause instanceof StreamReadException && !(cause inst
+          +anceof InputCoercionException)) {                             
+      114 +        return INVALID_JSON;                                  
+      115 +      }                                                       
+      116 +      if (cause instanceof JacksonException jackson) {        
+      117 +        for (JacksonException.Reference ref : jackson.getPath(
+          +)) {                                                          
+      118 +          String fieldMessage = FIELD_TYPE_MESSAGES.get(ref.ge
+          +tPropertyName());                                             
+      119 +          if (fieldMessage != null) {                         
+      120 +            return fieldMessage;                              
+      121 +          }                                                   
+      122 +        }                                                     
+      123 +      }                                                       
+      124 +    }                                                         
+      125 +    return INVALID_JSON;                                      
+      126 +  }                                                           
+      127 +                                                              
+      128 +  private static final String INVALID_JSON = "請求內容不是正確
+          +的 JSON";                                                     
+      129 +                                                              
+      130 +  // 欄位錯誤的排序：照 JSON 請求裡的欄位順序（Java 物件的屬性
+          +名稱）                                                        
+      131 +  private static final List<String> FIELD_ORDER = List.of("cod
+          +e", "lots", "buyPrice");                                      
+      132 +                                                              
+      133 +  // 型別不對時，各欄位（JSON 的欄位名稱）的訊息              
+      134 +  private static final Map<String, String> FIELD_TYPE_MESSAGES
+          + = Map.of(                                                    
+      135 +      "code", "股票代號必須是文字，例如 \"2330\"",            
+      136 +      "lots", "張數必須是 1～999 的整數",                     
+      137 +      "buy_price", "買進價必須是數字，最多兩位小數");         
+      138  }
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\api\ApiExceptionHandler.jav
+        a)
+  ⎿  Added 16 lines
+       1  package io.hsiaopingkuo.stockholdings.api;
+       2 
+       3 +import java.util.Comparator;                                   
+       4 +import java.util.List;                                         
+       5 +import java.util.Map;                                          
+       6 +import java.util.stream.Collectors;                            
+       7 +                                                               
+       8  import org.slf4j.Logger;
+       9  import org.slf4j.LoggerFactory;
+      10  import org.springframework.http.HttpStatus;
+      11  import org.springframework.http.ResponseEntity;
+      12 +import org.springframework.http.converter.HttpMessageNotReadabl
+         +eException;                                                    
+      13 +import org.springframework.validation.FieldError;              
+      14 +import org.springframework.web.HttpMediaTypeNotSupportedExcepti
+         +on;                                                            
+      15 +import org.springframework.web.bind.MethodArgumentNotValidExcep
+         +tion;                                                          
+      16  import org.springframework.web.bind.annotation.ExceptionHandler
+          ;
+      17  import org.springframework.web.bind.annotation.RestControllerAd
+          vice;
+      18  import org.springframework.web.method.annotation.MethodArgument
+          TypeMismatchException;
+      19 
+      20  import io.hsiaopingkuo.stockholdings.dto.ErrorResponse;
+      21 +import io.hsiaopingkuo.stockholdings.exception.DuplicateCodeExc
+         +eption;                                                        
+      22  import io.hsiaopingkuo.stockholdings.exception.HoldingNotFoundE
+          xception;
+      23 +import io.hsiaopingkuo.stockholdings.exception.MarketAmbiguousE
+         +xception;                                                      
+      24 +import io.hsiaopingkuo.stockholdings.exception.MarketUnavailabl
+         +eException;                                                    
+      25 +import io.hsiaopingkuo.stockholdings.exception.StockCodeNotFoun
+         +dException;                                                    
+      26  import jakarta.servlet.http.HttpServletRequest;
+      27 +import tools.jackson.core.JacksonException;                    
+      28 +import tools.jackson.core.exc.InputCoercionException;          
+      29 +import tools.jackson.core.exc.StreamReadException;             
+      30 
+      31  /**
+      32   * App API 的錯誤一律轉成規格的格式 {"error":{"code":"...","mes
+          sage":"..."}}，任何回應都不露出 stack trace。
+
+  Ran 1 shell command (ctrl+o to expand)
+● 接著寫新增、修改、刪除的測試，放在一個新的測試類別。它的 Spring
+  設定和查詢測試完全相同，所以會共用同一個測試環境，不會多啟動一次。
+
+● Write(src\test\java\io\hsiaopingkuo\stockholdings\api\HoldingApiWriteTest.java
+       )
+  ⎿  Wrote 385 lines to src\test\java\io\hsiaopingkuo\stockholdings\api\Hol
+     dingApiWriteTest.java
+       1 package io.hsiaopingkuo.stockholdings.api;
+       2 
+       3 import static org.assertj.core.api.Assertions.assertThat;
+       4 import static org.hamcrest.Matchers.containsString;
+       5 import static org.mockito.ArgumentMatchers.any;
+       6 import static org.mockito.ArgumentMatchers.anyString;
+       7 import static org.mockito.ArgumentMatchers.eq;
+       8 import static org.mockito.BDDMockito.given;
+       9 import static org.mockito.Mockito.never;
+      10 import static org.mockito.Mockito.verify;
+     … +375 lines (ctrl+o to expand)
+
+  Read 1 file, ran 1 shell command (ctrl+o to expand)
+
+● 43 個測試第一次全部通過，包括 "code": 2330 回
+  400。我接下來暫時拿掉設定做兩個對照實驗，確認是 JacksonConfig
+  真的在起作用，做完會還原。 · summary
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● 實驗 2 的報告因為替換多了一個右括號而編譯失敗，所以上一輪的結果不算數；我會修
+  正後重做兩個實驗，並從 XML 報告讀取失敗案例名稱以避免中文亂碼。 · summary
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● 實驗 1 有效：拿掉整個設定後，有 7 個案例失敗，證明設定確實在起作用。實驗 2
+  的替換又多吃了一個括號，再修正一次：
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● 兩個實驗的結論很清楚，檔案也已還原，和原本一模一樣。再補兩個 405 的情況：對
+  /api/v1/holdings 送 PUT，以及對 /api/v1/holdings/1 送 POST。
+
+● Update(src\test\java\io\hsiaopingkuo\stockholdings\api\ApiErrorResponseTest.ja
+        va)
+  ⎿  Added 7 lines
+      62          .andExpect(header().string("Allow", containsString("GET
+          "))), "METHOD_NOT_ALLOWED");
+      63      assertErrorFormat(mockMvc.perform(patch("/api/v1/summary"))
+      64          .andExpect(status().isMethodNotAllowed()), "METHOD_NOT_
+          ALLOWED");
+      65 +    // 清單路徑只支援 GET、POST；單筆路徑只支援 GET、PUT、DELET
+         +E                                                              
+      66 +    assertErrorFormat(mockMvc.perform(put("/api/v1/holdings")) 
+      67 +        .andExpect(status().isMethodNotAllowed())              
+      68 +        .andExpect(header().string("Allow", containsString("POS
+         +T"))), "METHOD_NOT_ALLOWED");                                  
+      69 +    assertErrorFormat(mockMvc.perform(post("/api/v1/holdings/1"
+         +))                                                             
+      70 +        .andExpect(status().isMethodNotAllowed())              
+      71 +        .andExpect(header().string("Allow", containsString("DEL
+         +ETE"))), "METHOD_NOT_ALLOWED");                                
+      72    }
+      73 
+      74    @Test
+
+● Update(src\test\java\io\hsiaopingkuo\stockholdings\api\ApiErrorResponseTest.ja
+        va)
+  ⎿  Added 2 lines
+       5  import static org.mockito.BDDMockito.given;
+       6  import static org.springframework.test.web.servlet.request.Mock
+          MvcRequestBuilders.get;
+       7  import static org.springframework.test.web.servlet.request.Mock
+          MvcRequestBuilders.patch;
+       8 +import static org.springframework.test.web.servlet.request.Mock
+         +MvcRequestBuilders.post;                                       
+       9 +import static org.springframework.test.web.servlet.request.Mock
+         +MvcRequestBuilders.put;                                        
+      10  import static org.springframework.test.web.servlet.result.MockM
+          vcResultMatchers.content;
+      11  import static org.springframework.test.web.servlet.result.MockM
+          vcResultMatchers.header;
+      12  import static org.springframework.test.web.servlet.result.MockM
+          vcResultMatchers.jsonPath;
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● 完整測試通過（310 個，0 失敗，原有 267 個也都在）。接下來我會用真的伺服器做冒
+  煙測試，先關閉背景排程並改用記憶體資料庫、埠號
+  18080，避免連到官方或動到你的資料。 · summary
+
+  Ran 3 shell commands (ctrl+o to expand)
+
+● 真的 Tomcat 上的行為和測試結果一致，所有回應都帶有 charset=UTF-8，網頁的 404
+  也維持原本的 HTML 頁面。關掉冒煙測試用的伺服器：
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● Background command "Start app on port 18080 with in-memory DB, no official
+  calls" failed with exit code 1
+
+● 冒煙測試伺服器已主動關閉，背景工作的 exit 1
+  是我停掉它造成的，並非錯誤；測試使用記憶體資料庫，你的 data/
+  未被更動。接下來我會讀取現有的 README，以便把草稿放在正確位置。 · summary
+
+  Ran 3 shell commands (ctrl+o to expand)
+
+● 程式寫完了，./mvnw test 全部通過：310 個測試，0 失敗、0 錯誤、0 
+  略過。另外我用真的 Tomcat 做了冒煙測試，行為和單元測試一致。
+
+  一、改了哪些檔案
+
+  檔案: config/JacksonConfig.java
+  新增／修改: 新增
+  內容: JSON
+    嚴格型別：整數欄位不接受小數、字串、布林值；小數欄位不接受字串、布林值；文字
+  欄位不接受數字、布林值
+  ────────────────────────────────────────
+  檔案: dto/ApiHoldingCreateRequest.java
+  新增／修改: 新增
+  內容: POST
+    的請求內容。檢查規則和網頁表單相同，代號會先去掉前後空白，不認得的欄位會忽略
+  ────────────────────────────────────────
+  檔案: dto/ApiHoldingUpdateRequest.java
+  新增／修改: 新增
+  內容: PUT 的請求內容。刻意沒有 code 欄位，所以帶了也會被忽略
+  ────────────────────────────────────────
+  檔案: api/HoldingApiController.java
+  新增／修改: 修改
+  內容: 新增 POST（201）、PUT（200）、DELETE（204）。新增和修改直接呼叫
+    HoldingService 的 create、update，和網頁共用同一套流程
+  ────────────────────────────────────────
+  檔案: api/ApiExceptionHandler.java
+  新增／修改: 修改
+  內容: 加上 404 STOCK_NOT_FOUND、409 DUPLICATE_CODE、503
+    QUOTE_UNAVAILABLE、503 MARKET_UNDETERMINED，以及三種 400
+    VALIDATION_ERROR（欄位檢查沒過、讀不懂 JSON、Content-Type 不對）
+  ────────────────────────────────────────
+  檔案: test/.../api/HoldingApiWriteTest.java
+  新增／修改: 新增
+  內容: 43 個測試，其中 29
+    種錯誤請求用參數化測試（同一個測試換不同輸入跑多次）
+  ────────────────────────────────────────
+  檔案: test/.../api/ApiErrorResponseTest.java
+  新增／修改: 修改
+  內容: 405 多測兩種情況：PUT /holdings、POST /holdings/1
+
+  HoldingService 這次沒有改。新增流程（時間預算、同時查詢上限、快取優先、沒有收
+  盤價時補查）完全沿用第 3 題的版本。
+
+  二、你要我特別回報的 4 件事
+
+  1. Jackson 3 的 String 是否照 Textual 的規則：會，不需要自訂 deserializer
+
+  "code": 2330 會回 400，訊息是「股票代號必須是文字，例如 "2330"」。
+
+  為了確認真的是設定在起作用，而不是測試剛好通過，我做了兩個對照實驗：暫時拿掉設
+  定，看哪些測試失敗，做完再還原。
+
+  ┌─────────────────────────────────┬────────────────────────────────────────┐
+  │              實驗               │               失敗的案例               │
+  ├─────────────────────────────────┼────────────────────────────────────────┤
+  │ 拿掉整個 JacksonConfig          │ 7 個失敗：張數 1.5、1.0、"1"；買進價   │
+  │                                 │ "1000"；代號 2330、true；PUT 的 1.5    │
+  ├─────────────────────────────────┼────────────────────────────────────────┤
+  │ 只拿掉文字欄位（Textual）的規則 │ 只有代號 2330、true 這 2 個失敗        │
+  └─────────────────────────────────┴────────────────────────────────────────┘
+
+  結論：Jackson 3 的 StringDeserializer 會遵守 LogicalType.Textual 的設定。
+
+  順帶發現：張數或買進價送 true，不加設定時 Jackson 3
+  本來就會拒絕。我還是保留了明確的設定，讓規則一眼看得到。
+
+  做實驗時我自己出了兩次錯：用來暫時改程式的指令把括號改壞，導致編譯失敗，報告顯
+  示的是上一次的舊結果。我發現後修正並重跑，上表是有效的結果。
+
+  2. 全域 JSON 設定改了之後，原本的測試都還通過
+
+  - 新增 43 個測試，原本的 267 個全部通過，共 310 個。網頁、行情
+    client（TwseMiIndexClientTest 等）、排程（QuoteRefreshServiceTest
+    等）都在其中。
+  - 為什麼不會影響其他地方：行情 client 只用 readTree 讀成樹狀結構，不會套用
+    coercion 規則；網頁表單不經過 Jackson。
+
+  3. POST 用題目例子：pnl 是整數 93708，return_pct 是 9.36
+
+  - 測試：送出 {"code":"2330","lots":1,"buy_price":1000}，官方（假的）回收盤
+    1100.00。
+  - 回應原始字串裡確實是 "pnl":93708,（不是
+    93708.00）、"return_pct":9.36、"buy_price":1000.00,。
+  - 型別也用 isNumber() 確認過。
+  - 這一項是單元測試的結果。冒煙測試時我刻意不連官方，所以沒辦法在真的伺服器上成
+    功新增，要靠你在下面的手動驗證確認。
+
+  4. 錯誤回應也有 Content-Type: application/json;charset=UTF-8
+
+  - 單元測試：所有錯誤測試都有檢查 Content-Type。
+  - 真的 Tomcat 冒煙測試：用 curl -i 確認 400、404（id 找不到、{id} 是
+    abc、路徑不存在）、405（附 Allow: POST,GET）、503 都有帶，成功的 200
+    也有。網頁的 404 還是原本的 HTML 頁面，沒有被影響。
+
+  三、建議的 commit 訊息
+
+  feat: 第5題 App API 新增、修改、刪除與 JSON 嚴格型別檢查
+
+  git add src/main/java/io/hsiaopingkuo/stockholdings/config/JacksonConfig.java
+  src/main/java/io/hsiaopingkuo/stockholdings/dto/ApiHoldingCreateRequest.java
+  src/main/java/io/hsiaopingkuo/stockholdings/dto/ApiHoldingUpdateRequest.java
+  src/main/java/io/hsiaopingkuo/stockholdings/api
+  src/test/java/io/hsiaopingkuo/stockholdings/api
+
+  ---
+
+  四、完整版手動驗證步驟
+
+  A. 用 curl.exe 測每一支 API
+
+  準備
+
+  1. 開一個 PowerShell 視窗啟動伺服器：.\mvnw.cmd 
+     spring-boot:run。這會連官方網站，請在有網路時做。
+  2. 另開一個 PowerShell 視窗執行下面的指令。先執行 chcp 
+     65001，主控台才能正確顯示中文。
+
+  注意事項
+
+  - 以下以 Windows PowerShell 5.1 為準，JSON 裡的雙引號要寫成 \"。PowerShell 5.1
+    傳參數給外部程式時會吃掉雙引號，不加反斜線的話，curl 收到的會是壞掉的
+    JSON。
+  - 用 -i 參數會顯示狀態碼和 header。每一步都要確認 Content-Type: 
+    application/json;charset=UTF-8（DELETE 的 204 沒有內容，所以沒有這一行）。
+
+  #: 1
+  指令: curl.exe -i http://localhost:8080/api/v1/holdings
+  預期: 200，[] 或目前的持股陣列
+  ────────────────────────────────────────
+  #: 2
+  指令: curl.exe -i -X POST http://localhost:8080/api/v1/holdings -H
+    "Content-Type: application/json" -d
+    '{\"code\":\"2330\",\"lots\":1,\"buy_price\":1000}'
+  預期: 201，持股物件有 10 個欄位；market 是 "TWSE"；pnl 是整數（沒有
+    .00）。記下 id
+  ────────────────────────────────────────
+  #: 3
+  指令: 同上，code 換成 6488、buy_price 換成 450
+  預期: 201，market 是 "TPEX"
+  ────────────────────────────────────────
+  #: 4
+  指令: 再送一次第 2 步
+  預期: 409，DUPLICATE_CODE、「2330 已在持股中」
+  ────────────────────────────────────────
+  #: 5
+  指令: code 換成 9999
+  預期: 404，STOCK_NOT_FOUND
+  ────────────────────────────────────────
+  #: 6
+  指令: -d '{\"code\":\"2317\",\"lots\":1.5,\"buy_price\":100}'
+  預期: 400，「張數必須是 1～999 的整數」
+  ────────────────────────────────────────
+  #: 7
+  指令: -d '{\"code\":2317,\"lots\":1,\"buy_price\":100}'
+  預期: 400，「股票代號必須是文字…」
+  ────────────────────────────────────────
+  #: 8
+  指令: -d '{\"code\":\"2317\",\"lots\":1,\"buy_price\":\"100\"}'
+  預期: 400，「買進價必須是數字，最多兩位小數」
+  ────────────────────────────────────────
+  #: 9
+  指令: -d '{\"code\":\"2317\",\"lots\":1,\"buy_price\":980.555}'
+  預期: 400，「買進價最多兩位小數…」
+  ────────────────────────────────────────
+  #: 10
+  指令: -d '{\"code\":\"2317\",'
+  預期: 400，「請求內容不是正確的 JSON」
+  ────────────────────────────────────────
+  #: 11
+  指令: 第 2 步的指令，把 -H 改成 "Content-Type: text/plain"
+  預期: 400，「請用 Content-Type: application/json 送出 JSON」
+  ────────────────────────────────────────
+  #: 12
+  指令: curl.exe -i http://localhost:8080/api/v1/holdings/{id}
+  預期: 200，2330 的持股物件
+  ────────────────────────────────────────
+  #: 13
+  指令: curl.exe -i http://localhost:8080/api/v1/holdings/abc
+  預期: 404，NOT_FOUND
+  ────────────────────────────────────────
+  #: 14
+  指令: curl.exe -i -X PUT http://localhost:8080/api/v1/holdings/{id} -H
+    "Content-Type: application/json" -d
+    '{\"code\":\"9999\",\"lots\":2,\"buy_price\":980.5}'
+  預期: 200，code 仍是 "2330"、lots 是 2、buy_price 是 980.50
+  ────────────────────────────────────────
+  #: 15
+  指令: curl.exe -i http://localhost:8080/api/v1/summary
+  預期: 200，5 個欄位都是數字；有收盤價時 quote_missing 是 0
+  ────────────────────────────────────────
+  #: 16
+  指令: curl.exe -i -X PATCH http://localhost:8080/api/v1/holdings
+  預期: 405，METHOD_NOT_ALLOWED，有 Allow: POST,GET
+  ────────────────────────────────────────
+  #: 17
+  指令: curl.exe -i http://localhost:8080/api/v1/xxx
+  預期: 404，NOT_FOUND、「找不到這個 API：GET /api/v1/xxx」
+  ────────────────────────────────────────
+  #: 18
+  指令: curl.exe -i -X DELETE http://localhost:8080/api/v1/holdings/{id}
+  預期: 204，沒有內容
+  ────────────────────────────────────────
+  #: 19
+  指令: 再刪一次第 18 步
+  預期: 404，NOT_FOUND
+
+  503 QUOTE_UNAVAILABLE（官方連不上）
+
+  1. 停掉伺服器，改用連不到的行情主機啟動：
+
+  $env:TWSE_BASE_URL="http://localhost:9";
+  $env:TPEX_BASE_URL="http://localhost:9"; .\mvnw.cmd spring-boot:run
+  2. 新增一個行情快取裡沒有的代號：
+
+  curl.exe -i -X POST http://localhost:8080/api/v1/holdings -H "Content-Type: 
+  application/json" -d '{\"code\":\"ZZ99\",\"lots\":1,\"buy_price\":10}'
+
+     預期：503，QUOTE_UNAVAILABLE、「暫時無法連線官方網站確認代號，請稍後再試」
+     。
+     要用快取裡沒有的代號：快取裡有的代號不會問官方，會直接新增成功。
+  3. 測完先清掉環境變數，再正常啟動：
+
+  Remove-Item Env:TWSE_BASE_URL, Env:TPEX_BASE_URL
+
+  MARKET_UNDETERMINED 需要兩個市場剛好同時有同一個代號，而且日期相同，手動做不出
+  來，只有單元測試涵蓋。
+
+  B. Android Studio 模擬器 + App 1.0
+
+  1. 伺服器用一般方式啟動：.\mvnw.cmd 
+     spring-boot:run，不要設定上面那些環境變數。
+  2. 建立模擬器：Android Studio →「Device Manager」→「＋（Create Virtual
+     Device）」→ 選 Pixel（例如 Pixel 7）→ 系統映像選 API 34 → Finish → 按 ▶
+     開機。
+  3. 安裝 App：把主考官提供的 持股記帳-App1.0.apk
+     拖進模擬器視窗。也可以用指令：adb install "主考官提供的 持股記帳-App1.0.apk
+     的完整路徑"。
+  4. 打開「持股記帳 1.0」→ 右上角「設定」→ 伺服器網址填
+     http://10.0.2.2:8080。不是 localhost：模擬器裡的 localhost
+     指的是模擬器自己。
+  5. 依序操作並確認：
+
+  | 操作                                    | 預期
+                      |
+  |-----------------------------------------|-----------------------------------
+  ---------------------|
+  | 新增 2330、1 張、1000                   | 清單出現
+  2330，有名稱、收盤價、盈虧                    |
+  | 新增 6488、1 張、450                    | 清單有兩筆，總計正確
+                      |
+  | 再新增 2330                             | App 顯示「2330 已在持股中」
+                      |
+  | 新增 9999                               | App
+  顯示「查無此股票代號：9999（上市、上櫃都找不到）」 |
+  | 修改 2330 為 2 張、980.5                | 清單更新，總計跟著變
+                      |
+  | 刪除一筆後再新增回來                    | 清單、總計正確
+                      |
+  | 對照網頁 http://localhost:8080/holdings | App 和網頁的盈虧、總計數字一致
+                      |
+     整個過程都不應出現「資料格式錯誤」。
+  6. 截圖：清單畫面要有至少兩筆持股和總計。
+     - 點模擬器側邊工具列的相機圖示（Take screenshot），預設會存到桌面。
+     - 改名成 v1-app1-list.png，放到專案的 screenshots/ 資料夾，也就是
+       screenshots/v1-app1-list.png。
+     - 如果要用指令截圖，請用 adb shell screencap -p /sdcard/s.png 再 adb pull 
+       /sdcard/s.png screenshots\v1-app1-list.png。不要在 PowerShell 5.1 用 adb 
+       exec-out screencap -p > 檔案，> 會把圖檔的二進位內容轉成文字編碼而損壞。
+  7. 如果 App 顯示連線失敗：
+     - 先在電腦的瀏覽器確認 http://localhost:8080/api/v1/holdings 打得開。
+     - 再確認網址是 http://10.0.2.2:8080，最後面不要多一個 /。
+  8. 截圖的 commit 由你自己做：docs: 第5題 App 1.0 清單截圖
+
+  ---
+
+  五、README 草稿（驗證通過後，等你同意才寫入）
+
+  1. 在「## 更換行情主機」前面新增一節：
+
+  ## App 1.0 API
+
+  給 Android App 1.0 用的 API，完全照附件《App 1.0 API 規格》：路徑開頭
+  `/api/v1`，回應是 JSON（`Content-Type:
+  application/json;charset=UTF-8`），欄位名稱小寫加底線。
+
+  | 方法 | 路徑 | 成功 | 失敗 |
+  |---|---|---|---|
+  | GET | `/api/v1/holdings` | 200，持股物件陣列；沒有持股回 `[]` | |
+  | GET | `/api/v1/holdings/{id}` | 200，持股物件 | 404 `NOT_FOUND` |
+  | POST | `/api/v1/holdings` | 201，新建的持股物件 | 400
+  `VALIDATION_ERROR`、404 `STOCK_NOT_FOUND`、409 `DUPLICATE_CODE`、503（見下方）
+  |
+  | PUT | `/api/v1/holdings/{id}` | 200，修改後的持股物件 | 400
+  `VALIDATION_ERROR`、404 `NOT_FOUND` |
+  | DELETE | `/api/v1/holdings/{id}` | 204，沒有內容 | 404 `NOT_FOUND` |
+  | GET | `/api/v1/summary` | 200，總計物件 | |
+
+  範例：
+  ```bash
+  curl -i -X POST http://localhost:8080/api/v1/holdings -H "Content-Type:
+  application/json" -d '{"code":"2330","lots":1,"buy_price":1000}'
+  ```
+  （Windows PowerShell 5.1 請用 `curl.exe`，JSON 裡的 `"` 要寫成 `\"`。）
+
+  所有錯誤都是同一個格式，App 會直接顯示 `message`：
+  ```json
+  { "error": { "code": "DUPLICATE_CODE", "message": "2330 已在持股中" } }
+  ```
+
+  ### 規格沒有寫到的情況
+
+  | 情況 | 回應 |
+  |---|---|
+  | 新增時官方網站連不上，無法確認代號 | 503
+  `QUOTE_UNAVAILABLE`「暫時無法連線官方網站確認代號，請稍後再試」 |
+  | 新增時上市、上櫃都查到，而且最近交易日相同 | 503
+  `MARKET_UNDETERMINED`「無法判斷 {代號} 是上市或上櫃，請聯絡管理者」 |
+  | 型別不對（張數 1.5、`"1"`，買進價 `"1000"`，代號 `2330` 數字） | 400
+  `VALIDATION_ERROR`，不會自動轉換或截斷 |
+  | JSON 格式壞掉、沒有內容、Content-Type 不是 `application/json` | 400
+  `VALIDATION_ERROR` |
+  | `{id}` 不是數字或超出範圍 | 404 `NOT_FOUND` |
+  | 路徑不存在 | 404 `NOT_FOUND` |
+  | 方法不支援（例如 PATCH） | 405 `METHOD_NOT_ALLOWED` |
+  | 伺服器內部錯誤 | 500 `INTERNAL_ERROR`，不會露出錯誤細節 |
+  | PUT 的請求帶了 `code` | 忽略（代號不能改），不回錯誤；其他不認得的欄位也忽略
+  |
+  | 第 2 題時存的舊持股，還沒補到名稱或市場 |
+  先用行情快取補上；行情快取也沒有時（例如官方一直連不上），`name`、`market`
+  回空字串 `""`，不會是 `null` |
+  | 全部持股都沒有收盤價 | 總計的 `market_value`、`pnl` 是 0，`return_pct` 是
+  0.00（網頁顯示「—」，API 照規格回數字） |
+
+  ### App 1.0 怎麼連
+
+  - **Android Studio 模擬器**：App 的「設定」填
+  `http://10.0.2.2:8080`。模擬器裡的 `localhost` 指的是模擬器自己，`10.0.2.2`
+  才是你的電腦。
+  - **實體手機**：手機和電腦連同一個 Wi-Fi，「設定」填電腦的區網 IP，例如
+  `http://192.168.1.20:8080`。
+    - 查電腦的 IP：Windows 執行 `ipconfig`，看「IPv4 位址」；Mac 到「系統設定 →
+  Wi-Fi → 詳細資訊」。
+    - 電腦的防火牆要允許 8080 埠的連線。Windows 用系統管理員身分開 PowerShell
+  執行：
+      ```powershell
+      New-NetFirewallRule -DisplayName "stock-holdings 8080" -Direction Inbound
+  -Protocol TCP -LocalPort 8080 -Action Allow
+      ```
+
+  2. 「## 專案架構」的目錄樹：
+
+  - 在 calc/ 前面加一行：├── api/  給 App 1.0 的 REST 
+    API（/api/v1）與統一的錯誤格式
+  - config/ 那一行改成：台北時區 Clock、行情 API 
+    設定（主機網址、逾時、排程）、JSON 嚴格型別檢查
+  - dto/ 那一行改成：表單欄位與檢查規則、App API 的請求與回應、JSON 
+    錯誤格式、清單的一列（含收盤價、盈虧）
+
+  六、REVIEW 草稿（之前約定要記的，等你同意才寫入）
+
+  ## 第 5 題：給手機 App 用的 API
+
+  ### 我做的決定
+  | 項目 | 決定 |
+  |---|---|
+  | 規格以外的兩種新增失敗 | 官方連不上：503
+  `QUOTE_UNAVAILABLE`；兩個市場日期相同：503
+  `MARKET_UNDETERMINED`，照規格的錯誤格式 |
+  | 舊持股沒有市場 | 先用行情快取補；快取也沒有時 `market` 回空字串 `""`。只有第
+  2 題的舊持股、而且官方一直連不上時才會發生，驗收從全新資料庫開始，幾乎不會遇
+  到，所以不問主考官 |
+  | `{id}` 不是數字或太大 | 404 `NOT_FOUND`：規格裡 GET、DELETE
+  單筆的失敗情況只列 404 |
+  | 清單查詢的市場補值 | 網頁和 API 共用同一個查詢 `coalesce(h.market,
+  q.market)`，網頁清單也一起受惠 |
+  | Content-Type 不對 | 400 `VALIDATION_ERROR`（標準是 415，規格只列了 400） |
+  | 回應的 Content-Type | 明確加上
+  `charset=UTF-8`（規格寫「JSON（UTF-8）」），錯誤回應也一樣 |
+  | 即時提示的錯誤代碼 | `/holdings/lookup` 判斷不出市場時，從 409
+  `MARKET_AMBIGUOUS` 改成 503 `MARKET_UNDETERMINED`，和 App API 一致（第 3
+  題當時決定回 409，見上方第 3 題 F-03 的紀錄） |
+
+  ### 我說錯、由 AI 發現的
+  - 我在任務說明裡寫「/holdings/lookup 目前也是回 503，兩邊一致」。AI
+  對照程式碼後指出：只有「官方連不上」一致；「判斷不出市場」時 lookup 回的是 409
+  `MARKET_AMBIGUOUS`。我決定一起改成 503 `MARKET_UNDETERMINED`。
+
+  ### 刻意不做或簡化的部分
+  - 網址含有 Tomcat 直接拒絕的字元等錯誤，在進入 Spring MVC 之前就被擋下，會回
+  Spring Boot 預設的 JSON 錯誤格式，不是 `{"error":...}`。App
+  不會送出這種請求，所以不處理。
+
+  ### AI 犯過的錯
+  | # | 錯誤 | 怎麼發現 | 處理 |
+  |---|---|---|---|
+  | 1 | 提案時沒發現網頁的即時提示 JavaScript 是用「狀態碼
+  409」分辨「判斷不出市場」；改成 503 後會和「連不上」混在一起 | AI
+  實作時自己發現 | 同一個 commit 把 JavaScript 改成看 `error.code` |
+  | 2 | 動手前沒有確認目前所在的分支，只依據對話一開始的狀態，結果修改做在
+  `fix/q3-no-trade-backfill` 上，不是 `feature/q5-app-api-v1` | 我發現沒有先切回
+  master | AI 先把修改備份，我重新對齊分支後，AI 比對備份確認內容完整再還原 |
+  | 3 | 做對照實驗（暫時拿掉設定，看測試會不會失敗）時，用來改程式的指令兩次把括
+  號改壞，第一次讀到的是編譯失敗前的舊報告 | AI 回報前自己發現 |
+  修正指令後重做，並改成從測試報告讀出失敗的案例名稱 |
+
+  第 3 題 F-03 那一列（REVIEW.md 第 133 行）寫的是「即時提示回
+  409」。我的建議是保留不改，因為那是當時的決定，由上面「即時提示的錯誤代碼」那
+  一列說明後來的變更。如果你希望直接改舊的那一列，也可以。
+
+  七、還沒做的部分
+
+  - 你要做的手動驗證：curl 和模擬器，尤其「POST 回傳 pnl
+    是整數」要在真的伺服器上確認。
+  - 截圖：screenshots/v1-app1-list.png。
+  - README、REVIEW 寫入：等你同意草稿。
+  - ai-log：這題的對話請用 /export 匯出放進 ai-log/，commit 前檢查有沒有密碼或
+    token。
+  - TESTLOG：這次沒有需要記的問題。Eclipse 編輯器蓋掉 HoldingService
+    方法是開發環境的問題，不是程式的問題。如果你手動測試發現問題再告訴我。
+
+  建議（未實作）
+
+  1. 用瀏覽器打開不存在的 /api 路徑，可能看到 HTML 錯誤頁：瀏覽器送的 Accept: 
+     text/html 不接受 JSON，錯誤回應可能改成 Spring 預設的 HTML
+     頁面。這一點我沒有驗證；App 和 curl 不受影響。
+  2. POST 的 201 可以加 Location header：例如 /api/v1/holdings/12，這是 REST
+     的慣例，但規格沒要求，App 也用不到。
+
+✻ Crunched for 10m 27s · done 下午10:15
+
+> 這個 commit 可以，我會先確認兩件事再 commit：                                 
+  - git diff master -- HoldingService.java 確認沒被 Eclipse 蓋掉                
+  - git log 確認分支只有第 5 題的 commit 和 b546f42                             
+                                                                                
+  建議（未實作）：                                                              
+  1. 這次一起做：/api/** 的錯誤一律回 {"error":...} JSON，不管 Accept 是        
+  text/html 還是其他。                                                          
+     規格寫「發生錯誤時，回應的格式一律是…」，主考官可能直接用瀏覽器打開 API    
+  網址驗收。                                                                    
+     請補測試：Accept: text/html 時，/api/v1/holdings/999、/api/v1/xxx 仍回     
+  JSON 錯誤格式。                                                               
+     網頁（非 /api）的錯誤頁行為不變。                                          
+     commit：fix: 第5題 /api 的錯誤不論 Accept 一律回 JSON 錯誤格式             
+  2. 不做（規格沒要求 Location header）。                                       
+                                                                                
+  REVIEW 第 133 行：同意保留不改。                                              
+                                                                                
+  README 草稿：curl 範例除了 bash，再補一個 Windows PowerShell 5.1 的寫法       
+  （curl.exe，JSON 雙引號寫成 \"），並註明要先執行 chcp 65001                   
+  中文才會正常顯示。                                                            
+  其他內容同意，等我手動驗證通過後再寫入。                                      
+
+● 先確認 commit 的狀態。修正會改到的檔案（ApiExceptionHandler 等）和還沒 commit
+  的那一批重疊，所以要等它先 commit 才分得開：
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● 你的 feat 改動（第 5 題）還沒 commit，我已確認 HoldingService.java 只多了
+  findListItem 那 5 行，未被 Eclipse 覆蓋；等你 commit
+  後我再改檔案，現在先用真伺服器查 Accept: text/html 的實際回應。 · summary
+
+  Ran 3 shell commands (ctrl+o to expand)
+
+● 冒煙測試的伺服器已關閉。我上次「瀏覽器可能看到 HTML
+  錯誤頁」的判斷是錯的，但確實另有一個問題，我接下來先修正新檔案的位置，讓這次的
+  feat commit 和其他變更分開。 · summary
+
+● Write(src\main\java\io\hsiaopingkuo\stockholdings\config\ApiContentNegotiation
+       Config.java)
+  ⎿  Wrote 46 lines to src\main\java\io\hsiaopingkuo\stockholdings\config\A
+     piContentNegotiationConfig.java
+       1 package io.hsiaopingkuo.stockholdings.config;
+       2 
+       3 import java.util.List;
+       4 
+       5 import org.springframework.context.annotation.Configuration;
+       6 import org.springframework.http.MediaType;
+       7 import org.springframework.web.accept.ContentNegotiationStrategy
+         ;
+       8 import org.springframework.web.accept.HeaderContentNegotiationSt
+         rategy;
+     … +38 lines (ctrl+o to expand)
+
+● Write(src\test\java\io\hsiaopingkuo\stockholdings\config\ApiContentNegotiation
+       Test.java)
+  ⎿  Wrote 105 lines to src\test\java\io\hsiaopingkuo\stockholdings\config\
+     ApiContentNegotiationTest.java
+      1 package io.hsiaopingkuo.stockholdings.config;
+      2 
+      3 import static org.assertj.core.api.Assertions.assertThat;
+      4 import static org.springframework.test.web.servlet.request.MockMv
+        cRequestBuilders.get;
+      5 import static org.springframework.test.web.servlet.request.MockMv
+        cRequestBuilders.patch;
+      6 import static org.springframework.test.web.servlet.request.MockMv
+        cRequestBuilders.post;
+      7 import static org.springframework.test.web.servlet.result.MockMvc
+     … +99 lines (~4 KB) (ctrl+o to expand)
+
+● 先確認這個測試在沒有修正時會失敗，避免它不管有沒有修正都會通過；確認後再放回修
+  正，看它通過：
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● 沒有修正時，5 個 API 的案例失敗、2 個網頁的案例通過；放回修正後 7
+  個全部通過，和預期一致。接著跑全部測試：
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● 全部測試通過，共 317 個。這個問題是在真的 Tomcat 上發現的，所以也回到真的
+  Tomcat 確認修正有效：
+  Ran 2 shell commands (ctrl+o to expand)
+
+● 修正完成，./mvnw test 全部通過：317 個測試，0 失敗（原本 310 個加上新的 7
+  個）。真的 Tomcat 也確認過了。
+
+  先更正：我上次的建議判斷錯了
+
+  我上次在「建議（未實作）」寫「瀏覽器打開不存在的 /api 路徑可能看到 HTML
+  錯誤頁（未驗證）」。實際測試後，這個說法是錯的：
+
+  - 真的瀏覽器送的 Accept（Accept 標頭：客戶端告訴伺服器它想要什麼格式）是
+    text/html,...,*/*;q=0.8，最後的 */* 代表「什麼格式都可以」。修正前的
+    404、405、400 原本就會回 JSON 錯誤格式。
+
+  真正的問題在別的地方：Accept 裡沒有 */*、也沒有 JSON 的時候，例如只寫 Accept: 
+  text/html，或 application/xml，修正前會出錯：
+
+  ┌──────────────────────────────────────────────┬──────────────────────────┐
+  │                    修正前                    │           結果           │
+  ├──────────────────────────────────────────────┼──────────────────────────┤
+  │ /api/v1/xxx（路徑不存在）、PATCH（405）      │ 已經是 JSON，沒問題      │
+  ├──────────────────────────────────────────────┼──────────────────────────┤
+  │ /api/v1/holdings/999、/abc，甚至成功的 GET   │ 406，內容是 HTML         │
+  │ /api/v1/holdings                             │ 頁面或空白，不是         │
+  │                                              │ {"error":...}            │
+  └──────────────────────────────────────────────┴──────────────────────────┘
+
+  原因：controller 上寫了 produces = 
+  "application/json;charset=UTF-8"。客戶端說「我不要 JSON」時，Spring 在挑選
+  controller 的階段就放棄了，回 406，根本沒進到我們的錯誤處理。
+
+  你要求的測試（Accept: text/html 時 /api/v1/holdings/999 回
+  JSON）在修正前確實會失敗，所以這個修正還是必要的。這筆錯誤我已經寫進下方
+  REVIEW 草稿的 #4。
+
+  一、修正做法
+
+  新增 config/ApiContentNegotiationConfig.java。
+
+  - 內容協商（content negotiation）：Spring 依 Accept 決定回應格式的機制。
+  - 這個設定讓 /api/ 開頭的請求一律當成要 JSON，不看 Accept 寫什麼。
+  - 其他路徑照原本的方式看 Accept，網頁的行為不變。
+  - 不用改原本的 controller 和錯誤處理。
+
+  二、驗證結果
+
+  先確認測試真的抓得到問題：暫時拿掉修正時，5 個 API 案例失敗；放回修正後 7
+  個全部通過。
+
+  真的 Tomcat（埠號 18080、記憶體資料庫，測完已關閉）：
+
+  ┌───────────────────────────────────────┬──────────────────────────────────┐
+  │                 請求                  │              修正後              │
+  ├───────────────────────────────────────┼──────────────────────────────────┤
+  │ Accept: text/html →                   │ 404，JSON                        │
+  │ /api/v1/holdings/999                  │ NOT_FOUND，charset=UTF-8         │
+  ├───────────────────────────────────────┼──────────────────────────────────┤
+  │ Accept: text/html → /api/v1/holdings  │ 200，JSON []                     │
+  ├───────────────────────────────────────┼──────────────────────────────────┤
+  │ Accept: application/xml，同上兩個     │ 404 JSON、200 JSON               │
+  ├───────────────────────────────────────┼──────────────────────────────────┤
+  │ 網頁 /holdings                        │ 200，HTML 清單頁（不變）         │
+  ├───────────────────────────────────────┼──────────────────────────────────┤
+  │ 網頁 /no-such-page                    │ 404，Whitelabel HTML（不變）     │
+  └───────────────────────────────────────┴──────────────────────────────────┘
+
+  新測試 config/ApiContentNegotiationTest（7 個）涵蓋：
+
+  - text/html、application/xml、text/plain 三種 Accept 下的
+    404（找不到持股、路徑不存在、{id} 是 abc）、405、400 都是 JSON 錯誤格式。
+  - 成功的 GET 也回 JSON。
+  - 網頁清單頁、網頁 404 不受影響。
+
+  三、commit 順序
+
+  兩個 commit 的檔案沒有重疊。你準備好的 feat
+  指令可以照原樣用，不會把這次的修正一起加進去。
+
+  1. 先 commit 第 5 題的新增、修改、刪除（照原本的指令）：
+
+  git add src/main/java/io/hsiaopingkuo/stockholdings/config/JacksonConfig.java
+  src/main/java/io/hsiaopingkuo/stockholdings/dto/ApiHoldingCreateRequest.java
+  src/main/java/io/hsiaopingkuo/stockholdings/dto/ApiHoldingUpdateRequest.java
+  src/main/java/io/hsiaopingkuo/stockholdings/api
+  src/test/java/io/hsiaopingkuo/stockholdings/api
+  git commit -m "feat: 第5題 App API 新增、修改、刪除與 JSON 嚴格型別檢查"
+
+  2. 再 commit 這次的修正（新測試用到 POST，所以要排在 feat 後面）：
+
+  git add src/main/java/io/hsiaopingkuo/stockholdings/config/ApiContentNegotiati
+  onConfig.java src/test/java/io/hsiaopingkuo/stockholdings/config/ApiContentNeg
+  otiationTest.java
+  git commit -m "fix: 第5題 /api 的錯誤不論 Accept 一律回 JSON 錯誤格式"
+
+  兩個都 commit 完之後，git status 應該是乾淨的。
+
+  四、README 草稿的修改（其他部分照上次的草稿）
+
+  1. 「App 1.0 API」一節的範例改成：
+
+  範例（Mac／Linux、Git Bash）：
+  ```bash
+  curl -i -X POST http://localhost:8080/api/v1/holdings -H "Content-Type:
+  application/json" -d '{"code":"2330","lots":1,"buy_price":1000}'
+  ```
+
+  Windows PowerShell 5.1：先執行 `chcp 65001`，中文才會正常顯示；指令要寫
+  `curl.exe`（`curl` 在 PowerShell 5.1 是別的指令），JSON 裡的 `"` 要寫成 `\"`：
+  ```powershell
+  chcp 65001
+  curl.exe -i -X POST http://localhost:8080/api/v1/holdings -H "Content-Type:
+  application/json" -d '{\"code\":\"2330\",\"lots\":1,\"buy_price\":1000}'
+  ```
+
+  2. 「規格沒有寫到的情況」表格加一列：
+
+  | 請求的 Accept 不是 JSON（例如只接受 `text/html`） | `/api/` 一律回
+  JSON（成功和錯誤都是），不會回 HTML 或 406 |
+
+  3. 「專案架構」的 config/ 那一行改成：
+
+  台北時區 Clock、行情 API 設定（主機網址、逾時、排程）、JSON 嚴格型別檢查、App 
+  API 一律回 JSON
+
+  五、REVIEW 草稿的修改（其他部分照上次的草稿）
+
+  「我做的決定」表格加一列：
+
+  | `/api` 的回應格式 | 不論 Accept 是什麼，一律回 JSON（含錯誤）。規格寫「發生
+  錯誤時，回應的格式一律是…」，主考官可能直接用瀏覽器或其他工具打開 API 網址 |
+
+  「AI 犯過的錯」加一列：
+
+  | 4 | 建議裡說「瀏覽器打開不存在的 /api 路徑可能看到 HTML
+  錯誤頁」，實測後發現錯了：瀏覽器的 Accept 含 `*/*`，原本就回
+  JSON；真正的問題是 Accept 不含 JSON 也不含 `*/*` 時（例如只有
+  `text/html`），連存在的路徑和成功的請求都回 406 | 我決定修正後，AI
+  動手前先用真的伺服器測試 | 修正前先寫測試並確認會失敗；改成 `/api/` 一律回
+  JSON |
+
+  建議（未實作）
+
+  這次沒有新的建議。上次的 2（Location header）照你的決定不做。
+
+✻ Cogitated for 4m 33s · done 下午10:22
+
+> 替我commit feat: 第5題 App API 新增、修改、刪除與 JSON 嚴格型別檢查的部份     
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● 已經 commit 好了：3258430 feat: 第5題 App API 新增、修改、刪除與 JSON 
+  嚴格型別檢查。沒有加 AI 署名行，也還沒 push。
+
+  這個 commit 包含 7 個檔案，新增 658 行：
+
+  - api/ApiExceptionHandler.java
+  - api/HoldingApiController.java
+  - config/JacksonConfig.java
+  - dto/ApiHoldingCreateRequest.java
+  - dto/ApiHoldingUpdateRequest.java
+  - ApiErrorResponseTest.java
+  - HoldingApiWriteTest.java
+
+  fix: 第5題 /api 的錯誤不論 Accept 一律回 JSON 錯誤格式 那一批還沒
+  commit，只剩這兩個檔案：
+
+  - config/ApiContentNegotiationConfig.java
+  - test/.../config/ApiContentNegotiationTest.java
+
+  要我也幫你 commit 這一個嗎？
+
+✻ Cooked for 8s · done 下午10:24
+
+> 好，替我commit fix: 第5題 /api 的錯誤不論 Accept 一律回 JSON 錯誤格式         
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● 已經 commit 好了：a08feea fix: 第5題 /api 的錯誤不論 Accept 一律回 JSON 
+  錯誤格式，共 2 個檔案、新增 151 行。沒有加 AI 署名行，也還沒
+  push。工作區已經乾淨。
+
+  feature/q5-app-api-v1 現在比 master 多 4 個 commit：
+
+  a08feea fix: 第5題 /api 的錯誤不論 Accept 一律回 JSON 錯誤格式
+  3258430 feat: 第5題 App API 新增、修改、刪除與 JSON 嚴格型別檢查
+  54c81a9 feat: 第5題 App API 查詢（持股清單、單筆、總計）與 /api/v1 
+  統一錯誤格式
+  b546f42 fix: 第3題 即時提示判斷不出市場時改成 503 MARKET_UNDETERMINED，和 App 
+  API 一致
+
+  第 5 題接下來還要做的事
+
+  1. 手動驗證：照上上則的步驟，用 curl.exe 測每一支
+     API，再用模擬器和主考官提供的 App 1.0 操作。
+  2. 截圖：清單畫面要有至少兩筆持股和總計，存成
+     screenshots/v1-app1-list.png，由你 commit：docs: 第5題 App 1.0 清單截圖。
+  3. README、REVIEW：驗證通過後告訴我，我照已同意的草稿寫入，再提出 commit
+     訊息。
+  4. TESTLOG：手動驗證時發現問題請告訴我；目前沒有要記的。
+  5. ai-log：這題的對話請用 /export 匯出放進 ai-log/，commit 前檢查有沒有密碼或
+     token。
+  6. 合併：push 分支後用一般 merge 合併回 master，不要用 squash merge。
+  7. 重新 clone 驗證：合併後在另一個資料夾重新 clone，照 README 從頭啟動一次。
+  8. 打 tag：Part A 五題都在 master 上之後，執行 git tag v1.0.0、git push origin
+     v1.0.0，再去領 Part B。打 tag 前還要先寫好 SECURITY.md（CLAUDE.md
+     的規定），到時候我會整理草稿給你。
+
+✻ Cogitated for 13s · done 下午10:25
+
+※ recap: 我們在做第 5 題的 App 1.0 API，程式已經完成，也 commit 在 feature/q5-app-api-v1，317 個測試全部通過。下一步請你用 curl.exe 和模擬器手動驗證，並把清單截圖存成 screenshots/v1-app1-list.png。
+
+> 【規則】                                                                      
+  請讀 CLAUDE.md。這次只做「驗證並回報」，不要修改專案的任何檔案，也不要        
+  commit。                                                                      
+                                                                                
+  【任務】                                                                      
+  用 curl.exe 對真的伺服器做第 5 題的手動驗證，照你上次給我的 19 個步驟（含 503 
+  QUOTE_UNAVAILABLE）。                                                         
+                                                                                
+  執行方式：                                                                    
+  1. 不要動我的資料：用獨立的資料庫（記憶體資料庫或暫存資料夾的                 
+  H2）和另一個埠號啟動，                                                        
+     不要用 ./data/，也不要占用 8080（我的伺服器可能開著）。                    
+  2. 正常情況要連真的官方網站（這次要確認「POST 回傳的 pnl                      
+  是整數」在真的伺服器上也成立）。                                              
+     503 那一段再用 TWSE_BASE_URL、TPEX_BASE_URL 指到連不上的主機重新啟動。     
+  3. 驗證完把你啟動的伺服器都關掉，環境變數也清掉。                             
+                                                                                
+  回報格式：一個表格，每一步列出                                                
+  - 指令（完整的）                                                              
+  - 預期的狀態碼、code                                                          
+  - 實際的狀態碼、code                                                          
+  - 有沒有 Content-Type: application/json;charset=UTF-8                         
+  - 結果（✅／❌）                                                              
+    2330、6488 新增成功時，把完整的回應內容貼出來，讓我看 10 個欄位和型別。     
+                                                                                
+  如果有 ❌，先不要修，回報原因給我，我決定要不要修、要不要記進 TESTLOG。       
+
+● 這次只做驗證，不修改專案檔案，也不 commit。
+
+  驗證環境：
+
+  - 埠號 18080，資料庫用記憶體 H2，不會碰到 ./data/ 和 8080。
+  - 正常情況會連真的官方網站。
+  - 背景排程設為關閉，所以 2330、6488
+    一定會走「新增時向官方逐檔查詢」這條路，對官方的請求量也最少。
+
+  環境變數只設在伺服器那個行程上，測完關掉伺服器就跟著消失，不會留在任何 shell
+  裡。
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● 伺服器已在埠號 18080 啟動，接著在 Windows PowerShell 5.1 中照原樣執行 curl.exe
+  指令驗證，現在先跑步驟 1 到 5。 · summary
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● 步驟 1～5 都符合預期。2330、6488 的盈虧我另外手算過，和 API
+  回的數字一致。接著跑步驟 6～19（2330 的 id 是 1）：
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● 步驟 6～19 都符合預期。步驟 14、15 的數字我也手算過，全部一致。接著做
+  503：關掉伺服器，改用連不到的行情主機重新啟動。
+
+  Ran 3 shell commands (ctrl+o to expand)
+
+● Cleanup: stop server, confirm ports and data untouched.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● 19 個步驟加上 503 全部符合預期，沒有 ❌。
+
+  驗證環境
+
+  - 這次用的是 a08feea 的程式碼，工作區是乾淨的。
+  - 伺服器用埠號 18080 和記憶體資料庫啟動，並關掉背景排程。所以 2330、6488
+    都是新增時向真的官方網站逐檔查詢。
+  - 指令在 Windows PowerShell 5.1 裡照原樣執行 curl.exe，JSON 用 \"
+    的寫法可以正常使用。
+  - 下表把 -s -i -X -H 這些參數省略了，$B 代表
+    http://localhost:18080。你自己測的時候換成 http://localhost:8080。
+
+  驗證結果
+
+  #: 1
+  指令: curl.exe -s -i "$B/api/v1/holdings"
+  預期: 200 []
+  實際: 200 []
+  Content-Type 有 charset=UTF-8: ✅
+  結果: ✅
+  ────────────────────────────────────────
+  #: 2
+  指令: curl.exe -s -i -X POST "$B/api/v1/holdings" -H "Content-Type:
+    application/json" -d '{\"code\":\"2330\",\"lots\":1,\"buy_price\":1000}'
+  預期: 201
+  實際: 201，持股物件（見下方）
+  Content-Type 有 charset=UTF-8: ✅
+  結果: ✅
+  ────────────────────────────────────────
+  #: 3
+  指令: 同上，-d '{\"code\":\"6488\",\"lots\":1,\"buy_price\":450}'
+  預期: 201，TPEX
+  實際: 201，TPEX
+  Content-Type 有 charset=UTF-8: ✅
+  結果: ✅
+  ────────────────────────────────────────
+  #: 4
+  指令: 再送一次第 2 步
+  預期: 409 DUPLICATE_CODE
+  實際: 409 DUPLICATE_CODE「2330 已在持股中」
+  Content-Type 有 charset=UTF-8: ✅
+  結果: ✅
+  ────────────────────────────────────────
+  #: 5
+  指令: 同上，-d '{\"code\":\"9999\",\"lots\":1,\"buy_price\":1000}'
+  預期: 404 STOCK_NOT_FOUND
+  實際: 404 STOCK_NOT_FOUND「查無此股票代號：9999（上市、上櫃都找不到）」
+  Content-Type 有 charset=UTF-8: ✅
+  結果: ✅
+  ────────────────────────────────────────
+  #: 6
+  指令: -d '{\"code\":\"2317\",\"lots\":1.5,\"buy_price\":100}'
+  預期: 400 VALIDATION_ERROR
+  實際: 400「張數必須是 1～999 的整數」
+  Content-Type 有 charset=UTF-8: ✅
+  結果: ✅
+  ────────────────────────────────────────
+  #: 7
+  指令: -d '{\"code\":2317,\"lots\":1,\"buy_price\":100}'
+  預期: 400 VALIDATION_ERROR
+  實際: 400「股票代號必須是文字，例如 "2330"」
+  Content-Type 有 charset=UTF-8: ✅
+  結果: ✅
+  ────────────────────────────────────────
+  #: 8
+  指令: -d '{\"code\":\"2317\",\"lots\":1,\"buy_price\":\"100\"}'
+  預期: 400 VALIDATION_ERROR
+  實際: 400「買進價必須是數字，最多兩位小數」
+  Content-Type 有 charset=UTF-8: ✅
+  結果: ✅
+  ────────────────────────────────────────
+  #: 9
+  指令: -d '{\"code\":\"2317\",\"lots\":1,\"buy_price\":980.555}'
+  預期: 400 VALIDATION_ERROR
+  實際: 400「買進價最多兩位小數（整數部分最多 10 位）」
+  Content-Type 有 charset=UTF-8: ✅
+  結果: ✅
+  ────────────────────────────────────────
+  #: 10
+  指令: -d '{\"code\":\"2317\",'
+  預期: 400 VALIDATION_ERROR
+  實際: 400「請求內容不是正確的 JSON」
+  Content-Type 有 charset=UTF-8: ✅
+  結果: ✅
+  ────────────────────────────────────────
+  #: 11
+  指令: 第 2 步，-H "Content-Type: text/plain"
+  預期: 400 VALIDATION_ERROR
+  實際: 400「請用 Content-Type: application/json 送出 JSON」
+  Content-Type 有 charset=UTF-8: ✅
+  結果: ✅
+  ────────────────────────────────────────
+  #: 12
+  指令: curl.exe -s -i "$B/api/v1/holdings/1"
+  預期: 200
+  實際: 200，和第 2 步的內容相同
+  Content-Type 有 charset=UTF-8: ✅
+  結果: ✅
+  ────────────────────────────────────────
+  #: 13
+  指令: curl.exe -s -i "$B/api/v1/holdings/abc"
+  預期: 404 NOT_FOUND
+  實際: 404 NOT_FOUND「找不到這筆持股（id=abc）」
+  Content-Type 有 charset=UTF-8: ✅
+  結果: ✅
+  ────────────────────────────────────────
+  #: 14
+  指令: curl.exe -s -i -X PUT "$B/api/v1/holdings/1" -H "Content-Type:
+    application/json" -d '{\"code\":\"9999\",\"lots\":2,\"buy_price\":980.5}'
+  預期: 200，代號不變
+  實際: 200，code 仍是 "2330"、lots 2、buy_price 980.50
+  Content-Type 有 charset=UTF-8: ✅
+  結果: ✅
+  ────────────────────────────────────────
+  #: 15
+  指令: curl.exe -s -i "$B/api/v1/summary"
+  預期: 200，5 個欄位都是數字
+  實際: 200
+    {"total_cost":2414435,"market_value":4966000,"pnl":2529591,"return_pct":104.
+  77,"quote_missing":0}
+  Content-Type 有 charset=UTF-8: ✅
+  結果: ✅
+  ────────────────────────────────────────
+  #: 16
+  指令: curl.exe -s -i -X PATCH "$B/api/v1/holdings"
+  預期: 405 METHOD_NOT_ALLOWED
+  實際: 405，有 Allow: GET,POST
+  Content-Type 有 charset=UTF-8: ✅
+  結果: ✅
+  ────────────────────────────────────────
+  #: 17
+  指令: curl.exe -s -i "$B/api/v1/xxx"
+  預期: 404 NOT_FOUND
+  實際: 404「找不到這個 API：GET /api/v1/xxx」
+  Content-Type 有 charset=UTF-8: ✅
+  結果: ✅
+  ────────────────────────────────────────
+  #: 18
+  指令: curl.exe -s -i -X DELETE "$B/api/v1/holdings/1"
+  預期: 204，沒有內容
+  實際: 204，沒有內容
+  Content-Type 有 charset=UTF-8: 沒有內容，所以沒有 Content-Type（正確）
+  結果: ✅
+  ────────────────────────────────────────
+  #: 19
+  指令: 再刪一次第 18 步
+  預期: 404 NOT_FOUND
+  實際: 404「找不到這筆持股（id=1），可能已被刪除」；清單只剩 6488
+  Content-Type 有 charset=UTF-8: ✅
+  結果: ✅
+  ────────────────────────────────────────
+  #: 503
+  指令: 用 TWSE_BASE_URL=http://localhost:9、TPEX_BASE_URL=http://localhost:9
+    重新啟動，再執行 curl.exe -s -i -X POST "$B/api/v1/holdings" -H
+    "Content-Type: application/json" -d
+    '{\"code\":\"ZZ99\",\"lots\":1,\"buy_price\":10}'
+  預期: 503 QUOTE_UNAVAILABLE
+  實際: 503「暫時無法連線官方網站確認代號，請稍後再試」，0.65 秒回應，沒有儲存
+  Content-Type 有 charset=UTF-8: ✅
+  結果: ✅
+
+  2330、6488 新增成功的完整回應（真的官方收盤價）
+
+  2330（第 2 步）
+
+  {"id":1,"code":"2330","name":"台積電","market":"TWSE","lots":1,"buy_price":100
+  0.00,"current_price":2230.00,"price_date":"2026-11-24","pnl":1218708,"return_p
+  ct":121.70}
+
+  6488（第 3 步）
+
+  {"id":2,"code":"6488","name":"環球晶","market":"TPEX","lots":1,"buy_price":450
+  .00,"current_price":506.00,"price_date":"2026-11-24","pnl":53120,"return_pct":
+  11.79}
+
+  ┌───────────────┬──────────┬──────────────────────────────────────────────┐
+  │     欄位      │ 規格型別 │                     實際                     │
+  ├───────────────┼──────────┼──────────────────────────────────────────────┤
+  │ id            │ 整數     │ 1、2                                         │
+  ├───────────────┼──────────┼──────────────────────────────────────────────┤
+  │ code          │ 字串     │ "2330"、"6488"                               │
+  ├───────────────┼──────────┼──────────────────────────────────────────────┤
+  │ name          │ 字串     │ "台積電"、"環球晶"                           │
+  ├───────────────┼──────────┼──────────────────────────────────────────────┤
+  │ market        │ 字串     │ "TWSE"、"TPEX"                               │
+  ├───────────────┼──────────┼──────────────────────────────────────────────┤
+  │ lots          │ 整數     │ 1                                            │
+  ├───────────────┼──────────┼──────────────────────────────────────────────┤
+  │ buy_price     │ 數字     │ 1000.00、450.00（沒有引號，是數字）          │
+  ├───────────────┼──────────┼──────────────────────────────────────────────┤
+  │ current_price │ 數字或   │ 2230.00、506.00                              │
+  │               │ null     │                                              │
+  ├───────────────┼──────────┼──────────────────────────────────────────────┤
+  │ price_date    │ 字串或   │ "2026-11-24"（今天收盤後，已有當天資料）     │
+  │               │ null     │                                              │
+  ├───────────────┼──────────┼──────────────────────────────────────────────┤
+  │ pnl           │ 整數或   │ 1218708、53120，在真的伺服器上也是整數，沒有 │
+  │               │ null     │  .00 ✅                                      │
+  ├───────────────┼──────────┼──────────────────────────────────────────────┤
+  │ return_pct    │ 數字或   │ 121.70、11.79                                │
+  │               │ null     │                                              │
+  └───────────────┴──────────┴──────────────────────────────────────────────┘
+
+  2330 的真實收盤價是 2230.00，不是題目例子的
+  1100.00，所以盈虧和例子不同。題目例子（盈虧 93708、收益率
+  9.36）由單元測試涵蓋。
+
+  我用第 4 題的規則手算了 2330、6488（第 2、3 步）、PUT 之後的 2330（第 14
+  步）和總計（第 15 步），結果都和 API 回的數字一致。以 2330 為例：
+
+  - 賣出 2,230,000
+  - 減賣出手續費 3,177、證交稅 6,690
+  - 減買進 1,000,000、買進手續費 1,425
+  - 盈虧 = 1,218,708
+
+  清理
+
+  - 兩次啟動的伺服器都關了，18080 已經沒有程式在使用。
+  - 環境變數只設在伺服器那個行程上，伺服器關掉就跟著消失；PowerShell 裡的
+    TWSE_BASE_URL、TPEX_BASE_URL 都是空的。
+  - ./data/ 沒有被動到，最後修改時間還是驗證前的 20:08。
+  - 沒有修改任何專案檔案，git status 是乾淨的。
+
+  還沒驗證的部分
+
+  模擬器加 App 1.0 的部分（新增、修改、刪除、清單、總計，以及截圖）需要你操作
+  Android Studio。curl 這部分已經全部通過，沒有要記進 TESTLOG 的問題。
+
+✻ Crunched for 2m 8s · done 下午10:30
+
+> 我不能在app的張數欄位輸入小數點，是我程式碼的問題還是app的問題??              
+
+● 這是 App 的設計，不是你程式碼的問題，也不需要修。
+
+  為什麼這樣判斷
+
+  - 伺服器管不到手機的輸入框。 欄位能不能輸入小數點，是 App 在 Android
+    上設定的（通常是把欄位設成「只能輸入整數」，鍵盤就不會出現小數點）。我們的伺
+    服器只會收到 App 送來的 JSON，沒有任何方法影響手機的鍵盤或輸入框。
+  - 這個限制和規格一致。 規格寫張數是整數，App
+    在輸入時就擋掉小數點，是合理的設計。
+  - 伺服器這邊也有擋。 就算有人繞過 App 直接送 1.5，伺服器也會回 400「張數必須是
+    1～999 的整數」。剛才 curl 驗證的第 6 步已經在真的伺服器上確認過。
+
+  如果想自己確認
+
+  在 App 的買進價欄位輸入 980.5：
+
+  - 如果可以輸入，而且新增成功，就代表 App 只在張數欄位限制整數。
+  - 這也順便確認伺服器正確接受有小數的買進價。
+
+  要不要記進 TESTLOG
+
+  不用。TESTLOG 記的是「我們的程式」在實際操作時發現的問題；這是 App
+  本身的輸入限制，行為也符合規格。如果你想在 REVIEW 留個紀錄，可以寫一句「App
+  1.0 的張數欄位只能輸入整數，小數張數由伺服器的 400 擋下（curl 驗證第 6
+  步）」，要的話我再幫你擬草稿。
+
+✻ Cogitated for 11s · done 下午10:38
+
+> 我需要你強行塞入一筆持股是1.5的數據，把資料庫0056那筆的持股張數15改成1.5是可  
+  行的嗎?                                                                       
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+● 不可行：資料庫根本存不了 1.5。我沒有動你的資料庫，以下是查看 migration
+  檔後的判斷。
+
+  為什麼存不了
+
+  - V1__create_holding.sql 裡，張數欄位定義是 lots INT NOT NULL，型別是整數。
+  - 就算直接執行 SQL UPDATE holding SET lots = 1.5 WHERE code = '0056'，H2
+    也會把 1.5 轉成整數再存，結果會是 1 或 2，不會是 1.5。H2
+    遇到小數是四捨五入還是無條件捨去，我沒有實測，不確定是哪一個。
+  - Java 這邊的 Holding.lots 也是 int，API 輸出的張數一定是整數。
+
+  所以「伺服器回傳張數
+  1.5」這種情況，在目前的設計下不可能發生。張數從輸入（伺服器回 400）、儲存（INT
+  欄位）到輸出（int），每一層都是整數。
+
+  如果真的要存 1.5，要改什麼（不建議）
+
+  1. 新增一個 migration V4__...，把 lots 改成 DECIMAL（V1 不能改）。
+  2. Entity、DTO、ProfitCalculator 的張數都要從整數改成 BigDecimal。
+  3. API 輸出的張數會變成小數，違反規格（規格寫整數），App 1.0
+     可能會顯示「資料格式錯誤」。
+
+  這等於改壞已發布的 /api/v1，而且從 1.0 升級到 2.0
+  要用同一個資料庫，所以不建議。
+
+  另外要注意
+
+  就算只是想改成其他整數，直接改資料庫也要：
+
+  - 先關掉伺服器：H2 檔案模式同時只能有一個程式開啟。
+  - 先備份 ./data/：目前沒有開 H2 Console，要用其他 SQL 工具連線。
+
+  想確認你的目的
+
+  你想測的是哪一個？
+
+  1. 伺服器收到張數 1.5 會怎樣：已經驗證過了，curl 第 6 步回 400「張數必須是
+     1～999 的整數」。
+  2. App 收到非整數的張數會怎樣（會不會顯示「資料格式錯誤」）：我們的伺服器做不
+     出這種回應。要測的話，得另外架一個會回假資料的測試伺服器，這已經超出第 5
+     題的範圍，也不是我們程式的問題。
+  3. 其他目的：請告訴我，我再提出可行的做法。
+
+✻ Crunched for 23s · done 下午10:42
+
+> 喔沒事，我發現並不需要側這個，替我確認第五題還有甚麼還沒完成的部分            
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● 截圖已經放好了，但還沒 commit。我先看一下截圖內容，確認符合題目要求：
+
+  Read 1 file (ctrl+o to expand)
+
+● 截圖符合題目要求：
+
+  - 有兩筆持股（0050、2330）和總計，伺服器是 http://10.0.2.2:8080。
+  - 我用第 4 題的規則核對了畫面上的數字，全部正確：0050 盈虧 −24,702（ETF
+    的證交稅 0.1%）、總成本 1,121,596、市值 2,325,700、總盈虧 +1,194,006、收益率
+    106.46%。
+
+  第 5 題已完成
+
+  - 程式：4 個 commit 都在 feature/q5-app-api-v1，工作區只剩截圖還沒 commit。
+  - 自動測試：317 個全部通過。
+  - 用 curl.exe 對真的伺服器手動驗證：19 個步驟加上 503，全部 ✅。
+  - App 1.0 清單截圖：screenshots/v1-app1-list.png。
+
+  還沒完成的部分（建議照這個順序）
+
+  #: 1
+  項目: 模擬器的其他操作
+  目前狀態: 截圖證明清單和總計沒問題。新增重複代號、新增
+    9999、修改、刪除這幾項，在 App 上都正常嗎？有任何不對請告訴我
+  誰做: 你
+  ────────────────────────────────────────
+  #: 2
+  項目: commit 截圖
+  目前狀態: screenshots/ 還沒加入 git
+  誰做: 你，或叫我代 commit：docs: 第5題 App 1.0 清單截圖
+  ────────────────────────────────────────
+  #: 3
+  項目: README 寫入
+  目前狀態: README 裡還沒有任何 /api/v1 的內容。草稿你已經同意，加上了
+    PowerShell 範例和 chcp 65001 的說明
+  誰做: 第 1 項確認通過後告訴我，我就寫入
+  ────────────────────────────────────────
+  #: 4
+  項目: REVIEW 寫入
+  目前狀態: 還沒有第 5 題的段落。草稿包含：決定、你說錯由 AI 發現的
+    409、刻意不做的部分、AI 犯過的錯 #1～#4。之前你只確認了「第 133
+    行保留不改」
+  誰做: 請確認整份 REVIEW 草稿是否同意
+  ────────────────────────────────────────
+  #: 5
+  項目: TESTLOG
+  目前狀態: 目前沒有要記的問題。App 的張數欄位不能輸入小數是 App
+    的設計，不用記
+  誰做: 有新發現再告訴我
+  ────────────────────────────────────────
+  #: 6
+  項目: ai-log
+  目前狀態: 最新的檔案是第 3 題的（21:25），第 5 題的對話還沒匯出
+  誰做: 你：/export 放進 ai-log/，commit 前檢查有沒有密碼或 token
+  ────────────────────────────────────────
+  #: 7
+  項目: push 並合併
+  目前狀態: 分支還沒 push 到 GitHub
+  誰做: 你：push 後開 PR，用一般 merge 合併回 master，不要用 squash merge
+  ────────────────────────────────────────
+  #: 8
+  項目: 重新 clone 驗證
+  目前狀態: 還沒做
+  誰做: 你：在另一個資料夾 clone master，照 README 從頭啟動一次。主考官照
+    README 啟動不了就是零分
+
+  Part A 收尾（打 v1.0.0 前）
+
+  ┌─────┬─────────────┬──────────────────────────────────────────────────────┐
+  │  #  │    項目     │                       目前狀態                       │
+  ├─────┼─────────────┼──────────────────────────────────────────────────────┤
+  │     │             │ 還沒有這個檔案。CLAUDE.md 規定打 v1.0.0 前要先寫一版 │
+  │ 9   │ SECURITY.md │ ：列出相依套件的已知弱點（CVE），沒有也要寫「查詢日  │
+  │     │             │ 期、查詢方式、結果：無」。你說可以開始，我就整理草稿 │
+  ├─────┼─────────────┼──────────────────────────────────────────────────────┤
+  │ 10  │ 打 tag      │ 第 1～9 項都完成、master 是最新之後，執行 git tag    │
+  │     │             │ v1.0.0、git push origin v1.0.0，再去領 Part B        │
+  └─────┴─────────────┴──────────────────────────────────────────────────────┘
+
+  第 3、4、9 項可以在合併前一起做，都放在 feature/q5-app-api-v1 分支上，各自一個
+  commit，再一次 push 合併。
+
+✻ Churned for 30s · done 下午10:47
+
+> 第一項已確認通過，第二項已commit，請生成readme和review草稿                    
+
+  Ran 1 shell command (ctrl+o to expand)
+● 已確認截圖 commit 好了：7c5f9cc docs: 第5題 App 1.0 清單截圖，工作區是乾淨的。
+
+  以下是整合後的完整草稿，還沒寫入任何檔案。你回覆「同意」後，我才會寫進 README
+  和 REVIEW。
+
+  ---
+
+  一、README 草稿
+
+  1. 新增一節，放在「## 更換行情主機」前面（第 105 行之後）
+
+  ## App 1.0 API
+
+  給 Android App 1.0 用的 API，完全照附件《App 1.0 API 規格》：路徑開頭
+  `/api/v1`，回應一律是 JSON（`Content-Type:
+  application/json;charset=UTF-8`），欄位名稱小寫加底線（`buy_price`）。
+
+  | 方法 | 路徑 | 成功 | 失敗 |
+  |---|---|---|---|
+  | GET | `/api/v1/holdings` | 200，持股物件陣列；沒有持股回 `[]` | |
+  | GET | `/api/v1/holdings/{id}` | 200，持股物件 | 404 `NOT_FOUND` |
+  | POST | `/api/v1/holdings` | 201，新建的持股物件 | 400
+  `VALIDATION_ERROR`、404 `STOCK_NOT_FOUND`、409 `DUPLICATE_CODE`、503（見下方）
+  |
+  | PUT | `/api/v1/holdings/{id}` | 200，修改後的持股物件 | 400
+  `VALIDATION_ERROR`、404 `NOT_FOUND` |
+  | DELETE | `/api/v1/holdings/{id}` | 204，沒有內容 | 404 `NOT_FOUND` |
+  | GET | `/api/v1/summary` | 200，總計物件 | |
+
+  新增持股的範例（Mac／Linux、Git Bash）：
+  ```bash
+  curl -i -X POST http://localhost:8080/api/v1/holdings -H "Content-Type:
+  application/json" -d '{"code":"2330","lots":1,"buy_price":1000}'
+  ```
+
+  Windows PowerShell 5.1：先執行 `chcp 65001`，中文才會正常顯示；指令要寫
+  `curl.exe`（`curl` 在 PowerShell 5.1 是別的指令），JSON 裡的 `"` 要寫成 `\"`：
+  ```powershell
+  chcp 65001
+  curl.exe -i -X POST http://localhost:8080/api/v1/holdings -H "Content-Type:
+  application/json" -d '{\"code\":\"2330\",\"lots\":1,\"buy_price\":1000}'
+  ```
+
+  所有錯誤都是同一個格式，App 會直接顯示 `message`：
+  ```json
+  { "error": { "code": "DUPLICATE_CODE", "message": "2330 已在持股中" } }
+  ```
+
+  ### 規格沒有寫到的情況
+
+  | 情況 | 回應 |
+  |---|---|
+  | 新增時官方網站連不上，無法確認代號 | 503
+  `QUOTE_UNAVAILABLE`「暫時無法連線官方網站確認代號，請稍後再試」 |
+  | 新增時上市、上櫃都查到，而且最近交易日相同 | 503
+  `MARKET_UNDETERMINED`「無法判斷 {代號} 是上市或上櫃，請聯絡管理者」 |
+  | 型別不對（張數 1.5、`"1"`，買進價 `"1000"`，代號 `2330` 數字） | 400
+  `VALIDATION_ERROR`，不會自動轉換或截斷 |
+  | JSON 格式壞掉、沒有內容、Content-Type 不是 `application/json` | 400
+  `VALIDATION_ERROR` |
+  | `{id}` 不是數字或超出範圍 | 404 `NOT_FOUND` |
+  | 路徑不存在 | 404 `NOT_FOUND` |
+  | 方法不支援（例如 PATCH） | 405 `METHOD_NOT_ALLOWED` |
+  | 伺服器內部錯誤 | 500 `INTERNAL_ERROR`，不會露出錯誤細節 |
+  | 請求的 Accept 不是 JSON（例如只接受 `text/html`） | `/api/` 一律回
+  JSON（成功和錯誤都是），不會回 HTML 或 406 |
+  | PUT 的請求帶了 `code` | 忽略（代號不能改），不回錯誤；其他不認得的欄位也忽略
+  |
+  | 第 2 題時存的舊持股，還沒補到名稱或市場 |
+  先用行情快取補上；行情快取也沒有時（例如官方一直連不上），`name`、`market`
+  回空字串 `""`，不會是 `null` |
+  | 全部持股都沒有收盤價 | 總計的 `market_value`、`pnl` 是 0，`return_pct` 是
+  0.00（網頁顯示「—」，API 照規格回數字） |
+
+  ### App 1.0 怎麼連
+
+  - **Android Studio 模擬器**：App 的「設定」填
+  `http://10.0.2.2:8080`。模擬器裡的 `localhost` 指的是模擬器自己，`10.0.2.2`
+  才是你的電腦。
+  - **實體手機**：手機和電腦連同一個 Wi-Fi，「設定」填電腦的區網 IP，例如
+  `http://192.168.1.20:8080`。
+    - 查電腦的 IP：Windows 執行 `ipconfig`，看「IPv4 位址」；Mac 到「系統設定 →
+  Wi-Fi → 詳細資訊」。
+    - 電腦的防火牆要允許 8080 埠的連線。Windows 用系統管理員身分開 PowerShell
+  執行：
+      ```powershell
+      New-NetFirewallRule -DisplayName "stock-holdings 8080" -Direction Inbound
+  -Protocol TCP -LocalPort 8080 -Action Allow
+      ```
+
+  2. 「## 專案架構」的目錄樹改三行
+
+  ├── api/                            給 App 1.0 的 REST 
+  API（/api/v1）與統一的錯誤格式
+  ├── calc/                           （不變）
+  ├── config/                         台北時區 Clock、行情 API 
+  設定（主機網址、逾時、排程）、JSON 嚴格型別檢查、App API 一律回 JSON
+  ├── controller/                     （不變）
+  ├── dto/                            表單欄位與檢查規則、App API 
+  的請求與回應、JSON 錯誤格式、清單的一列（含收盤價、盈虧）
+
+  - api/ 是新增的一行，放在 calc/ 前面。
+  - config/、dto/ 這兩行改寫說明。
+  - 其他行不變。
+
+  ---
+
+  二、REVIEW 草稿（加在檔案最後）
+
+  ## 第 5 題：給手機 App 用的 API
+
+  只和 Claude Code 討論，對話紀錄在 `ai-log/`。
+
+  ### 我做的決定
+  | 項目 | 決定 |
+  |---|---|
+  | 規格以外的兩種新增失敗 | 官方連不上：503
+  `QUOTE_UNAVAILABLE`；兩個市場日期相同：503
+  `MARKET_UNDETERMINED`，都照規格的錯誤格式 |
+  | 新增流程與計算 | 和網頁共用同一個
+  `HoldingService`（時間預算、同時查詢上限、快取優先、沒有收盤價時補查）與第 4
+  題的 calc 套件，不另寫一套 |
+  | JSON 型別 | 不自動轉型別：張數 1.5、`"1"`，買進價 `"1000"`，代號
+  `2330`（數字）都回 400；買進價送整數 `1000` 要接受 |
+  | 舊持股沒有市場 | 先用行情快取補；快取也沒有時 `market` 回空字串 `""`。只有第
+  2 題的舊持股、而且官方一直連不上時才會發生，驗收從全新資料庫開始，幾乎不會遇
+  到，所以不問主考官 |
+  | `{id}` 不是數字或太大 | 404 `NOT_FOUND`：規格裡 GET、DELETE
+  單筆的失敗情況只列 404 |
+  | 清單查詢的市場補值 | 網頁和 API 共用同一個查詢 `coalesce(h.market,
+  q.market)`，網頁清單也一起受惠 |
+  | Content-Type 不對 | 400 `VALIDATION_ERROR`（標準是 415，規格只列了 400） |
+  | 回應的 Content-Type | 明確加上
+  `charset=UTF-8`（規格寫「JSON（UTF-8）」），錯誤回應也一樣 |
+  | `/api` 的回應格式 | 不論 Accept 是什麼，一律回 JSON（含錯誤）。規格寫「發生
+  錯誤時，回應的格式一律是…」，主考官可能直接用瀏覽器或其他工具打開 API 網址 |
+  | 全部持股都沒有收盤價 | 網頁顯示「—」，API 的總計照規格回數字 0，不回 null |
+  | 即時提示的錯誤代碼 | `/holdings/lookup` 判斷不出市場時，從 409
+  `MARKET_AMBIGUOUS` 改成 503 `MARKET_UNDETERMINED`，和 App API 一致（第 3
+  題當時決定回 409，見上方第 3 題 F-03 的紀錄） |
+  | 驗證方式 | 單元測試之外，AI 用 curl.exe
+  對真的伺服器（獨立的記憶體資料庫、另一個埠號、連真的官方網站）跑 19 個步驟加上
+  503，確認 `pnl` 在真的伺服器上也是整數；我用 Android Studio 模擬器和 App 1.0
+  測新增、修改、刪除、清單、總計並截圖 |
+
+  ### 我說錯、由 AI 發現的
+  - 我在任務說明裡寫「/holdings/lookup 目前也是回 503，兩邊一致」。AI
+  對照程式碼後指出：只有「官方連不上」一致；「判斷不出市場」時 lookup 回的是 409
+  `MARKET_AMBIGUOUS`。我決定一起改成 503 `MARKET_UNDETERMINED`。
+
+  ### 刻意不做或簡化的部分
+  - 網址含有 Tomcat 直接拒絕的字元等錯誤，在進入 Spring MVC 之前就被擋下，會回
+  Spring Boot 預設的 JSON 錯誤格式，不是 `{"error":...}`。App
+  不會送出這種請求，所以不處理。
+  - POST 成功時不加 `Location` 標頭：REST 的慣例，但規格沒要求，App 也用不到。
+
+  ### AI 犯過的錯
+  | # | 錯誤 | 怎麼發現 | 處理 |
+  |---|---|---|---|
+  | 1 | 提案時沒發現網頁的即時提示 JavaScript 是用「狀態碼
+  409」分辨「判斷不出市場」；改成 503 後會和「連不上」混在一起 | AI
+  實作時自己發現 | 同一個 commit 把 JavaScript 改成看 `error.code` |
+  | 2 | 動手前沒有確認目前所在的分支，只依據對話一開始的狀態，結果修改做在
+  `fix/q3-no-trade-backfill` 上，不是 `feature/q5-app-api-v1` | 我發現沒有先切回
+  master | AI 先把修改備份，我重新對齊分支後，AI 比對備份確認內容完整再還原 |
+  | 3 | 做對照實驗（暫時拿掉設定，看測試會不會失敗）時，用來改程式的指令兩次把括
+  號改壞，第一次讀到的是編譯失敗前的舊報告 | AI 回報前自己發現 |
+  修正指令後重做，並改成從測試報告讀出失敗的案例名稱 |
+  | 4 | 建議裡說「瀏覽器打開不存在的 /api 路徑可能看到 HTML
+  錯誤頁」，實測後發現錯了：瀏覽器的 Accept 含 `*/*`，原本就回
+  JSON；真正的問題是 Accept 不含 JSON 也不含 `*/*` 時（例如只有
+  `text/html`），連存在的路徑和成功的請求都回 406 | 我決定修正後，AI
+  動手前先用真的伺服器測試 | 修正前先寫測試並確認會失敗；改成 `/api/` 一律回
+  JSON |
+
+  ---
+
+  三、需要你決定的一件事
+
+  REVIEW 開頭的「和 AI 的協作規則」寫著 「AI 不自己 commit、push 或打 
+  tag」。但這一題有 5 個 commit，是你明確指示我代為執行的：
+
+  - b546f42
+  - 54c81a9
+  - 3258430
+  - a08feea
+  - 7c5f9cc（截圖；如果是你自己 commit 的，就不算）
+
+  主考官對照 git log 時可能會注意到這件事，建議在協作規則補一行說明：
+
+  - 第 5 題起，部分 commit 由我明確指示後 AI 代為執行（commit
+  訊息由我確認）；push、合併、打 tag 仍由我自己做。
+
+  要加的話，請一起回覆。
+
+  ---
+
+  四、建議的 commit 訊息
+
+  - docs: 第5題 README 補上 App API 一覽、規格以外的錯誤與 App 1.0 連線方式
+  - docs: 第5題 REVIEW 補上決定、AI 犯過的錯與刻意不做的部分
+
+  如果協作規則那一行也要加，會放在 REVIEW 的 commit 裡一起提交。
+
+✻ Sautéed for 46s · done 下午10:50
+
+> README 草稿同意寫入。寫入後請確認「規格沒有寫到的情況」表格中，               
+  「PUT 的請求帶了 code」和「舊持股沒有名稱或市場」是兩個獨立、內容完整的列。   
+  「第 5 題起，部分 commit 由我明確指示後 AI 代為執行（commit 訊息由我確認）；  
+     push、合併、打 tag 仍由我自己做。」                                        
+  commit 訊息同意。                                                             
+
+● README 我照草稿寫入。REVIEW
+  雖然你沒有直接說「同意寫入」，但你給了協作規則要加的那一行，也同意了 REVIEW 的
+  commit 訊息，所以我理解為 REVIEW
+  草稿也同意，一起寫入。如果不是這個意思，告訴我，我會還原 REVIEW。
+
+  兩份都只寫入，不 commit。
+
+● Update(README.md)
+  ⎿  Added 56 lines
+      103  | 全部持股都沒有收盤價 | 同上 | 總成本照常顯示；市值、盈虧、收
+           益率顯示「—」，提示「所有持股都還沒取得收盤價」 |
+      104  | 沒有任何持股 | — | 全部顯示 0（收益率 0.00%） |
+      105 
+      106 +## App 1.0 API                                                
+      107 +                                                              
+      108 +給 Android App 1.0 用的 API，完全照附件《App 1.0 API 規格》： 
+          +路徑開頭 `/api/v1`，回應一律是 JSON（`Content-Type: applicatio
+          +n/json;charset=UTF-8`），欄位名稱小寫加底線（`buy_price`）。  
+      109 +                                                              
+      110 +| 方法 | 路徑 | 成功 | 失敗 |                                 
+      111 +|---|---|---|---|                                             
+      112 +| GET | `/api/v1/holdings` | 200，持股物件陣列；沒有持股回 `[]
+          +` | |                                                         
+      113 +| GET | `/api/v1/holdings/{id}` | 200，持股物件 | 404 `NOT_FOU
+          +ND` |                                                         
+      114 +| POST | `/api/v1/holdings` | 201，新建的持股物件 | 400 `VALID
+          +ATION_ERROR`、404 `STOCK_NOT_FOUND`、409 `DUPLICATE_CODE`、503
+          +（見下方） |                                                  
+      115 +| PUT | `/api/v1/holdings/{id}` | 200，修改後的持股物件 | 400 
+          +`VALIDATION_ERROR`、404 `NOT_FOUND` |                         
+      116 +| DELETE | `/api/v1/holdings/{id}` | 204，沒有內容 | 404 `NOT_
+          +FOUND` |                                                      
+      117 +| GET | `/api/v1/summary` | 200，總計物件 | |                 
+      118 +                                                              
+      119 +新增持股的範例（Mac／Linux、Git Bash）：                      
+      120 +```bash                                                       
+      121 +curl -i -X POST http://localhost:8080/api/v1/holdings -H "Cont
+          +ent-Type: application/json" -d '{"code":"2330","lots":1,"buy_p
+          +rice":1000}'                                                  
+      122 +```                                                           
+      123 +                                                              
+      124 +Windows PowerShell 5.1：先執行 `chcp 65001`，中文才會正常顯示 
+          +；指令要寫 `curl.exe`（`curl` 在 PowerShell 5.1 是別的指令），
+          +JSON 裡的 `"` 要寫成 `\"`：                                   
+      125 +```powershell                                                 
+      126 +chcp 65001                                                    
+      127 +curl.exe -i -X POST http://localhost:8080/api/v1/holdings -H "
+          +Content-Type: application/json" -d '{\"code\":\"2330\",\"lots\
+          +":1,\"buy_price\":1000}'                                      
+      128 +```                                                           
+      129 +                                                              
+      130 +所有錯誤都是同一個格式，App 會直接顯示 `message`：            
+      131 +```json                                                       
+      132 +{ "error": { "code": "DUPLICATE_CODE", "message": "2330 已在持
+          +股中" } }                                                     
+      133 +```                                                           
+      134 +                                                              
+      135 +### 規格沒有寫到的情況                                        
+      136 +                                                              
+      137 +| 情況 | 回應 |                                               
+      138 +|---|---|                                                     
+      139 +| 新增時官方網站連不上，無法確認代號 | 503 `QUOTE_UNAVAILABLE`
+          +「暫時無法連線官方網站確認代號，請稍後再試」 |                
+      140 +| 新增時上市、上櫃都查到，而且最近交易日相同 | 503 `MARKET_UND
+          +ETERMINED`「無法判斷 {代號} 是上市或上櫃，請聯絡管理者」 |    
+      141 +| 型別不對（張數 1.5、`"1"`，買進價 `"1000"`，代號 `2330` 數字
+          +） | 400 `VALIDATION_ERROR`，不會自動轉換或截斷 |             
+      142 +| JSON 格式壞掉、沒有內容、Content-Type 不是 `application/json
+          +` | 400 `VALIDATION_ERROR` |                                  
+      143 +| `{id}` 不是數字或超出範圍 | 404 `NOT_FOUND` |               
+      144 +| 路徑不存在 | 404 `NOT_FOUND` |                              
+      145 +| 方法不支援（例如 PATCH） | 405 `METHOD_NOT_ALLOWED` |       
+      146 +| 伺服器內部錯誤 | 500 `INTERNAL_ERROR`，不會露出錯誤細節 |   
+      147 +| 請求的 Accept 不是 JSON（例如只接受 `text/html`） | `/api/` 
+          +一律回 JSON（成功和錯誤都是），不會回 HTML 或 406 |           
+      148 +| PUT 的請求帶了 `code` | 忽略（代號不能改），不回錯誤；其他不
+          +認得的欄位也忽略 |                                            
+      149 +| 第 2 題時存的舊持股，還沒補到名稱或市場 | 先用行情快取補上；
+          +行情快取也沒有時（例如官方一直連不上），`name`、`market` 回空 
+          +字串 `""`，不會是 `null` |                                    
+      150 +| 全部持股都沒有收盤價 | 總計的 `market_value`、`pnl` 是 0，`r
+          +eturn_pct` 是 0.00（網頁顯示「—」，API 照規格回數字） |       
+      151 +                                                              
+      152 +### App 1.0 怎麼連                                            
+      153 +                                                              
+      154 +- **Android Studio 模擬器**：App 的「設定」填 `http://10.0.2.2
+          +:8080`。模擬器裡的 `localhost` 指的是模擬器自己，`10.0.2.2` 才
+          +是你的電腦。                                                  
+      155 +- **實體手機**：手機和電腦連同一個 Wi-Fi，「設定」填電腦的區網
+          + IP，例如 `http://192.168.1.20:8080`。                        
+      156 +  - 查電腦的 IP：Windows 執行 `ipconfig`，看「IPv4 位址」；Mac
+          + 到「系統設定 → Wi-Fi → 詳細資訊」。                          
+      157 +  - 電腦的防火牆要允許 8080 埠的連線。Windows 用系統管理員身分
+          +開 PowerShell 執行：                                          
+      158 +    ```powershell                                             
+      159 +    New-NetFirewallRule -DisplayName "stock-holdings 8080" -Di
+          +rection Inbound -Protocol TCP -LocalPort 8080 -Action Allow   
+      160 +    ```                                                       
+      161 +                                                              
+      162  ## 更換行情主機
+      163 
+      164  股票資料來自證交所（上市）與櫃買中心（上櫃）。主機網址可以用環
+           境變數換成自己的測試伺服器，**路徑和參數不變**。
+
+● Update(README.md)
+  ⎿  Added 3 lines, removed 2 lines
+      259  ```
+      260  src/main/java/io/hsiaopingkuo/stockholdings/
+      261  ├── StockHoldingsApplication.java   程式進入點
+      262 +├── api/                            給 App 1.0 的 REST API（/a
+          +pi/v1）與統一的錯誤格式                                       
+      263  ├── calc/                           盈虧計算規則（ProfitCalcul
+           ator）與總計（SummaryCalculator），不碰資料庫、不連網
+      263 -├── config/                         台北時區 Clock、行情 API  
+          -設定（主機網址、逾時、排程）                                  
+      264 +├── config/                         台北時區 Clock、行情 API  
+          +設定（主機網址、逾時、排程）、JSON 嚴格型別檢查、App API 一律 
+          +回 JSON                                                       
+      265  ├── controller/                     網頁：首頁、持股清單（新增
+           ／修改／刪除、代號即時查詢）
+      265 -├── dto/                            表單欄位與檢查規則、JSON  
+          -回應格式、清單的一列（含收盤價、盈虧）                        
+      266 +├── dto/                            表單欄位與檢查規則、App AP
+          +I 的請求與回應、JSON 錯誤格式、清單的一列（含收盤價、盈虧）   
+      267  ├── entity/                         持股（Holding）、行情快取
+           （Quote）、上市／上櫃（Market）
+      268  ├── exception/                      重複代號、找不到持股、查無
+           代號、官方連不上、無法判斷上市或上櫃
+      269  ├── quote/                          官方 API：批次與逐檔行情、
+           休市日表、判斷上市或上櫃（MarketResolver，
+
+● README 寫好了。接著寫 REVIEW：在協作規則加一行，最後加上第 5 題的段落。
+
+● Update(REVIEW.md)
+  ⎿  Added 1 line
+      14  ### 和 AI 的協作規則
+      15  - AI 先提案（做法、要改的檔案），我回覆「同意」後才動手。
+      16  - AI 不自己 commit、push 或打 tag。
+      17 +- 第 5 題起，部分 commit 由我明確指示後 AI 代為執行（commit 訊 
+         +息由我確認）；push、合併、打 tag 仍由我自己做。                
+      18  - README、TESTLOG、REVIEW 等文件，AI 只能先給草稿，我確認後才寫
+          入。
+      19  - 完整規則見 `CLAUDE.md`。
+      20 
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Update(REVIEW.md)
+  ⎿  Added 35 lines
+      173  |---|---|---|---|
+      174  | 1 | 寫批次路徑時，只靠 `Quote.apply`「當天沒成交時保留原本的
+           收盤價」處理 "--"，沒想到全新的資料庫根本沒有原本的收盤價；逐
+           檔路徑會往前找有成交的日子，批次路徑卻沒有，兩條路徑不一致 | Q
+           iao 檢查報告 | 見 TESTLOG T-06 |
+      175  | 2 | 新增持股時，快取有這個代號就直接使用，沒有檢查快取裡的收
+           盤價是不是空的 | Qiao 檢查報告 | 見 TESTLOG T-06 |
+      176 +                                                              
+      177 +## 第 5 題：給手機 App 用的 API                               
+      178 +                                                              
+      179 +只和 Claude Code 討論，對話紀錄在 `ai-log/`。                 
+      180 +                                                              
+      181 +### 我做的決定                                                
+      182 +| 項目 | 決定 |                                               
+      183 +|---|---|                                                     
+      184 +| 規格以外的兩種新增失敗 | 官方連不上：503 `QUOTE_UNAVAILABLE`
+          +；兩個市場日期相同：503 `MARKET_UNDETERMINED`，都照規格的錯誤 
+          +格式 |                                                        
+      185 +| 新增流程與計算 | 和網頁共用同一個 `HoldingService`（時間預算
+          +、同時查詢上限、快取優先、沒有收盤價時補查）與第 4 題的 calc  
+          +套件，不另寫一套 |                                            
+      186 +| JSON 型別 | 不自動轉型別：張數 1.5、`"1"`，買進價 `"1000"`，
+          +代號 `2330`（數字）都回 400；買進價送整數 `1000` 要接受 |     
+      187 +| 舊持股沒有市場 | 先用行情快取補；快取也沒有時 `market` 回空 
+          +字串 `""`。只有第 2 題的舊持股、而且官方一直連不上時才會發生，
+          +驗收從全新資料庫開始，幾乎不會遇到，所以不問主考官 |          
+      188 +| `{id}` 不是數字或太大 | 404 `NOT_FOUND`：規格裡 GET、DELETE 
+          +單筆的失敗情況只列 404 |                                      
+      189 +| 清單查詢的市場補值 | 網頁和 API 共用同一個查詢 `coalesce(h.m
+          +arket, q.market)`，網頁清單也一起受惠 |                       
+      190 +| Content-Type 不對 | 400 `VALIDATION_ERROR`（標準是 415，規格
+          +只列了 400） |                                                
+      191 +| 回應的 Content-Type | 明確加上 `charset=UTF-8`（規格寫「JSON
+          +（UTF-8）」），錯誤回應也一樣 |                               
+      192 +| `/api` 的回應格式 | 不論 Accept 是什麼，一律回 JSON（含錯誤 
+          +）。規格寫「發生錯誤時，回應的格式一律是…」，主考官可能直接用 
+          +瀏覽器或其他工具打開 API 網址 |                               
+      193 +| 全部持股都沒有收盤價 | 網頁顯示「—」，API 的總計照規格回數字
+          + 0，不回 null |                                               
+      194 +| 即時提示的錯誤代碼 | `/holdings/lookup` 判斷不出市場時，從 4
+          +09 `MARKET_AMBIGUOUS` 改成 503 `MARKET_UNDETERMINED`，和 App A
+          +PI 一致（第 3 題當時決定回 409，見上方第 3 題 F-03 的紀錄） | 
+      195 +| 驗證方式 | 單元測試之外，AI 用 curl.exe 對真的伺服器（獨立的
+          +記憶體資料庫、另一個埠號、連真的官方網站）跑 19 個步驟加上 503
+          +，確認 `pnl` 在真的伺服器上也是整數；我用 Android Studio 模擬 
+          +器和 App 1.0 測新增、修改、刪除、清單、總計並截圖 |           
+      196 +                                                              
+      197 +### 我說錯、由 AI 發現的                                      
+      198 +- 我在任務說明裡寫「/holdings/lookup 目前也是回 503，兩邊一致 
+          +」。AI 對照程式碼後指出：只有「官方連不上」一致；「判斷不出市 
+          +場」時 lookup 回的是 409 `MARKET_AMBIGUOUS`。我決定一起改成 50
+          +3 `MARKET_UNDETERMINED`。                                     
+      199 +                                                              
+      200 +### 刻意不做或簡化的部分                                      
+      201 +- 網址含有 Tomcat 直接拒絕的字元等錯誤，在進入 Spring MVC 之前
+          +就被擋下，會回 Spring Boot 預設的 JSON 錯誤格式，不是 `{"error
+          +":...}`。App 不會送出這種請求，所以不處理。                   
+      202 +- POST 成功時不加 `Location` 標頭：REST 的慣例，但規格沒要求，
+          +App 也用不到。                                                
+      203 +                                                              
+      204 +### AI 犯過的錯                                               
+      205 +| # | 錯誤 | 怎麼發現 | 處理 |                                
+      206 +|---|---|---|---|                                             
+      207 +| 1 | 提案時沒發現網頁的即時提示 JavaScript 是用「狀態碼 409」
+          +分辨「判斷不出市場」；改成 503 後會和「連不上」混在一起 | AI  
+          +實作時自己發現 | 同一個 commit 把 JavaScript 改成看 `error.cod
+          +e` |                                                          
+      208 +| 2 | 動手前沒有確認目前所在的分支，只依據對話一開始的狀態，結
+          +果修改做在 `fix/q3-no-trade-backfill` 上，不是 `feature/q5-app
+          +-api-v1` | 我發現沒有先切回 master | AI 先把修改備份，我重新對
+          +齊分支後，AI 比對備份確認內容完整再還原 |                     
+      209 +| 3 | 做對照實驗（暫時拿掉設定，看測試會不會失敗）時，用來改程
+          +式的指令兩次把括號改壞，第一次讀到的是編譯失敗前的舊報告 | AI 
+          +回報前自己發現 | 修正指令後重做，並改成從測試報告讀出失敗的案 
+          +例名稱 |                                                      
+      210 +| 4 | 建議裡說「瀏覽器打開不存在的 /api 路徑可能看到 HTML 錯誤
+          +頁」，實測後發現錯了：瀏覽器的 Accept 含 `*/*`，原本就回 JSON 
+          +；真正的問題是 Accept 不含 JSON 也不含 `*/*` 時（例如只有 `tex
+          +t/html`），連存在的路徑和成功的請求都回 406 | 我決定修正後，AI
+          + 動手前先用真的伺服器測試 | 修正前先寫測試並確認會失敗；改成 `
+          +/api/` 一律回 JSON |                                          
+
+● Now verify the two table rows the user asked about, plus line endings.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● README 和 REVIEW 都寫入了，還沒 commit。
+
+  你要我確認的兩列
+
+  在 README.md 第 148、149 行，是兩個獨立、內容完整的列：
+
+  148: | PUT 的請求帶了 `code` | 
+  忽略（代號不能改），不回錯誤；其他不認得的欄位也忽略 |
+  149: | 第 2 題時存的舊持股，還沒補到名稱或市場 | 
+  先用行情快取補上；行情快取也沒有時（例如官方一直連不上），`name`、`market` 
+  回空字串 `""`，不會是 `null` |
+
+  - 每一列都剛好有 3 個 |，也就是「情況」和「回應」兩欄，沒有被合併或截斷。
+  - 前一列（Accept）和後一列（全部持股都沒有收盤價）也都完整。
+
+  寫入的內容
+
+  README.md（新增 61 行、刪除 2 行）
+
+  - 在「## 更換行情主機」前面新增「## App 1.0 API」一節，包含三個部分：
+    - API 一覽，以及 bash 和 PowerShell 5.1 的 curl 範例（含 chcp 65001 說明）。
+    - 規格沒有寫到的 12 種情況。
+    - App 1.0 怎麼連（模擬器、實體手機、防火牆）。
+  - 「專案架構」的目錄樹：新增 api/ 一行，改寫 config/、dto/ 兩行的說明。
+
+  REVIEW.md（新增 36 行）
+
+  - 「和 AI 的協作規則」加上你給的那一行。
+  - 檔案最後新增「## 第 5 題：給手機 App 用的 API」：我做的決定、我說錯由 AI
+    發現的、刻意不做的部分、AI 犯過的錯 #1～#4。
+
+  兩個檔案原本都是 Windows 換行（CRLF），新寫入的內容也一致，沒有混到 LF 換行。
+
+  請你 commit
+
+  git add README.md
+  git commit -m "docs: 第5題 README 補上 App API 一覽、規格以外的錯誤與 App 1.0 
+  連線方式"
+  git add REVIEW.md
+  git commit -m "docs: 第5題 REVIEW 補上決定、AI 犯過的錯與刻意不做的部分"
+
+  接下來
+
+  1. ai-log：用 /export 匯出第 5 題的對話放進 ai-log/，commit 前檢查有沒有密碼或
+     token。
+  2. SECURITY.md：打 v1.0.0
+     前要先寫一版。你說可以開始，我就查相依套件並整理草稿。
+  3. 合併與驗證：push → 用一般 merge 合併回 master → 在另一個資料夾重新
+     clone，照 README 啟動一次 → 打 v1.0.0 tag 並 push。
+
+✻ Churned for 1m 1s · done 下午11:04
