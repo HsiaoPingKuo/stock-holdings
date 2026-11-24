@@ -1,9 +1,13 @@
 package io.hsiaopingkuo.stockholdings;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.containsString;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.redirectedUrl;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import java.math.BigDecimal;
@@ -89,6 +93,24 @@ class NoOfficialCallTest {
 				.andExpect(content().string(containsString("<td>未取得</td>")));
 		mockMvc.perform(get("/holdings")).andExpect(status().isOk());
 
+		verifyNoOfficialCall();
+	}
+
+	@Test
+	void 行情快取有這個代號_即時提示和新增都不呼叫任何官方client() throws Exception {
+		quoteRepository.save(new Quote(
+				DailyQuote.ofDay("6488", "環球晶", Market.TPEX, LocalDate.of(2026, 11, 23), new BigDecimal("460.50")),
+				LocalDateTime.of(2026, 11, 23, 14, 0)));
+
+		mockMvc.perform(get("/holdings/lookup").param("code", "6488"))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.name").value("環球晶"))
+				.andExpect(jsonPath("$.market").value("TPEX"));
+		mockMvc.perform(post("/holdings").param("code", "6488").param("lots", "1").param("buyPrice", "450"))
+				.andExpect(redirectedUrl("/holdings"));
+
+		assertThat(holdingRepository.findAll()).singleElement()
+				.satisfies(h -> assertThat(h.getMarket()).isEqualTo(Market.TPEX));
 		verifyNoOfficialCall();
 	}
 }
