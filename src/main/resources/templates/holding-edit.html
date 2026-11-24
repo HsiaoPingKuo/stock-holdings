@@ -13,7 +13,11 @@
 
 	<form th:action="@{/holdings/{id}(id=${holding.id})}" th:object="${updateForm}" method="post">
 		<!-- 代號只顯示、不能改（和 App API 的 PUT 規格一致），所以不是輸入框 -->
-		<p>股票代號：<strong id="code" th:text="${holding.code}">2330</strong></p>
+		<p>股票代號：<strong id="code" th:text="${holding.code}">2330</strong>
+			<!-- 名稱、市場在新增時由官方判斷，這裡也只顯示；舊資料沒有時顯示「—」 -->
+			<span id="name" th:text="${holding.name} ?: '—'">台積電</span>
+			（<span id="market" th:text="${holding.market} != null ? ${holding.market.label} : '—'">上市</span>）
+		</p>
 		<p>
 			<label>張數 <input type="text" th:field="*{lots}" inputmode="numeric" placeholder="1～999"></label>
 			<span class="error" th:if="${#fields.hasErrors('lots')}" th:errors="*{lots}">錯誤</span>
