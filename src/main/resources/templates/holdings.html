@@ -16,6 +16,9 @@
 		.hint.muted { color: #888; }
 		.hint.error { color: #c00; }
 		form.inline { display: inline; }
+		/* 第 4 題：台股慣例紅色是賺、綠色是虧；不沿用 .error，那是「錯誤」的意思 */
+		.gain { color: #d00; }
+		.loss { color: #080; }
 	</style>
 </head>
 <body>
@@ -24,6 +27,32 @@
 
 	<p class="message" th:if="${message}" th:text="${message}">已新增 2330</p>
 	<p class="error" th:if="${errorMessage}" th:text="${errorMessage}">找不到這筆持股</p>
+
+	<!-- 第 4 題：總計。數字由 SummaryCalculator 算好，這裡只負責格式和顏色。
+	     trend：盈虧 > 0 是 gain（紅）、< 0 是 loss（綠）、= 0 不上色；收益率跟著盈虧的顏色。
+	     全部持股都沒有收盤價時，市值、盈虧、收益率還算不出來，顯示「—」不上色（計算類別照規格仍是 0） -->
+	<h2>總計</h2>
+	<table id="summary"
+			th:with="s=${summary}, unknown=${summary.allMissingClose()},
+				trend=${summary.allMissingClose() ? '' : (summary.profit.signum() > 0 ? 'gain' : (summary.profit.signum() < 0 ? 'loss' : ''))}">
+		<thead>
+			<tr><th>總成本</th><th>市值</th><th>盈虧</th><th>收益率</th></tr>
+		</thead>
+		<tbody>
+			<tr>
+				<td id="summary-total-cost" class="num" th:text="${#numbers.formatInteger(s.totalCost, 1, 'COMMA')}">1,301,852</td>
+				<td id="summary-market-value" class="num"
+						th:text="${unknown} ? '—' : ${#numbers.formatInteger(s.marketValue, 1, 'COMMA')}">1,391,000</td>
+				<td id="summary-profit" class="num" th:classappend="${trend}"
+						th:text="${unknown} ? '—' : ${#numbers.formatInteger(s.profit, 1, 'COMMA')}">83,576</td>
+				<td id="summary-return-rate" class="num" th:classappend="${trend}"
+						th:text="${unknown} ? '—' : |${#numbers.formatDecimal(s.returnRate, 1, 'COMMA', 2, 'POINT')}%|">6.42%</td>
+			</tr>
+		</tbody>
+	</table>
+	<p class="note" id="summary-note" th:if="${summary.allMissingClose()}">所有持股都還沒取得收盤價</p>
+	<p class="note" id="summary-note" th:if="${!summary.allMissingClose() and summary.missingCloseCount > 0}"
+			th:text="|${summary.missingCloseCount} 筆未取得收盤價，不計入市值與盈虧|">1 筆未取得收盤價，不計入市值與盈虧</p>
 
 	<h2>新增持股</h2>
 	<!-- 欄位用 text 而不是 number：檢查規則以伺服器為準，錯誤訊息統一顯示在表單上 -->
@@ -49,10 +78,13 @@
 	<p th:if="${#lists.isEmpty(holdings)}">目前沒有持股。</p>
 	<table th:unless="${#lists.isEmpty(holdings)}">
 		<thead>
-			<tr><th>股票代號</th><th>名稱</th><th>市場</th><th>張數</th><th>買進價</th><th>收盤價</th><th>收盤價日期</th><th>操作</th></tr>
+			<tr><th>股票代號</th><th>名稱</th><th>市場</th><th>張數</th><th>買進價</th><th>收盤價</th><th>收盤價日期</th><th>盈虧</th><th>收益率</th><th>操作</th></tr>
 		</thead>
 		<tbody>
-			<tr th:each="h : ${holdings}">
+			<!-- trend：這一列盈虧的顏色（同總計的規則）；沒有收盤價時沒有盈虧，不上色 -->
+			<tr th:each="h : ${holdings}"
+					th:with="p=${h.profit},
+						trend=${!h.profit.hasClosePrice() ? '' : (h.profit.profit.signum() > 0 ? 'gain' : (h.profit.profit.signum() < 0 ? 'loss' : ''))}">
 				<td th:text="${h.code}">2330</td>
 				<!-- 第 2 題時存的舊資料沒有名稱和市場（NULL），顯示「—」 -->
 				<td th:text="${h.name} ?: '—'">台積電</td>
@@ -71,6 +103,11 @@
 					<small class="note" th:if="${h.showsEarlierClose()}"
 							th:text="|${h.latestTradeDate} 無成交，顯示 ${h.closeDate} 收盤價|">2026-11-24 無成交，顯示 2026-11-23 收盤價</small>
 				</td>
+				<!-- 第 4 題：盈虧加千分位、收益率加 %；沒有收盤價時兩格都顯示「—」 -->
+				<td class="num profit" th:classappend="${trend}"
+						th:text="${p.hasClosePrice()} ? ${#numbers.formatInteger(p.profit, 1, 'COMMA')} : '—'">93,708</td>
+				<td class="num rate" th:classappend="${trend}"
+						th:text="${p.hasClosePrice()} ? |${#numbers.formatDecimal(p.returnRate, 1, 'COMMA', 2, 'POINT')}%| : '—'">9.36%</td>
 				<td>
 					<a th:href="@{/holdings/{id}/edit(id=${h.id})}">修改</a>
 					<form class="inline" th:action="@{/holdings/{id}/delete(id=${h.id})}" method="post"

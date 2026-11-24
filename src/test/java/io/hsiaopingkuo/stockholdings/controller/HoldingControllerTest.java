@@ -15,6 +15,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.flash;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.model;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.redirectedUrl;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -31,6 +32,8 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.test.web.servlet.MockMvc;
 
+import io.hsiaopingkuo.stockholdings.calc.PortfolioSummary;
+import io.hsiaopingkuo.stockholdings.calc.SummaryCalculator;
 import io.hsiaopingkuo.stockholdings.dto.HoldingListItem;
 import io.hsiaopingkuo.stockholdings.entity.Holding;
 import io.hsiaopingkuo.stockholdings.entity.Market;
@@ -118,6 +121,133 @@ class HoldingControllerTest {
 				.andExpect(status().isOk())
 				.andExpect(content().string(containsString("<td>未取得</td>")))
 				.andExpect(content().string(not(containsString("無成交，顯示"))));
+	}
+
+	// ===== 第 4 題：盈虧、收益率、總計 =====
+
+	/** 題目的例子：2330 賺錢、0050 虧錢（張數 2）。 */
+	private static HoldingListItem tsmcGain() {
+		return row(1, "2330", "台積電", Market.TWSE, 1, "1000.00", "1100.00", NOV_23, NOV_23);
+	}
+
+	private static HoldingListItem etfLoss() {
+		return row(2, "0050", "元大台灣50", Market.TWSE, 2, "150.00", "145.50", NOV_23, NOV_23);
+	}
+
+	/** 沒有行情：成本 460,500 + 手續費 656 = 461,156。 */
+	private static HoldingListItem gwNoQuote() {
+		return rowWithoutQuote(3, "6488", "環球晶", Market.TPEX, 1, "460.50");
+	}
+
+	/** 和 controller 相同的算法，用來確認頁面數字和計算類別一致。 */
+	private static PortfolioSummary summaryOf(HoldingListItem... rows) {
+		return SummaryCalculator.summarize(List.of(rows).stream().map(HoldingListItem::profit).toList());
+	}
+
+	@Test
+	void 每筆盈虧為正是紅色_為負是綠色_收益率跟著盈虧的顏色() throws Exception {
+		given(holdingService.findAllForList()).willReturn(List.of(tsmcGain(), etfLoss()));
+
+		mockMvc.perform(get("/holdings"))
+				.andExpect(status().isOk())
+				.andExpect(content().string(containsString("<th>盈虧</th><th>收益率</th>")))
+				.andExpect(content().string(containsString("<td class=\"num profit gain\">93,708</td>")))
+				.andExpect(content().string(containsString("<td class=\"num rate gain\">9.36%</td>")))
+				.andExpect(content().string(containsString("<td class=\"num profit loss\">-10,132</td>")))
+				.andExpect(content().string(containsString("<td class=\"num rate loss\">-3.37%</td>")));
+	}
+
+	@Test
+	void 沒有收盤價時盈虧與收益率顯示破折號且不上色() throws Exception {
+		given(holdingService.findAllForList()).willReturn(List.of(gwNoQuote()));
+
+		mockMvc.perform(get("/holdings"))
+				.andExpect(status().isOk())
+				.andExpect(content().string(containsString("<td>未取得</td>")))
+				.andExpect(content().string(containsString("<td class=\"num profit\">—</td>")))
+				.andExpect(content().string(containsString("<td class=\"num rate\">—</td>")));
+	}
+
+	@Test
+	void 收盤價是0時當成未取得_清單頁不會整頁錯誤() throws Exception {
+		// 外部回傳 0.00 時，計算類別會拒絕（價格必須大於 0），清單要當成沒有收盤價，不能 500
+		given(holdingService.findAllForList()).willReturn(List.of(
+				row(1, "2330", "台積電", Market.TWSE, 1, "1000.00", "0.00", NOV_23, NOV_23)));
+
+		mockMvc.perform(get("/holdings"))
+				.andExpect(status().isOk())
+				.andExpect(content().string(containsString("<td>未取得</td>")))
+				.andExpect(content().string(containsString("<td class=\"num profit\">—</td>")));
+	}
+
+	@Test
+	void 總計顯示在頁面上_數字與計算類別一致() throws Exception {
+		given(holdingService.findAllForList()).willReturn(List.of(tsmcGain(), etfLoss()));
+
+		mockMvc.perform(get("/holdings"))
+				.andExpect(status().isOk())
+				// 交給畫面的總計，就是計算類別用同樣幾筆算出來的結果
+				.andExpect(model().attribute("summary", summaryOf(tsmcGain(), etfLoss())))
+				.andExpect(content().string(containsString("<td id=\"summary-total-cost\" class=\"num\">1,301,852</td>")))
+				.andExpect(content().string(containsString("<td id=\"summary-market-value\" class=\"num\">1,391,000</td>")))
+				.andExpect(content().string(containsString("<td id=\"summary-profit\" class=\"num gain\">83,576</td>")))
+				.andExpect(content().string(containsString("<td id=\"summary-return-rate\" class=\"num gain\">6.42%</td>")))
+				.andExpect(content().string(not(containsString("summary-note"))));
+	}
+
+	@Test
+	void 總計虧損時是綠色() throws Exception {
+		given(holdingService.findAllForList()).willReturn(List.of(etfLoss()));
+
+		mockMvc.perform(get("/holdings"))
+				.andExpect(status().isOk())
+				.andExpect(content().string(containsString("<td id=\"summary-profit\" class=\"num loss\">-10,132</td>")))
+				.andExpect(content().string(containsString("<td id=\"summary-return-rate\" class=\"num loss\">-3.37%</td>")));
+	}
+
+	@Test
+	void 部分持股沒有收盤價_總計顯示數字並提示筆數() throws Exception {
+		given(holdingService.findAllForList()).willReturn(List.of(tsmcGain(), gwNoQuote()));
+
+		mockMvc.perform(get("/holdings"))
+				.andExpect(status().isOk())
+				.andExpect(model().attribute("summary", summaryOf(tsmcGain(), gwNoQuote())))
+				// 總成本包含沒有收盤價的那筆：1,001,425 + 461,156
+				.andExpect(content().string(containsString("<td id=\"summary-total-cost\" class=\"num\">1,462,581</td>")))
+				.andExpect(content().string(containsString("<td id=\"summary-market-value\" class=\"num\">1,100,000</td>")))
+				.andExpect(content().string(containsString("<td id=\"summary-profit\" class=\"num gain\">93,708</td>")))
+				// 93,708 ÷ 1,462,581 × 100 = 6.407…
+				.andExpect(content().string(containsString("<td id=\"summary-return-rate\" class=\"num gain\">6.41%</td>")))
+				.andExpect(content().string(containsString("1 筆未取得收盤價，不計入市值與盈虧")))
+				.andExpect(content().string(not(containsString("所有持股都還沒取得收盤價"))));
+	}
+
+	@Test
+	void 全部持股都沒有收盤價_總計的市值盈虧收益率顯示破折號_總成本照常顯示() throws Exception {
+		given(holdingService.findAllForList()).willReturn(List.of(gwNoQuote()));
+
+		mockMvc.perform(get("/holdings"))
+				.andExpect(status().isOk())
+				.andExpect(content().string(containsString("<td id=\"summary-total-cost\" class=\"num\">461,156</td>")))
+				.andExpect(content().string(containsString("<td id=\"summary-market-value\" class=\"num\">—</td>")))
+				// 不上色：不是「沒賺沒賠」，是還算不出來
+				.andExpect(content().string(containsString("<td id=\"summary-profit\" class=\"num\">—</td>")))
+				.andExpect(content().string(containsString("<td id=\"summary-return-rate\" class=\"num\">—</td>")))
+				.andExpect(content().string(containsString("所有持股都還沒取得收盤價")))
+				.andExpect(content().string(not(containsString("筆未取得收盤價，不計入市值與盈虧"))));
+	}
+
+	@Test
+	void 沒有任何持股_總計顯示0且不上色() throws Exception {
+		given(holdingService.findAllForList()).willReturn(List.of());
+
+		mockMvc.perform(get("/holdings"))
+				.andExpect(status().isOk())
+				.andExpect(content().string(containsString("<td id=\"summary-total-cost\" class=\"num\">0</td>")))
+				.andExpect(content().string(containsString("<td id=\"summary-market-value\" class=\"num\">0</td>")))
+				.andExpect(content().string(containsString("<td id=\"summary-profit\" class=\"num\">0</td>")))
+				.andExpect(content().string(containsString("<td id=\"summary-return-rate\" class=\"num\">0.00%</td>")))
+				.andExpect(content().string(not(containsString("summary-note"))));
 	}
 
 	@Test

@@ -140,6 +140,12 @@ class HoldingRepositoryTest {
 		assertThat(gw.closeDate()).isEqualTo(nov23);
 		assertThat(gw.latestTradeDate()).isEqualTo(nov24);
 		assertThat(gw.showsEarlierClose()).isTrue();
+
+		// 第 4 題：查詢走 9 個參數的建構子，盈虧在讀出來時就算好（不存資料庫）
+		assertThat(noQuote.profit().hasClosePrice()).isFalse();
+		assertThat(noQuote.profit().cost()).isNotNull();
+		assertThat(gw.profit().hasClosePrice()).isTrue();
+		assertThat(gw.profit().marketValue()).isEqualByComparingTo(gw.closePrice().multiply(BigDecimal.valueOf(gw.lots() * 1000L)));
 	}
 
 	@Test
