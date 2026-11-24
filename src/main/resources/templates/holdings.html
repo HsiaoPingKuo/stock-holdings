@@ -3,7 +3,7 @@
 <head>
 	<meta charset="UTF-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1">
-	<title>持股清單 - 持股記帳</title>
+	<title>持股記帳</title>
 	<style>
 		table { border-collapse: collapse; }
 		th, td { border: 1px solid #999; padding: 4px 10px; }
@@ -15,48 +15,63 @@
 		.hint.found { color: #036; font-weight: bold; }
 		.hint.muted { color: #888; }
 		.hint.error { color: #c00; }
-		form.inline { display: inline; }
-		/* 第 4 題：台股慣例紅色是賺、綠色是虧；不沿用 .error，那是「錯誤」的意思 */
+		/* 台股慣例紅色是賺、綠色是虧；不沿用 .error，那是「錯誤」的意思 */
 		.gain { color: #d00; }
 		.loss { color: #080; }
+		/* 使用者決定：已賣光的持股排在最後、灰字 */
+		tr.sold-out td { color: #999; }
+		tr.section th { text-align: left; background: #eee; }
 	</style>
 </head>
 <body>
 	<h1>持股記帳</h1>
-	<p><a th:href="@{/}">回首頁</a></p>
+	<!-- 第 1 題：標題和台北時間（第 6 題首頁改成清單頁，從 index.html 搬過來） -->
+	<p>目前時間：<span id="now" th:data-epoch-millis="${nowEpochMillis}" th:text="${now}">2026-01-01 00:00:00</span>（台北時間）</p>
 
-	<p class="message" th:if="${message}" th:text="${message}">已新增 2330</p>
+	<p class="message" th:if="${message}" th:text="${message}">已新增 2330 買進 1,000 股</p>
 	<p class="error" th:if="${errorMessage}" th:text="${errorMessage}">找不到這筆持股</p>
 
-	<!-- 第 4 題：總計。數字由 SummaryCalculator 算好，這裡只負責格式和顏色。
-	     trend：盈虧 > 0 是 gain（紅）、< 0 是 loss（綠）、= 0 不上色；收益率跟著盈虧的顏色。
-	     全部持股都沒有收盤價時，市值、盈虧、收益率還算不出來，顯示「—」不上色（計算類別照規格仍是 0） -->
+	<!-- 總計：和 /api/v2/summary 同一份數字（每一檔已捨入到元再加總），資料異常的不計入 -->
 	<h2>總計</h2>
-	<table id="summary"
-			th:with="s=${summary}, unknown=${summary.allMissingClose()},
-				trend=${summary.allMissingClose() ? '' : (summary.profit.signum() > 0 ? 'gain' : (summary.profit.signum() < 0 ? 'loss' : ''))}">
+	<table id="summary" th:with="s=${summary}">
 		<thead>
-			<tr><th>總成本</th><th>市值</th><th>盈虧</th><th>收益率</th></tr>
+			<tr><th>總成本</th><th>市值</th><th>未實現損益</th><th>已實現損益</th><th>累計現金股利</th><th>含息總報酬</th></tr>
 		</thead>
 		<tbody>
 			<tr>
-				<td id="summary-total-cost" class="num" th:text="${#numbers.formatInteger(s.totalCost, 1, 'COMMA')}">1,301,852</td>
-				<td id="summary-market-value" class="num"
-						th:text="${unknown} ? '—' : ${#numbers.formatInteger(s.marketValue, 1, 'COMMA')}">1,391,000</td>
-				<td id="summary-profit" class="num" th:classappend="${trend}"
-						th:text="${unknown} ? '—' : ${#numbers.formatInteger(s.profit, 1, 'COMMA')}">83,576</td>
-				<td id="summary-return-rate" class="num" th:classappend="${trend}"
-						th:text="${unknown} ? '—' : |${#numbers.formatDecimal(s.returnRate, 1, 'COMMA', 2, 'POINT')}%|">6.42%</td>
+				<td id="summary-total-cost" class="num" th:text="${#numbers.formatInteger(s.totalCost, 1, 'COMMA')}">1,001,425</td>
+				<td id="summary-market-value" class="num" th:text="${#numbers.formatInteger(s.marketValue, 1, 'COMMA')}">1,100,000</td>
+				<td id="summary-unrealized" class="num"
+						th:classappend="${s.unrealizedPnl > 0 ? 'gain' : (s.unrealizedPnl < 0 ? 'loss' : '')}"
+						th:text="${#numbers.formatInteger(s.unrealizedPnl, 1, 'COMMA')}">93,708</td>
+				<td id="summary-realized" class="num"
+						th:classappend="${s.realizedPnl > 0 ? 'gain' : (s.realizedPnl < 0 ? 'loss' : '')}"
+						th:text="${#numbers.formatInteger(s.realizedPnl, 1, 'COMMA')}">93,708</td>
+				<td id="summary-cash-dividends" class="num" th:text="${#numbers.formatInteger(s.cashDividends, 1, 'COMMA')}">10,000</td>
+				<td id="summary-total-return" class="num"
+						th:classappend="${s.totalReturn > 0 ? 'gain' : (s.totalReturn < 0 ? 'loss' : '')}"
+						th:text="${#numbers.formatInteger(s.totalReturn, 1, 'COMMA')}">197,416</td>
 			</tr>
 		</tbody>
 	</table>
-	<p class="note" id="summary-note" th:if="${summary.allMissingClose()}">所有持股都還沒取得收盤價</p>
-	<p class="note" id="summary-note" th:if="${!summary.allMissingClose() and summary.missingCloseCount > 0}"
-			th:text="|${summary.missingCloseCount} 筆未取得收盤價，不計入市值與盈虧|">1 筆未取得收盤價，不計入市值與盈虧</p>
+	<p class="note" id="summary-quote-missing" th:if="${summary.quoteMissing > 0}"
+			th:text="|${summary.quoteMissing} 檔未取得收盤價，市值、未實現損益、含息總報酬不含這幾檔|">1 檔未取得收盤價</p>
+	<p class="note" id="summary-dividend-pending" th:if="${summary.dividendPending > 0}"
+			th:text="|${summary.dividendPending} 檔股利資料更新中，稍後重新整理|">1 檔股利資料更新中</p>
+	<p class="error" id="summary-data-error" th:if="${summary.dataError > 0}"
+			th:text="|${summary.dataError} 檔資料異常，不計入總計|">1 檔資料異常，不計入總計</p>
 
-	<h2>新增持股</h2>
+	<h2>新增交易</h2>
 	<!-- 欄位用 text 而不是 number：檢查規則以伺服器為準，錯誤訊息統一顯示在表單上 -->
-	<form th:action="@{/holdings}" th:object="${createForm}" method="post">
+	<form id="create-form" th:action="@{/holdings/trades}" th:object="${createForm}" method="post">
+		<!-- 一次性編號：連按兩下送出只會新增一次 -->
+		<input type="hidden" th:field="*{requestId}">
+		<p class="error" th:if="${#fields.hasGlobalErrors()}">
+			<th:block th:each="err : ${#fields.globalErrors()}" th:text="${err}">錯誤</th:block>
+			<!-- 新增時超賣：清單頁沒有交易清單，連到明細頁標出是哪幾筆 -->
+			<a th:if="${oversellHoldingId != null}"
+					th:href="@{/holdings/{id}(id=${oversellHoldingId}, mark=${oversellMarks})}">查看交易</a>
+		</p>
 		<p>
 			<label>股票代號 <input type="text" th:field="*{code}" maxlength="20" placeholder="例：2330" autocomplete="off"></label>
 			<!-- 輸入代號時即時顯示名稱與市場（下方 script 填入）；只是提示，按下新增時伺服器仍會重新檢查 -->
@@ -64,76 +79,109 @@
 			<span class="error" th:if="${#fields.hasErrors('code')}" th:errors="*{code}">錯誤</span>
 		</p>
 		<p>
-			<label>張數 <input type="text" th:field="*{lots}" inputmode="numeric" placeholder="1～999"></label>
-			<span class="error" th:if="${#fields.hasErrors('lots')}" th:errors="*{lots}">錯誤</span>
+			<label><input type="radio" th:field="*{side}" value="BUY"> 買進</label>
+			<label><input type="radio" th:field="*{side}" value="SELL"> 賣出</label>
+			<span class="error" th:if="${#fields.hasErrors('side')}" th:errors="*{side}">錯誤</span>
 		</p>
 		<p>
-			<label>買進價 <input type="text" th:field="*{buyPrice}" inputmode="decimal" placeholder="每股價格"></label>
-			<span class="error" th:if="${#fields.hasErrors('buyPrice')}" th:errors="*{buyPrice}">錯誤</span>
+			<label>日期 <input type="date" th:field="*{date}" th:min="${minDate}" th:max="${maxDate}"></label>
+			<span class="error" th:if="${#fields.hasErrors('date')}" th:errors="*{date}">錯誤</span>
+		</p>
+		<p>
+			<label>股數 <input type="text" th:field="*{shares}" inputmode="numeric" placeholder="例：1000（零股也可以）"></label>
+			<span class="error" th:if="${#fields.hasErrors('shares')}" th:errors="*{shares}">錯誤</span>
+		</p>
+		<p>
+			<label>價格 <input type="text" th:field="*{price}" inputmode="decimal" placeholder="每股成交價"></label>
+			<span class="error" th:if="${#fields.hasErrors('price')}" th:errors="*{price}">錯誤</span>
 		</p>
 		<button type="submit">新增</button>
 	</form>
 
 	<h2>持股清單</h2>
 	<p th:if="${#lists.isEmpty(holdings)}">目前沒有持股。</p>
-	<table th:unless="${#lists.isEmpty(holdings)}">
+	<table id="holdings" th:unless="${#lists.isEmpty(holdings)}">
 		<thead>
-			<tr><th>股票代號</th><th>名稱</th><th>市場</th><th>張數</th><th>買進價</th><th>收盤價</th><th>收盤價日期</th><th>盈虧</th><th>收益率</th><th>操作</th></tr>
+			<tr><th>股票代號</th><th>名稱</th><th>總股數</th><th>平均成本</th><th>收盤價</th><th>收盤價日期</th>
+				<th>市值</th><th>未實現損益</th><th>已實現損益</th><th>累計現金股利</th><th>含息總報酬</th><th>操作</th></tr>
 		</thead>
 		<tbody>
-			<!-- th:block 只負責重複，本身不輸出標籤：每檔依狀態輸出「資料異常」或一般的那一列 -->
-			<th:block th:each="h : ${holdings}">
-			<!-- 第 6 題：重播交易失敗（資料被手動改過）的持股：數字都算不出來，只顯示代號、名稱和「資料異常」，不計入總計 -->
-			<tr th:if="${h.dataError}" class="data-error">
-				<td th:text="${h.code}">2330</td>
-				<td><th:block th:text="${h.name} ?: '—'">台積電</th:block> <strong class="error">資料異常</strong></td>
-				<td th:text="${h.market} != null ? ${h.market.label} : '—'">上市</td>
-				<td>—</td><td>—</td><td>—</td><td></td><td>—</td><td>—</td><td></td>
+			<th:block th:each="h, iter : ${holdings}" th:with="n=${h.numbers}">
+			<!-- 已賣光的排在最後，前面加一列小標題 -->
+			<tr class="section" th:if="${iter.index == soldOutStart}"><th colspan="12">已賣光</th></tr>
+			<!-- 資料異常（重播交易時超賣，資料被手動改過）：數字都算不出來，只顯示代號、名稱和「資料異常」，不計入總計 -->
+			<tr th:if="${h.dataError()}" class="data-error">
+				<td th:text="${n.code}">2330</td>
+				<td><th:block th:text="${n.name} ?: '—'">台積電</th:block> <strong class="error">資料異常</strong></td>
+				<td>—</td><td>—</td><td>—</td><td></td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td>
+				<td><a th:href="@{/holdings/{id}(id=${n.id})}">查看交易</a></td>
 			</tr>
-			<!-- trend：這一列盈虧的顏色（同總計的規則）；沒有收盤價時沒有盈虧，不上色。
-			     th:unless 比 th:with 先執行，資料異常的列（profit 是 null）不會走到這裡 -->
-			<tr th:unless="${h.dataError}"
-					th:with="p=${h.profit},
-						trend=${!h.profit.hasClosePrice() ? '' : (h.profit.profit.signum() > 0 ? 'gain' : (h.profit.profit.signum() < 0 ? 'loss' : ''))}">
-				<td th:text="${h.code}">2330</td>
-				<!-- 第 2 題時存的舊資料沒有名稱和市場（NULL），顯示「—」。
-				     第 6 題：有零股時名稱旁加小字，張數欄只顯示整張，提醒還在用 App 1.0 的使用者更新 -->
-				<td><th:block th:text="${h.name} ?: '—'">台積電</th:block><small class="note odd-lot" th:if="${h.oddLotNote() != null}" th:text="| ${h.oddLotNote()}|">含零股 500 股・App 1.0 只顯示整張，請更新 App 2.0</small></td>
-				<td th:text="${h.market} != null ? ${h.market.label} : '—'">上市</td>
-				<td class="num" th:text="${h.lots}">1</td>
-				<!-- 買進價固定顯示兩位小數、加千分位 -->
-				<td class="num" th:text="${#numbers.formatDecimal(h.buyPrice, 1, 'COMMA', 2, 'POINT')}">1,000.00</td>
+			<tr th:unless="${h.dataError()}" th:classappend="${h.soldOut()} ? 'sold-out'">
+				<td th:text="${n.code}">2330</td>
+				<td>
+					<th:block th:text="${n.name} ?: '—'">台積電</th:block>
+					<!-- 第 3 階段的零股提示：還在用 App 1.0 的使用者只看得到整張 -->
+					<br th:if="${h.oddLotNote() != null}">
+					<small class="note odd-lot" th:if="${h.oddLotNote() != null}" th:text="${h.oddLotNote()}">含零股 500 股・App 1.0 只顯示整張，請更新 App 2.0</small>
+					<br th:if="${h.dividendPending()}">
+					<small class="note dividend-pending" th:if="${h.dividendPending()}">股利資料更新中</small>
+				</td>
+				<td class="num" th:text="${#numbers.formatInteger(n.shares, 1, 'COMMA')}">1,000</td>
+				<!-- 已賣光沒有平均成本 -->
+				<td class="num" th:text="${n.averageCost} != null ? ${#numbers.formatDecimal(n.averageCost, 1, 'COMMA', 2, 'POINT')} : '—'">1,001.43</td>
 				<!-- 收盤價：沒有行情或從沒成交過顯示「未取得」，日期留空 -->
 				<td class="num" th:if="${h.hasClosePrice()}"
-						th:text="${#numbers.formatDecimal(h.closePrice, 1, 'COMMA', 2, 'POINT')}">2,030.00</td>
+						th:text="${#numbers.formatDecimal(n.currentPrice, 1, 'COMMA', 2, 'POINT')}">1,100.00</td>
 				<td th:unless="${h.hasClosePrice()}">未取得</td>
 				<td>
-					<span th:if="${h.hasClosePrice()}" th:text="${h.closeDate}">2026-11-23</span>
+					<span th:if="${h.hasClosePrice()}" th:text="${n.priceDate}">2026-11-23</span>
 					<!-- 最近交易日沒成交：顯示的是更早一天的收盤價，提示使用者 -->
 					<br th:if="${h.showsEarlierClose()}">
 					<small class="note" th:if="${h.showsEarlierClose()}"
-							th:text="|${h.latestTradeDate} 無成交，顯示 ${h.closeDate} 收盤價|">2026-11-24 無成交，顯示 2026-11-23 收盤價</small>
+							th:text="|${h.latestTradeDate()} 無成交，顯示 ${h.closeDate()} 收盤價|">2026-11-24 無成交，顯示 2026-11-23 收盤價</small>
 				</td>
-				<!-- 第 4 題：盈虧加千分位、收益率加 %；沒有收盤價時兩格都顯示「—」 -->
-				<td class="num profit" th:classappend="${trend}"
-						th:text="${p.hasClosePrice()} ? ${#numbers.formatInteger(p.profit, 1, 'COMMA')} : '—'">93,708</td>
-				<td class="num rate" th:classappend="${trend}"
-						th:text="${p.hasClosePrice()} ? |${#numbers.formatDecimal(p.returnRate, 1, 'COMMA', 2, 'POINT')}%| : '—'">9.36%</td>
-				<td>
-					<a th:href="@{/holdings/{id}/edit(id=${h.id})}">修改</a>
-					<form class="inline" th:action="@{/holdings/{id}/delete(id=${h.id})}" method="post"
-							th:attr="data-code=${h.code}"
-							onsubmit="return confirm('確定要刪除 ' + this.dataset.code + ' 嗎？');">
-						<button type="submit">刪除</button>
-					</form>
-				</td>
+				<!-- 市值、未實現：沒有收盤價時算不出來，顯示「—」；已賣光是 0 -->
+				<td class="num" th:text="${n.marketValue} != null ? ${#numbers.formatInteger(n.marketValue, 1, 'COMMA')} : '—'">1,100,000</td>
+				<td class="num" th:classappend="${n.unrealizedPnl != null and n.unrealizedPnl > 0 ? 'gain' : (n.unrealizedPnl != null and n.unrealizedPnl < 0 ? 'loss' : '')}"
+						th:text="${n.unrealizedPnl} != null ? ${#numbers.formatInteger(n.unrealizedPnl, 1, 'COMMA')} : '—'">93,708</td>
+				<td class="num" th:classappend="${n.realizedPnl > 0 ? 'gain' : (n.realizedPnl < 0 ? 'loss' : '')}"
+						th:text="${#numbers.formatInteger(n.realizedPnl, 1, 'COMMA')}">93,708</td>
+				<td class="num" th:text="${#numbers.formatInteger(n.cashDividends, 1, 'COMMA')}">10,000</td>
+				<td class="num" th:classappend="${n.totalReturn != null and n.totalReturn > 0 ? 'gain' : (n.totalReturn != null and n.totalReturn < 0 ? 'loss' : '')}"
+						th:text="${n.totalReturn} != null ? ${#numbers.formatInteger(n.totalReturn, 1, 'COMMA')} : '—'">197,416</td>
+				<td><a th:href="@{/holdings/{id}(id=${n.id})}">查看交易</a></td>
 			</tr>
 			</th:block>
 		</tbody>
 	</table>
 
 	<script>
-		// 輸入股票代號時，在欄位旁顯示名稱與市場。
+		// 第 1 題：伺服器先算好台北時間顯示出來（關掉 JS 也看得到）；JS 只負責讓它每秒往前走
+		(function () {
+			var el = document.getElementById('now');
+			// 伺服器時間和瀏覽器時鐘的差距：使用者電腦時間不準時，仍以伺服器時間為準
+			var offset = Number(el.dataset.epochMillis) - Date.now();
+			// 固定用台北時區格式化，使用者人在國外、電腦時區不同也一樣顯示台北時間
+			var formatter = new Intl.DateTimeFormat('zh-TW', {
+				timeZone: 'Asia/Taipei', hourCycle: 'h23',
+				year: 'numeric', month: '2-digit', day: '2-digit',
+				hour: '2-digit', minute: '2-digit', second: '2-digit'
+			});
+
+			function render() {
+				var p = {};
+				formatter.formatToParts(new Date(Date.now() + offset)).forEach(function (part) {
+					p[part.type] = part.value;
+				});
+				// 組成跟伺服器一樣的 yyyy-MM-dd HH:mm:ss 格式
+				el.textContent = p.year + '-' + p.month + '-' + p.day + ' '
+						+ p.hour + ':' + p.minute + ':' + p.second;
+			}
+
+			setInterval(render, 1000);
+		})();
+
+		// 輸入股票代號時，在欄位旁顯示名稱與市場（第 3 題，原樣沿用，含 F-04 的處理）。
 		// 觸發時機：停止輸入 0.5 秒後，或游標離開欄位時；同一個代號不重複查（伺服器端另有 10 分鐘快取）。
 		(function () {
 			var input = document.getElementById('code');

@@ -37,6 +37,7 @@ import org.springframework.util.StringUtils;
 import io.hsiaopingkuo.stockholdings.config.CsrfDeniedHandler;
 import io.hsiaopingkuo.stockholdings.entity.Holding;
 import io.hsiaopingkuo.stockholdings.entity.Market;
+import io.hsiaopingkuo.stockholdings.entity.Trade;
 import io.hsiaopingkuo.stockholdings.quote.Deadline;
 import io.hsiaopingkuo.stockholdings.quote.MarketResolver;
 import io.hsiaopingkuo.stockholdings.quote.StockLookup;
@@ -112,20 +113,28 @@ class CsrfProtectionTest {
 	}
 
 	@Test
-	void 現有三個表單_畫面上都帶有_csrf隱藏欄位() throws Exception {
+	void 網頁表單_畫面上都帶有_csrf隱藏欄位() throws Exception {
 		Holding h = save2330();
+		Long tradeId = tradeRepository.findAll().get(0).getId();
 
-		// 清單頁：新增表單＋這筆持股的刪除表單
+		// 清單頁：新增交易表單
 		String list = mockMvc.perform(get("/holdings")).andReturn().getResponse().getContentAsString();
-		assertThat(StringUtils.countOccurrencesOf(list, "name=\"_csrf\"")).isEqualTo(2);
-		// 修改頁：修改表單
-		String edit = mockMvc.perform(get("/holdings/{id}/edit", h.getId())).andReturn().getResponse().getContentAsString();
-		assertThat(StringUtils.countOccurrencesOf(edit, "name=\"_csrf\"")).isEqualTo(1);
+		assertThat(StringUtils.countOccurrencesOf(list, "name=\"_csrf\"")).isEqualTo(1);
+		// 明細頁：這筆交易的刪除表單
+		String detail = mockMvc.perform(get("/holdings/{id}", h.getId())).andReturn().getResponse().getContentAsString();
+		assertThat(StringUtils.countOccurrencesOf(detail, "name=\"_csrf\"")).isEqualTo(1);
+		// 修改中：那一列換成修改表單（取代原本那一列的刪除表單），數量不變
+		String editing = mockMvc.perform(get("/holdings/{id}", h.getId()).param("edit", tradeId.toString()))
+				.andReturn().getResponse().getContentAsString();
+		assertThat(StringUtils.countOccurrencesOf(editing, "name=\"_csrf\"")).isEqualTo(1);
+		assertThat(editing).contains("id=\"edit-form\"");
 	}
 
 	@Test
 	void 新增_沒帶token_被擋並顯示表單已過期_資料沒變() throws Exception {
-		MvcResult result = mockMvc.perform(post("/holdings").param("code", "2330").param("lots", "1").param("buyPrice", "1000"))
+		MvcResult result = mockMvc.perform(post("/holdings/trades").param("code", "2330").param("side", "BUY")
+				.param("date", "2026-11-24").param("shares", "1000").param("price", "1000")
+				.param("requestId", "csrf-1"))
 				.andReturn();
 
 		expectRejectedWithMessage(result);
@@ -136,32 +145,39 @@ class CsrfProtectionTest {
 	@Test
 	void 修改_token錯誤_被擋並顯示表單已過期_資料沒變() throws Exception {
 		Holding h = save2330();
+		Trade t = tradeRepository.findAll().get(0);
 
-		MvcResult result = mockMvc.perform(post("/holdings/{id}", h.getId()).with(csrf().useInvalidToken())
-				.param("lots", "2").param("buyPrice", "980.5")).andReturn();
+		MvcResult result = mockMvc.perform(post("/holdings/{id}/trades/{tradeId}", h.getId(), t.getId())
+				.with(csrf().useInvalidToken())
+				.param("date", "2026-11-24").param("shares", "2000").param("price", "980.5")
+				.param("version", String.valueOf(t.getVersion())).param("requestId", "csrf-2")).andReturn();
 
 		expectRejectedWithMessage(result);
 		assertThat(tradeRepository.findAll()).singleElement()
-				.satisfies(t -> assertThat(t.getShares()).isEqualTo(1000));
+				.satisfies(trade -> assertThat(trade.getShares()).isEqualTo(1000));
 	}
 
 	@Test
-	void 刪除_沒帶token_被擋並顯示表單已過期_持股還在() throws Exception {
+	void 刪除_沒帶token_被擋並顯示表單已過期_交易還在() throws Exception {
 		Holding h = save2330();
+		Trade t = tradeRepository.findAll().get(0);
 
-		MvcResult result = mockMvc.perform(post("/holdings/{id}/delete", h.getId())).andReturn();
+		MvcResult result = mockMvc.perform(post("/holdings/{id}/trades/{tradeId}/delete", h.getId(), t.getId())
+				.param("version", String.valueOf(t.getVersion())).param("requestId", "csrf-3")).andReturn();
 
 		expectRejectedWithMessage(result);
-		assertThat(holdingRepository.existsById(h.getId())).isTrue();
+		assertThat(tradeRepository.existsById(t.getId())).isTrue();
 	}
 
 	@Test
 	void 新增_帶token_正常新增() throws Exception {
 		found2330();
 
-		mockMvc.perform(post("/holdings").with(csrf()).param("code", "2330").param("lots", "1").param("buyPrice", "1000"))
+		mockMvc.perform(post("/holdings/trades").with(csrf()).param("code", "2330").param("side", "BUY")
+				.param("date", "2026-11-24").param("shares", "1000").param("price", "1000")
+				.param("requestId", "csrf-4"))
 				.andExpect(redirectedUrl("/holdings"))
-				.andExpect(flash().attribute("message", "已新增 2330"));
+				.andExpect(flash().attribute("message", "已新增 2330 買進 1,000 股"));
 		assertThat(holdingRepository.count()).isEqualTo(1);
 	}
 

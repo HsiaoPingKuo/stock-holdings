@@ -291,11 +291,13 @@ class HoldingApiControllerTest {
 
 	@Test
 	void 網頁清單也用行情快取補上舊持股的市場() throws Exception {
-		saveHolding("1101", null, null, 1, "40.00");
+		Holding old = saveHolding("1101", null, null, 1, "40.00");
 		saveQuote("1101", "台泥", Market.TWSE, NOV_23, "41.00");
 
-		mockMvc.perform(get("/holdings"))
+		// 第 6 題：2.0 清單沒有「市場」欄，市場顯示在明細頁的標題
+		mockMvc.perform(get("/holdings/{id}", old.getId()))
 				.andExpect(status().isOk())
-				.andExpect(content().string(containsString("<td>上市</td>")));
+				.andExpect(content().string(containsString("台泥")))
+				.andExpect(content().string(containsString("（上市）")));
 	}
 }

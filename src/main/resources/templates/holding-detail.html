@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="zh-Hant" xmlns:th="http://www.thymeleaf.org">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title th:text="|${h.numbers.code} 交易明細 - 持股記帳|">2330 交易明細 - 持股記帳</title>
+	<style>
+		table { border-collapse: collapse; }
+		th, td { border: 1px solid #999; padding: 4px 10px; }
+		td.num { text-align: right; }
+		.error { color: #c00; }
+		.message { color: #070; }
+		.note { color: #888; }
+		.estimated { color: #a60; font-weight: bold; }
+		form.inline { display: inline; }
+		input.short { width: 8em; }
+		/* 台股慣例紅色是賺、綠色是虧 */
+		.gain { color: #d00; }
+		.loss { color: #080; }
+		/* 超賣、資料異常的那一筆交易：整列標出來 */
+		tr.marked td { background: #fdd; }
+	</style>
+</head>
+<body th:with="n=${h.numbers}">
+	<h1>持股記帳</h1>
+	<p><a th:href="@{/holdings}">回持股清單</a></p>
+
+	<h2>
+		<th:block th:text="${n.code}">2330</th:block>
+		<th:block th:text="${n.name} ?: ''">台積電</th:block>
+		<th:block th:if="${h.marketLabel() != null}" th:text="|（${h.marketLabel()}）|">（上市）</th:block>
+	</h2>
+
+	<p class="message" th:if="${message}" th:text="${message}">已修改交易</p>
+	<p class="error" id="error-message" th:if="${errorMessage}" th:text="${errorMessage}">錯誤訊息</p>
+
+	<!-- 這檔的數字：和清單頁、/api/v2 同一份 -->
+	<p class="error" th:if="${h.dataError()}"><strong>資料異常</strong>：交易資料對不起來（某一筆賣出的股數超過當時的持股），數字無法計算。下方交易清單標出的那一筆請修改或刪除。</p>
+	<table id="holding" th:unless="${h.dataError()}">
+		<thead>
+			<tr><th>總股數</th><th>平均成本</th><th>收盤價</th><th>收盤價日期</th><th>市值</th>
+				<th>未實現損益</th><th>已實現損益</th><th>累計現金股利</th><th>含息總報酬</th></tr>
+		</thead>
+		<tbody>
+			<tr>
+				<td class="num" th:text="${#numbers.formatInteger(n.shares, 1, 'COMMA')}">1,000</td>
+				<td class="num" th:text="${n.averageCost} != null ? ${#numbers.formatDecimal(n.averageCost, 1, 'COMMA', 2, 'POINT')} : '—'">1,001.43</td>
+				<td class="num" th:if="${h.hasClosePrice()}"
+						th:text="${#numbers.formatDecimal(n.currentPrice, 1, 'COMMA', 2, 'POINT')}">1,100.00</td>
+				<td th:unless="${h.hasClosePrice()}">未取得</td>
+				<td>
+					<span th:if="${h.hasClosePrice()}" th:text="${n.priceDate}">2026-11-23</span>
+					<br th:if="${h.showsEarlierClose()}">
+					<small class="note" th:if="${h.showsEarlierClose()}"
+							th:text="|${h.latestTradeDate()} 無成交，顯示 ${h.closeDate()} 收盤價|">2026-11-24 無成交，顯示 2026-11-23 收盤價</small>
+				</td>
+				<td class="num" th:text="${n.marketValue} != null ? ${#numbers.formatInteger(n.marketValue, 1, 'COMMA')} : '—'">1,100,000</td>
+				<td class="num" th:classappend="${n.unrealizedPnl != null and n.unrealizedPnl > 0 ? 'gain' : (n.unrealizedPnl != null and n.unrealizedPnl < 0 ? 'loss' : '')}"
+						th:text="${n.unrealizedPnl} != null ? ${#numbers.formatInteger(n.unrealizedPnl, 1, 'COMMA')} : '—'">93,708</td>
+				<td class="num" th:classappend="${n.realizedPnl > 0 ? 'gain' : (n.realizedPnl < 0 ? 'loss' : '')}"
+						th:text="${#numbers.formatInteger(n.realizedPnl, 1, 'COMMA')}">93,708</td>
+				<td class="num" th:text="${#numbers.formatInteger(n.cashDividends, 1, 'COMMA')}">10,000</td>
+				<td class="num" th:classappend="${n.totalReturn != null and n.totalReturn > 0 ? 'gain' : (n.totalReturn != null and n.totalReturn < 0 ? 'loss' : '')}"
+						th:text="${n.totalReturn} != null ? ${#numbers.formatInteger(n.totalReturn, 1, 'COMMA')} : '—'">197,416</td>
+			</tr>
+		</tbody>
+	</table>
+	<p class="note odd-lot" th:if="${h.oddLotNote() != null}" th:text="${h.oddLotNote()}">含零股 500 股・App 1.0 只顯示整張，請更新 App 2.0</p>
+	<p class="note dividend-pending" th:if="${h.dividendPending()}">股利資料更新中，稍後重新整理</p>
+
+	<h2>交易</h2>
+	<p class="note">同一天的交易依輸入順序計算。買賣方向不能修改，要改請刪除後重新新增。</p>
+	<table id="trades">
+		<thead>
+			<tr><th>日期</th><th>買賣</th><th>股數</th><th>價格</th><th>操作</th></tr>
+		</thead>
+		<tbody>
+			<th:block th:each="t : ${trades}"
+					th:with="dataErrorRow=${t.id == h.view.dataErrorTradeId},
+						marked=${#lists.contains(marks, t.id) or dataErrorRow}">
+			<!-- 修改中的那一筆：欄位變成輸入框。表單放在最後一格，輸入框用 form 屬性指向它（表單不能跨表格的格子） -->
+			<tr th:if="${t.id == editTradeId}" th:object="${updateForm}" th:id="|trade-${t.id}|" class="editing"
+					th:classappend="${marked} ? 'marked'">
+				<td>
+					<input type="date" th:field="*{date}" th:min="${minDate}" th:max="${maxDate}" form="edit-form">
+					<br th:if="${#fields.hasErrors('date')}">
+					<span class="error" th:if="${#fields.hasErrors('date')}" th:errors="*{date}">錯誤</span>
+				</td>
+				<td th:text="${t.side.name() == 'BUY'} ? '買進' : '賣出'">買進</td>
+				<td>
+					<input type="text" class="short" th:field="*{shares}" inputmode="numeric" form="edit-form">
+					<br th:if="${#fields.hasErrors('shares')}">
+					<span class="error" th:if="${#fields.hasErrors('shares')}" th:errors="*{shares}">錯誤</span>
+				</td>
+				<td>
+					<input type="text" class="short" th:field="*{price}" inputmode="decimal" form="edit-form">
+					<br th:if="${#fields.hasErrors('price')}">
+					<span class="error" th:if="${#fields.hasErrors('price')}" th:errors="*{price}">錯誤</span>
+				</td>
+				<td>
+					<form id="edit-form" class="inline" method="post"
+							th:action="@{/holdings/{id}/trades/{tradeId}(id=${n.id}, tradeId=${t.id})}">
+						<!-- 版本號：別的裝置先改過時會被擋下，不會蓋掉對方的修改 -->
+						<input type="hidden" th:field="*{version}">
+						<!-- 一次性編號：連按兩下送出只會修改一次 -->
+						<input type="hidden" th:field="*{requestId}">
+						<button type="submit">儲存</button>
+					</form>
+					<a th:href="@{/holdings/{id}(id=${n.id})}">取消</a>
+				</td>
+			</tr>
+			<tr th:unless="${t.id == editTradeId}" th:id="|trade-${t.id}|" th:classappend="${marked} ? 'marked'">
+				<td>
+					<th:block th:text="${t.tradeDate}">2026-11-02</th:block>
+					<!-- 決定 1：1.0 轉入、App 1.0 新增的買進用建立日期推估 -->
+					<th:block th:if="${t.dateEstimated}">
+						<span class="estimated">推估</span>
+						<br><small class="note">實際交易日可能更早，請按「修改」改成實際日期</small>
+					</th:block>
+					<th:block th:if="${dataErrorRow}">
+						<br><strong class="error data-error-trade">資料異常：這筆賣出的股數超過當時的持股，請修改或刪除</strong>
+					</th:block>
+				</td>
+				<td th:text="${t.side.name() == 'BUY'} ? '買進' : '賣出'">買進</td>
+				<td class="num" th:text="${#numbers.formatInteger(t.shares, 1, 'COMMA')}">2,000</td>
+				<td class="num" th:text="${#numbers.formatDecimal(t.price, 1, 'COMMA', 2, 'POINT')}">1,000.00</td>
+				<td>
+					<a th:href="@{/holdings/{id}(id=${n.id}, edit=${t.id})}">修改</a>
+					<form class="inline" method="post"
+							th:action="@{/holdings/{id}/trades/{tradeId}/delete(id=${n.id}, tradeId=${t.id})}"
+							onsubmit="return confirm('確定要刪除這筆交易嗎？');">
+						<input type="hidden" name="version" th:value="${t.version}">
+						<input type="hidden" name="requestId" th:value="${deleteRequestId}">
+						<button type="submit">刪除</button>
+					</form>
+				</td>
+			</tr>
+			</th:block>
+		</tbody>
+	</table>
+
+	<h2>除權息</h2>
+	<p class="note">除權息日當天或之後才買進的股票，領不到這次的股利。</p>
+	<p th:if="${h.dataError()}">資料異常，無法計算除權息。</p>
+	<p th:if="${!h.dataError() and #lists.isEmpty(dividends)}">持有期間沒有除權息。</p>
+	<table id="dividends" th:unless="${#lists.isEmpty(dividends)}">
+		<thead>
+			<tr><th>除權息日</th><th>種類</th><th>可參與股數</th><th>現金股利</th><th>配股</th><th>來源</th></tr>
+		</thead>
+		<tbody>
+			<tr th:each="d : ${dividends}">
+				<td th:text="${d.detail.exDate}">2026-11-10</td>
+				<td th:text="${d.kindLabel()}">息</td>
+				<td class="num" th:text="${#numbers.formatInteger(d.detail.eligibleShares, 1, 'COMMA')}">2,000</td>
+				<td class="num">
+					<th:block th:text="${d.cash()} != null ? ${#numbers.formatInteger(d.cash(), 1, 'COMMA')} : '—'">10,000</th:block>
+					<!-- 二代健保：單次 2 萬元以上，入帳時先扣補充保費 -->
+					<th:block th:if="${d.supplementaryPremium()}">
+						<br><small class="note premium">入帳時會先扣 2.11% 二代健保補充保費</small>
+					</th:block>
+				</td>
+				<td class="num" th:text="${d.detail.stockDividendShares} != null ? |${#numbers.formatInteger(d.detail.stockDividendShares, 1, 'COMMA')} 股| : '—'">0 股</td>
+				<td th:text="${d.sourceLabel()}">官方</td>
+			</tr>
+		</tbody>
+	</table>
+</body>
+</html>

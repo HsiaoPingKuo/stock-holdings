@@ -135,7 +135,10 @@ class NoOfficialCallTest {
 				.andExpect(status().isOk())
 				.andExpect(jsonPath("$.name").value("環球晶"))
 				.andExpect(jsonPath("$.market").value("TPEX"));
-		mockMvc.perform(post("/holdings").with(csrf()).param("code", "6488").param("lots", "1").param("buyPrice", "450"))
+		// 第 6 題：網頁改成 2.0 的新增交易表單
+		mockMvc.perform(post("/holdings/trades").with(csrf()).param("code", "6488").param("side", "BUY")
+				.param("date", "2026-11-23").param("shares", "1000").param("price", "450")
+				.param("requestId", "no-official-call-1"))
 				.andExpect(redirectedUrl("/holdings"));
 
 		assertThat(holdingRepository.findAll()).singleElement()

@@ -11,9 +11,7 @@ import static org.springframework.security.test.web.servlet.request.SecurityMock
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.flash;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.redirectedUrl;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import java.math.BigDecimal;
@@ -470,11 +468,11 @@ class HoldingApiV1TradeTest {
 		expectError(perform(delete("/api/v1/holdings/{id}", broken.getId())), 409, "DATA_ERROR");
 		assertThat(holdingRepository.existsById(broken.getId())).isTrue();
 
-		// 網頁：照樣列出、標示資料異常，總計只算正常的那一檔
+		// 網頁（第 6 題改成 2.0 的總計）：照樣列出、標示資料異常，總計只算正常的那一檔
 		perform(get("/holdings"))
 				.andExpect(status().isOk())
 				.andExpect(content().string(containsString("資料異常")))
-				.andExpect(content().string(containsString("<td id=\"summary-profit\" class=\"num gain\">93,708</td>")));
+				.andExpect(content().string(containsString("<td id=\"summary-unrealized\" class=\"num gain\">93,708</td>")));
 	}
 
 	// ===== 等不到鎖 =====
@@ -507,9 +505,12 @@ class HoldingApiV1TradeTest {
 			assertThat(Duration.ofNanos(System.nanoTime() - start)).isGreaterThanOrEqualTo(Duration.ofMillis(1500));
 			expectError(perform(delete("/api/v1/holdings/{id}", h.getId())), 409, "HOLDING_BUSY");
 			expectError(perform(postJson("{\"code\":\"2330\",\"lots\":1,\"buy_price\":900}")), 409, "HOLDING_BUSY");
-			perform(post("/holdings/{id}/delete", h.getId()).with(csrf()))
-					.andExpect(redirectedUrl("/holdings"))
-					.andExpect(flash().attribute("errorMessage", "這筆持股正在被其他裝置修改，請稍後再試"));
+			// 網頁（第 6 題改成 2.0 的刪除交易）：留在明細頁顯示同一句，不出現錯誤頁
+			Trade only = tradesOf(h).get(0);
+			perform(post("/holdings/{id}/trades/{tradeId}/delete", h.getId(), only.getId()).with(csrf())
+					.param("version", String.valueOf(only.getVersion())).param("requestId", "busy-web-delete"))
+					.andExpect(status().isOk())
+					.andExpect(content().string(containsString("這筆持股正在被其他裝置修改，請稍後再試")));
 
 			release.countDown();
 			holder.get(10, TimeUnit.SECONDS);

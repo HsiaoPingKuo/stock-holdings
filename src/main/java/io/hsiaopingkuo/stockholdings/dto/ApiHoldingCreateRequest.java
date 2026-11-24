@@ -16,7 +16,7 @@ import jakarta.validation.constraints.Size;
 
 /**
  * App API 新增持股的請求：{ "code": "2330", "lots": 1, "buy_price": 1000 }（第 5 題）。
- * 檢查規則和網頁的 HoldingCreateForm 相同。型別不對（張數 1.5、字串數字）在讀 JSON 時就失敗（見 JacksonConfig）。
+ * 檢查規則和 1.0 網頁的新增表單相同（1.0 網頁已在第 6 題刪除）。型別不對（張數 1.5、字串數字）在讀 JSON 時就失敗（見 JacksonConfig）。
  *
  * 用 Integer、BigDecimal 而不是 int：欄位缺少或是 null 時才會是 null，交給 @NotNull 回「請輸入…」，不會被當成 0。
  */

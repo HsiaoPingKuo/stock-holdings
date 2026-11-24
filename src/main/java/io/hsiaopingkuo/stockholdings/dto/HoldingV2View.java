@@ -12,10 +12,12 @@ import io.hsiaopingkuo.stockholdings.entity.Trade;
  *
  * @param trades         這檔的全部交易（重播順序）
  * @param replay         重播結果；重播時超賣（資料被手動改過）是 null，代表「資料異常」
- * @param dividendStatus 股利資料狀態
+ * @param dividendStatus   股利資料狀態
+ * @param dataErrorTradeId 資料異常時，重播到哪一筆賣出不夠賣（網頁明細要標出這一筆）；正常時是 null。
+ *                         只給網頁用，/api/v2 的 JSON 不含這個欄位
  */
 public record HoldingV2View(HoldingQuoteRow row, List<Trade> trades, HoldingReplayResult replay,
-		DividendDataStatus dividendStatus) {
+		DividendDataStatus dividendStatus, Long dataErrorTradeId) {
 
 	public HoldingV2View {
 		trades = List.copyOf(trades);
