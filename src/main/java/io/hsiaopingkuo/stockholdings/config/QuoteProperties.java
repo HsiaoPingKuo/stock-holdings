@@ -21,11 +21,13 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  * @param lookupMinRemaining   剩下的預算少於這個值就不查官方，直接回「暫時無法確認」（F-01）
  * @param holidayUrl           證交所休市日表的完整網址（主機是 openapi.twse.com.tw，和行情不同，所以獨立設定）
  * @param refresh              背景更新行情的排程設定
+ * @param dividendReadTimeout  除權息 client 等待回應的上限：只在背景排程呼叫，一次查一整年實測約 5 秒，
+ *                             行情的 readTimeout 不夠，所以另外設定；建立連線的上限沿用 connectTimeout
  */
 @ConfigurationProperties("quote")
 public record QuoteProperties(Host twse, Host tpex, Duration connectTimeout, Duration readTimeout,
 		Duration lookupTimeout, Duration lookupCacheTtl, Duration requestBudget, int maxConcurrentLookups,
-		Duration lookupMinRemaining, String holidayUrl, Refresh refresh) {
+		Duration lookupMinRemaining, String holidayUrl, Refresh refresh, Duration dividendReadTimeout) {
 
 	/** @param baseUrl 主機網址，例如 https://www.twse.com.tw；路徑和參數寫在 client 裡，不能改 */
 	public record Host(String baseUrl) {
