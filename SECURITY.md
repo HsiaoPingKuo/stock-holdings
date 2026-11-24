@@ -49,10 +49,12 @@
 ```bash
 ./mvnw -q dependency:list -DoutputFile=deps.txt
 grep -E '^\s+[a-z]' deps.txt | sed -E 's/ -- module.*//; s/^\s+//' | sort -u \
-  | awk -F: 'BEGIN{printf "{\"queries\":["} {if(NR>1)printf ","; printf "{\"package\":{\"name\":\"%s:%s\",\"ecosystem\":\"Maven\"},\"version\":\"%s\"}", $1, $2, $4} END{print "]}"}' > osv-query.json
+  | awk -F: 'BEGIN{printf "{\"queries\":["} {if(NR>1)printf ","; printf "{\"package\":{\"name\":\"%s:%s\",\"ecosystem\":\"Maven\"},\"version\":\"%s\"}", $1, $2, $(NF-1)} END{print "]}"}' > osv-query.json
 curl -s -X POST https://api.osv.dev/v1/querybatch -H "Content-Type: application/json" --data-binary @osv-query.json -o osv-result.json
 grep -c '"vulns"' osv-result.json   # 0 代表沒有已知弱點；大於 0 時打開 osv-result.json 看是哪個套件
 ```
+
+版本號取倒數第 2 欄：dependency:list 的最後一欄一定是範圍（compile、runtime、test），不論有沒有 classifier，倒數第 2 欄都是版本號。
 
 查到弱點時，每一筆要寫：會不會被打到、為什麼、怎麼處理（升版、覆寫版本，或暫不處理的理由）。
 
