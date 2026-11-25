@@ -39,7 +39,7 @@
 	<table id="holding" th:unless="${h.dataError()}">
 		<thead>
 			<tr><th>總股數</th><th>平均成本</th><th>收盤價</th><th>收盤價日期</th><th>市值</th>
-				<th>未實現損益</th><th>已實現損益</th><th>累計現金股利</th><th>含息總報酬</th></tr>
+				<th>未實現損益</th><th>收益率</th><th>已實現損益</th><th>累計現金股利</th><th>含息總報酬</th></tr>
 		</thead>
 		<tbody>
 			<tr>
@@ -57,6 +57,9 @@
 				<td class="num" th:text="${n.marketValue} != null ? ${#numbers.formatInteger(n.marketValue, 1, 'COMMA')} : '—'">1,100,000</td>
 				<td class="num" th:classappend="${n.unrealizedPnl != null and n.unrealizedPnl > 0 ? 'gain' : (n.unrealizedPnl != null and n.unrealizedPnl < 0 ? 'loss' : '')}"
 						th:text="${n.unrealizedPnl} != null ? ${#numbers.formatInteger(n.unrealizedPnl, 1, 'COMMA')} : '—'">93,708</td>
+				<td id="holding-return-rate" class="num" th:with="rate=${h.returnRate()}"
+						th:classappend="${rate != null and rate > 0 ? 'gain' : (rate != null and rate < 0 ? 'loss' : '')}"
+						th:text="${rate} != null ? |${#numbers.formatDecimal(rate, 1, 'COMMA', 2, 'POINT')}%| : '—'">9.36%</td>
 				<td class="num" th:classappend="${n.realizedPnl > 0 ? 'gain' : (n.realizedPnl < 0 ? 'loss' : '')}"
 						th:text="${#numbers.formatInteger(n.realizedPnl, 1, 'COMMA')}">93,708</td>
 				<td class="num" th:text="${#numbers.formatInteger(n.cashDividends, 1, 'COMMA')}">10,000</td>

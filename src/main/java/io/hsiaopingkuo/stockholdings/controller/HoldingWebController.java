@@ -165,7 +165,10 @@ public class HoldingWebController {
 		// 第一筆已賣光的位置：畫面在這一列前面插入小標題
 		model.addAttribute("soldOutStart", ordered.size() - soldOut.size());
 		// 總計和 /api/v2/summary 同一份算法，網頁和 App 2.0 的總計一定相同
-		model.addAttribute("summary", ApiV2SummaryResponse.from(views));
+		ApiV2SummaryResponse summary = ApiV2SummaryResponse.from(views);
+		model.addAttribute("summary", summary);
+		// 第 4 題的總計收益率：在網頁這一層算，/api/v2/summary 的 JSON 欄位不變
+		model.addAttribute("summaryReturnRate", HoldingPageRow.summaryReturnRate(summary, rows));
 		Object oversellCode = model.getAttribute("oversellCode");
 		if (oversellCode != null) {
 			rows.stream().filter(r -> r.numbers().code().equals(oversellCode)).findFirst()

@@ -35,7 +35,7 @@
 	<h2>總計</h2>
 	<table id="summary" th:with="s=${summary}">
 		<thead>
-			<tr><th>總成本</th><th>市值</th><th>未實現損益</th><th>已實現損益</th><th>累計現金股利</th><th>含息總報酬</th></tr>
+			<tr><th>總成本</th><th>市值</th><th>未實現損益</th><th>收益率</th><th>已實現損益</th><th>累計現金股利</th><th>含息總報酬</th></tr>
 		</thead>
 		<tbody>
 			<tr>
@@ -44,6 +44,11 @@
 				<td id="summary-unrealized" class="num"
 						th:classappend="${s.unrealizedPnl > 0 ? 'gain' : (s.unrealizedPnl < 0 ? 'loss' : '')}"
 						th:text="${#numbers.formatInteger(s.unrealizedPnl, 1, 'COMMA')}">93,708</td>
+				<!-- 總計收益率：總計的未實現損益 ÷ 總成本，和 /api/v1/summary 的 return_pct 同一個算法；
+				     持股全部沒有收盤價時是 null，顯示「—」不上色（同 Part A 第 4 題） -->
+				<td id="summary-return-rate" class="num" th:with="rate=${summaryReturnRate}"
+						th:classappend="${rate != null and rate > 0 ? 'gain' : (rate != null and rate < 0 ? 'loss' : '')}"
+						th:text="${rate} != null ? |${#numbers.formatDecimal(rate, 1, 'COMMA', 2, 'POINT')}%| : '—'">6.40%</td>
 				<td id="summary-realized" class="num"
 						th:classappend="${s.realizedPnl > 0 ? 'gain' : (s.realizedPnl < 0 ? 'loss' : '')}"
 						th:text="${#numbers.formatInteger(s.realizedPnl, 1, 'COMMA')}">93,708</td>
@@ -103,17 +108,17 @@
 	<table id="holdings" th:unless="${#lists.isEmpty(holdings)}">
 		<thead>
 			<tr><th>股票代號</th><th>名稱</th><th>總股數</th><th>平均成本</th><th>收盤價</th><th>收盤價日期</th>
-				<th>市值</th><th>未實現損益</th><th>已實現損益</th><th>累計現金股利</th><th>含息總報酬</th><th>操作</th></tr>
+				<th>市值</th><th>未實現損益</th><th>收益率</th><th>已實現損益</th><th>累計現金股利</th><th>含息總報酬</th><th>操作</th></tr>
 		</thead>
 		<tbody>
 			<th:block th:each="h, iter : ${holdings}" th:with="n=${h.numbers}">
 			<!-- 已賣光的排在最後，前面加一列小標題 -->
-			<tr class="section" th:if="${iter.index == soldOutStart}"><th colspan="12">已賣光</th></tr>
+			<tr class="section" th:if="${iter.index == soldOutStart}"><th colspan="13">已賣光</th></tr>
 			<!-- 資料異常（重播交易時超賣，資料被手動改過）：數字都算不出來，只顯示代號、名稱和「資料異常」，不計入總計 -->
 			<tr th:if="${h.dataError()}" class="data-error">
 				<td th:text="${n.code}">2330</td>
 				<td><th:block th:text="${n.name} ?: '—'">台積電</th:block> <strong class="error">資料異常</strong></td>
-				<td>—</td><td>—</td><td>—</td><td></td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td>
+				<td>—</td><td>—</td><td>—</td><td></td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td>
 				<td><a th:href="@{/holdings/{id}(id=${n.id})}">查看交易</a></td>
 			</tr>
 			<tr th:unless="${h.dataError()}" th:classappend="${h.soldOut()} ? 'sold-out'">
@@ -144,6 +149,10 @@
 				<td class="num" th:text="${n.marketValue} != null ? ${#numbers.formatInteger(n.marketValue, 1, 'COMMA')} : '—'">1,100,000</td>
 				<td class="num" th:classappend="${n.unrealizedPnl != null and n.unrealizedPnl > 0 ? 'gain' : (n.unrealizedPnl != null and n.unrealizedPnl < 0 ? 'loss' : '')}"
 						th:text="${n.unrealizedPnl} != null ? ${#numbers.formatInteger(n.unrealizedPnl, 1, 'COMMA')} : '—'">93,708</td>
+				<!-- 收益率：沒有收盤價、已賣光時算不出來，顯示「—」 -->
+				<td class="num" th:with="rate=${h.returnRate()}"
+						th:classappend="${rate != null and rate > 0 ? 'gain' : (rate != null and rate < 0 ? 'loss' : '')}"
+						th:text="${rate} != null ? |${#numbers.formatDecimal(rate, 1, 'COMMA', 2, 'POINT')}%| : '—'">9.36%</td>
 				<td class="num" th:classappend="${n.realizedPnl > 0 ? 'gain' : (n.realizedPnl < 0 ? 'loss' : '')}"
 						th:text="${#numbers.formatInteger(n.realizedPnl, 1, 'COMMA')}">93,708</td>
 				<td class="num" th:text="${#numbers.formatInteger(n.cashDividends, 1, 'COMMA')}">10,000</td>

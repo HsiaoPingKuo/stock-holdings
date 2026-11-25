@@ -200,7 +200,7 @@ class HoldingWebControllerTest {
 		// 持有中依代號 2330、2454，最後才是「已賣光」的 2317（灰字）
 		String table = body.substring(body.indexOf("id=\"holdings\""));
 		// 比對小標題那一格（頁面的 HTML 註解裡也有「已賣光」三個字）
-		String soldOutHeading = "<th colspan=\"12\">已賣光</th>";
+		String soldOutHeading = "<th colspan=\"13\">已賣光</th>";
 		assertThat(table.indexOf(">2330<")).isLessThan(table.indexOf(">2454<"));
 		assertThat(table.indexOf(">2454<")).isLessThan(table.indexOf(soldOutHeading));
 		assertThat(table.indexOf(soldOutHeading)).isLessThan(table.indexOf(">2317<"));
@@ -210,6 +210,60 @@ class HoldingWebControllerTest {
 				.getContentAsString(StandardCharsets.UTF_8);
 		assertThat(apiSummary).contains("\"total_return\":206788");
 		assertThat(body).contains("id=\"summary-total-return\" class=\"num gain\">206,788<");
+	}
+
+	/**
+	 * Part A 第 4 題的三個例子：每一檔的收益率、紅賺綠虧，以及總計收益率和 /api/v1/summary 的 return_pct 一致。
+	 * 總計：未實現 93,708 − 10,132 + 429 = 84,005，總成本 1,001,425 + 300,427 + 10,020 = 1,311,872 → 6.40%
+	 */
+	@Test
+	void 清單_收益率_PartA三個例子_總計和v1一致() throws Exception {
+		quote("2330", "台積電", "1100.00");
+		quote("0050", "元大台灣50", "145.50");
+		quote("2363", "矽統", "10.50");
+		Holding tsmc = holding("2330", "台積電");
+		trade(tsmc, TradeSide.BUY, NOV_02, 1000, "1000.00");
+		Holding etf = holding("0050", "元大台灣50");
+		trade(etf, TradeSide.BUY, NOV_02, 2000, "150.00");
+		Holding sis = holding("2363", "矽統");
+		trade(sis, TradeSide.BUY, NOV_02, 1000, "10.00");
+		given(dividendEventProvider.eventsByCode(any())).willReturn(Map.of());
+
+		String body = html(get("/holdings"));
+
+		// 紅色（gain）是賺、綠色（loss）是虧
+		assertThat(body).contains("<th>收益率</th>");
+		assertThat(body).contains("class=\"num gain\">9.36%<", "class=\"num loss\">-3.37%<",
+				"class=\"num gain\">4.28%<");
+		assertThat(body).contains("id=\"summary-return-rate\" class=\"num gain\">6.40%<");
+		String v1Summary = mockMvc.perform(get("/api/v1/summary")).andReturn().getResponse()
+				.getContentAsString(StandardCharsets.UTF_8);
+		assertThat(v1Summary).contains("\"return_pct\":6.40");
+
+		// 明細頁上方的數字也有收益率
+		String detail = html(get("/holdings/{id}", tsmc.getId()));
+		assertThat(detail).contains("id=\"holding-return-rate\" class=\"num gain\">9.36%<");
+	}
+
+	@Test
+	void 清單_收益率_沒有收盤價和已賣光顯示橫線() throws Exception {
+		Holding mtk = holding("2454", "聯發科");
+		trade(mtk, TradeSide.BUY, NOV_02, 1000, "500.00");
+		given(dividendEventProvider.eventsByCode(any())).willReturn(Map.of());
+
+		String detail = html(get("/holdings/{id}", mtk.getId()));
+		assertThat(detail).contains("id=\"holding-return-rate\" class=\"num\">—<");
+
+		Holding foxconn = holding("2317", "鴻海");
+		trade(foxconn, TradeSide.BUY, NOV_02, 1000, "100.00");
+		trade(foxconn, TradeSide.SELL, NOV_20, 1000, "110.00");
+		String soldOut = html(get("/holdings/{id}", foxconn.getId()));
+		assertThat(soldOut).contains("id=\"holding-return-rate\" class=\"num\">—<");
+		// 還有股數的只有 2454、沒有收盤價：網頁總計顯示「—」（Part A 第 4 題的決定），/api/v1 照規格回 0
+		assertThat(html(get("/holdings"))).contains("id=\"summary-return-rate\" class=\"num\">—<");
+		String v1Summary = mockMvc.perform(get("/api/v1/summary")).andReturn().getResponse()
+				.getContentAsString(StandardCharsets.UTF_8);
+		assertThat(v1Summary).contains("\"return_pct\":0.00");
 	}
 
 	@Test
