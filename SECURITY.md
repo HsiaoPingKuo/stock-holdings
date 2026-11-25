@@ -2,9 +2,18 @@
 
 相依套件的已知弱點（CVE）查詢紀錄。打 v1.0.0 前查一次；交卷前用當下的相依套件再查一次並更新本文件。
 
-## 查詢結果（v1.0.0 前）
+## 查詢結果（交卷前，v2.0.0）
 
-這是 v1.0.0 前的查詢結果。交卷前會用同樣的方法再查一次並更新本文件。
+| 項目 | 內容 |
+|---|---|
+| 查詢日期 | 2026-11-25 08:13（台北時間） |
+| 查詢的程式版本 | master `7c8e6ed`（Part B 第 6～9 題完成，打 v2.0.0 前） |
+| 查詢範圍 | `./mvnw dependency:list` 列出的全部 131 個相依套件，含間接相依：compile 82 個、runtime 11 個（會打包進執行檔），test 38 個（只在跑測試時使用） |
+| 和 v1.0.0 前的差異 | 多了 9 個套件，主要是第 2 題 CSRF 防護加入的 Spring Security 7.2.0（`spring-boot-starter-security`）和它的測試模組 |
+| 查詢方式 | 同下方 v1.0.0 前的方式：[OSV.dev](https://osv.dev/) 批次查詢 API，用「Maven 套件名稱 + 確切版本」比對 |
+| 結果 | **沒有已知弱點**（131 個套件都沒有查到） |
+
+## 查詢結果（v1.0.0 前）
 
 | 項目 | 內容 |
 |---|---|
@@ -15,12 +24,13 @@
 | 查詢方式的驗證 | 用同樣的請求格式查已知有弱點的 `org.apache.logging.log4j:log4j-core` 2.14.1，查到 8 筆（含 Log4Shell `GHSA-jfh8-c2jp-5v3q`），確認不是查詢寫錯才查不到 |
 | 結果 | **沒有已知弱點**（122 個套件都沒有查到） |
 
-### 主要套件版本
+### 主要套件版本（v2.0.0）
 
 | 套件 | 版本 |
 |---|---|
 | Spring Boot | 4.2.0 |
 | Spring Framework | 7.1.0 |
+| Spring Security | 7.2.0（2.0 新增，只用於網頁表單的 CSRF 防護） |
 | Tomcat（內嵌） | 11.0.27 |
 | Hibernate ORM | 7.4.15.Final |
 | Hibernate Validator | 9.1.6.Final |
@@ -40,6 +50,7 @@
 
 - **H2 Console 沒有開啟**：沒有設定 `spring.h2.console.enabled`，預設是關閉。過去 H2 的嚴重弱點主要是透過網頁版 Console 利用。
 - **H2 只用檔案模式**：資料庫存在 `./data/`，只有本程式自己開啟，沒有開放網路連線埠。
+- **網頁表單有 CSRF 防護**：網頁的 POST 要驗證 CSRF token；`/api/**` 是 App 用的 JSON API、不靠 cookie 登入，不檢查 CSRF。沒有登入功能，Spring Security 預設的登入頁、HTTP Basic 和啟動時產生的密碼都已關閉。
 - **密碼不寫在 repo 裡**：資料庫密碼用環境變數 `DB_PASSWORD`，開發時預設是空字串。
 
 ## 怎麼重新查詢
