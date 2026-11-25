@@ -1,0 +1,600 @@
+ ▐▛███▛█   Claude Code v2.1.329
+▝▜██████▀  Opus 5.5 · Claude Pro
+ ▝▝   ▝▝   C:\TKA102_JavaApp\Workspace_for_practice\stock-holdings
+
+
+> /clear                                                                        
+
+> 【緊急，時間只剩 30 分鐘】Part A 第 4                                         
+  題要求「清單每一筆顯示盈虧和收益率，頁面最上面顯示總計」，2.0                 
+  網頁的清單漏了收益率。                                                        
+                                                                                
+  從最新的 master 開分支 fix/web-return-rate，直接實作，不用先提案：            
+  1. 清單每一檔在「未實現損益」旁加「收益率」：未實現損益 ÷ 總成本 ×            
+  100，四捨五入到小數第二位，用捨入到元之後的數字，沿用                         
+  ProfitCalculator.returnRate（跟 /api/v1 的 return_pct                         
+  同一個算法）。紅色是賺、綠色是虧。沒有收盤價、已賣光、資料異常時顯示「—」。   
+  2. 頁面最上面的總計也加「收益率」：總計的未實現損益 ÷ 總成本，跟              
+  /api/v1/summary 的 return_pct 算法一致。                                      
+  3. 明細頁上方的數字也加收益率。                                               
+  4. 測試：Part A 的三個例子（2330 → 9.36%、0050 → -3.37%、2363 →               
+  4.28%）在網頁清單上顯示正確。                                                 
+     只跑相關的測試類別，完成後給我 commit 訊息，commit 由我執行。              
+
+  Listed 1 directory, ran 4 shell commands (ctrl+o to expand)
+
+● 先說明進度：已建好 fix/web-return-rate 分支，確認網頁清單用的是 HoldingPageRow
+  + ApiV2SummaryResponse，正在加收益率欄位。
+
+  Searched for 1 pattern, ran 3 shell commands (ctrl+o to expand)
+
+● No Python 可用，改用 Edit 工具逐一修改。
+
+  Read 4 files (ctrl+o to expand)
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\dto\HoldingPageRow.java)
+  ⎿  Added 2 lines
+       1  package io.hsiaopingkuo.stockholdings.dto;
+       2 
+       3 +import java.math.BigDecimal;                                   
+       4  import java.time.LocalDate;
+       5 
+       6  import io.hsiaopingkuo.stockholdings.calc.DividendDataStatus;
+       7 +import io.hsiaopingkuo.stockholdings.calc.ProfitCalculator;    
+       8  import io.hsiaopingkuo.stockholdings.calc.V1Compatibility;
+       9 
+      10  /**
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\dto\HoldingPageRow.java)
+  ⎿  Added 20 lines
+      30      return !dataError() && numbers.shares() == 0;
+      31    }
+      32 
+      33 +  /**                                                          
+      34 +   * 收益率（%）= 未實現損益 ÷ 總成本 × 100（Part A 第 4 題）。
+      35 +   * 用已捨入到元的數字、沿用 ProfitCalculator.returnRate，和 /
+         +api/v1 的 return_pct 同一個算法。                              
+      36 +   * 資料異常、已賣光（沒有成本）、沒有收盤價時算不出來，回 nul
+         +l（畫面顯示「—」）。                                           
+      37 +   */                                                          
+      38 +  public BigDecimal returnRate() {                             
+      39 +    if (dataError() || soldOut() || numbers.unrealizedPnl() == 
+         +null                                                           
+      40 +        || numbers.totalCost() == null || numbers.totalCost() =
+         += 0) {                                                         
+      41 +      return null;                                             
+      42 +    }                                                          
+      43 +    return ProfitCalculator.returnRate(BigDecimal.valueOf(numbe
+         +rs.unrealizedPnl()),                                           
+      44 +        BigDecimal.valueOf(numbers.totalCost()));              
+      45 +  }                                                            
+      46 +                                                               
+      47 +  /** 總計的收益率：總計的未實現損益 ÷ 總成本，規則同 /api/v1/s
+         +ummary（總成本 0 時是 0.00）。 */                              
+      48 +  public static BigDecimal summaryReturnRate(ApiV2SummaryRespon
+         +se summary) {                                                  
+      49 +    return ProfitCalculator.returnRate(BigDecimal.valueOf(summa
+         +ry.unrealizedPnl()),                                           
+      50 +        BigDecimal.valueOf(summary.totalCost()));              
+      51 +  }                                                            
+      52 +                                                               
+      53    public boolean hasClosePrice() {
+      54      return view.row().hasClosePrice();
+      55    }
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\controller\HoldingWebContro
+        ller.java)
+  ⎿  Added 4 lines, removed 1 line
+      165      // 第一筆已賣光的位置：畫面在這一列前面插入小標題
+      166      model.addAttribute("soldOutStart", ordered.size() - soldOu
+           t.size());
+      167      // 總計和 /api/v2/summary 同一份算法，網頁和 App 2.0 的總
+           計一定相同
+      168 -    model.addAttribute("summary", ApiV2SummaryResponse.from(vi
+          -ews));                                                        
+      168 +    ApiV2SummaryResponse summary = ApiV2SummaryResponse.from(v
+          +iews);                                                        
+      169 +    model.addAttribute("summary", summary);                   
+      170 +    // 第 4 題的總計收益率：在網頁這一層算，/api/v2/summary 的
+          + JSON 欄位不變                                                
+      171 +    model.addAttribute("summaryReturnRate", HoldingPageRow.sum
+          +maryReturnRate(summary));                                     
+      172      Object oversellCode = model.getAttribute("oversellCode");
+      173      if (oversellCode != null) {
+      174        rows.stream().filter(r -> r.numbers().code().equals(over
+           sellCode)).findFirst()
+
+● Update(src\main\resources\templates\holdings.html)
+  ⎿  Added 1 line, removed 1 line
+      35    <h2>總計</h2>
+      36    <table id="summary" th:with="s=${summary}">
+      37      <thead>
+      38 -      <tr><th>總成本</th><th>市值</th><th>未實現損益</th><th>已
+         -實現損益</th><th>累計現金股利</th><th>含息總報酬</th></tr>     
+      38 +      <tr><th>總成本</th><th>市值</th><th>未實現損益</th><th>收
+         +益率</th><th>已實現損益</th><th>累計現金股利</th><th>含息總報酬
+         +</th></tr>                                                     
+      39      </thead>
+      40      <tbody>
+      41        <tr>
+
+● Update(src\main\resources\templates\holdings.html)
+  ⎿  Added 4 lines
+      44          <td id="summary-unrealized" class="num"
+      45              th:classappend="${s.unrealizedPnl > 0 ? 'gain' : (s
+          .unrealizedPnl < 0 ? 'loss' : '')}"
+      46              th:text="${#numbers.formatInteger(s.unrealizedPnl,
+          1, 'COMMA')}">93,708</td>
+      47 +        <!-- 總計收益率：總計的未實現損益 ÷ 總成本，和 /api/v1/
+         +summary 的 return_pct 同一個算法 -->                           
+      48 +        <td id="summary-return-rate" class="num"               
+      49 +            th:classappend="${summaryReturnRate > 0 ? 'gain' : 
+         +(summaryReturnRate < 0 ? 'loss' : '')}"                        
+      50 +            th:text="|${#numbers.formatDecimal(summaryReturnRat
+         +e, 1, 'COMMA', 2, 'POINT')}%|">6.40%</td>                      
+      51          <td id="summary-realized" class="num"
+      52              th:classappend="${s.realizedPnl > 0 ? 'gain' : (s.r
+          ealizedPnl < 0 ? 'loss' : '')}"
+      53              th:text="${#numbers.formatInteger(s.realizedPnl, 1,
+           'COMMA')}">93,708</td>
+
+● Update(src\main\resources\templates\holdings.html)
+  ⎿  Added 1 line, removed 1 line
+      107    <table id="holdings" th:unless="${#lists.isEmpty(holdings)}"
+           >
+      108      <thead>
+      109        <tr><th>股票代號</th><th>名稱</th><th>總股數</th><th>平
+           均成本</th><th>收盤價</th><th>收盤價日期</th>
+      110 -        <th>市值</th><th>未實現損益</th><th>已實現損益</th><th
+          ->累計現金股利</th><th>含息總報酬</th><th>操作</th></tr>       
+      110 +        <th>市值</th><th>未實現損益</th><th>收益率</th><th>已 
+          +實現損益</th><th>累計現金股利</th><th>含息總報酬</th><th>操作<
+          +/th></tr>                                                     
+      111      </thead>
+      112      <tbody>
+      113        <th:block th:each="h, iter : ${holdings}" th:with="n=${h
+           .numbers}">
+
+● Update(src\main\resources\templates\holdings.html)
+  ⎿  Added 1 line, removed 1 line
+      112      <tbody>
+      113        <th:block th:each="h, iter : ${holdings}" th:with="n=${h
+           .numbers}">
+      114        <!-- 已賣光的排在最後，前面加一列小標題 -->
+      115 -      <tr class="section" th:if="${iter.index == soldOutStart}
+          -"><th colspan="12">已賣光</th></tr>                           
+      115 +      <tr class="section" th:if="${iter.index == soldOutStart}
+          +"><th colspan="13">已賣光</th></tr>                           
+      116        <!-- 資料異常（重播交易時超賣，資料被手動改過）：數字都
+           算不出來，只顯示代號、名稱和「資料異常」，不計入總計 -->
+      117        <tr th:if="${h.dataError()}" class="data-error">
+      118          <td th:text="${n.code}">2330</td>
+
+● Update(src\main\resources\templates\holdings.html)
+  ⎿  Added 1 line, removed 1 line
+      117        <tr th:if="${h.dataError()}" class="data-error">
+      118          <td th:text="${n.code}">2330</td>
+      119          <td><th:block th:text="${n.name} ?: '—'">台積電</th:bl
+           ock> <strong class="error">資料異常</strong></td>
+      120 -        <td>—</td><td>—</td><td>—</td><td></td><td>—</td><td>—
+          -</td><td>—</td><td>—</td><td>—</td>                           
+      120 +        <td>—</td><td>—</td><td>—</td><td></td><td>—</td><td>—
+          +</td><td>—</td><td>—</td><td>—</td><td>—</td>                 
+      121          <td><a th:href="@{/holdings/{id}(id=${n.id})}">查看交
+           易</a></td>
+      122        </tr>
+      123        <tr th:unless="${h.dataError()}" th:classappend="${h.sol
+           dOut()} ? 'sold-out'">
+
+● Update(src\main\resources\templates\holdings.html)
+  ⎿  Added 4 lines
+      148          <td class="num" th:text="${n.marketValue} != null ? ${
+           #numbers.formatInteger(n.marketValue, 1, 'COMMA')} : '—'">1,10
+           0,000</td>
+      149          <td class="num" th:classappend="${n.unrealizedPnl != n
+           ull and n.unrealizedPnl > 0 ? 'gain' : (n.unrealizedPnl != nul
+           l and n.unrealizedPnl < 0 ? 'loss' : '')}"
+      150              th:text="${n.unrealizedPnl} != null ? ${#numbers.f
+           ormatInteger(n.unrealizedPnl, 1, 'COMMA')} : '—'">93,708</td>
+      151 +        <!-- 收益率：沒有收盤價、已賣光時算不出來，顯示「—」 -
+          +->                                                            
+      152 +        <td class="num" th:with="rate=${h.returnRate()}"      
+      153 +            th:classappend="${rate != null and rate > 0 ? 'gai
+          +n' : (rate != null and rate < 0 ? 'loss' : '')}"              
+      154 +            th:text="${rate} != null ? |${#numbers.formatDecim
+          +al(rate, 1, 'COMMA', 2, 'POINT')}%| : '—'">9.36%</td>         
+      155          <td class="num" th:classappend="${n.realizedPnl > 0 ? 
+           'gain' : (n.realizedPnl < 0 ? 'loss' : '')}"
+      156              th:text="${#numbers.formatInteger(n.realizedPnl, 1
+           , 'COMMA')}">93,708</td>
+      157          <td class="num" th:text="${#numbers.formatInteger(n.ca
+           shDividends, 1, 'COMMA')}">10,000</td>
+
+● Update(src\main\resources\templates\holding-detail.html)
+  ⎿  Added 1 line, removed 1 line
+      39    <table id="holding" th:unless="${h.dataError()}">
+      40      <thead>
+      41        <tr><th>總股數</th><th>平均成本</th><th>收盤價</th><th>收
+          盤價日期</th><th>市值</th>
+      42 -        <th>未實現損益</th><th>已實現損益</th><th>累計現金股利<
+         -/th><th>含息總報酬</th></tr>                                   
+      42 +        <th>未實現損益</th><th>收益率</th><th>已實現損益</th><t
+         +h>累計現金股利</th><th>含息總報酬</th></tr>                    
+      43      </thead>
+      44      <tbody>
+      45        <tr>
+
+● Update(src\main\resources\templates\holding-detail.html)
+  ⎿  Added 3 lines
+      57          <td class="num" th:text="${n.marketValue} != null ? ${#
+          numbers.formatInteger(n.marketValue, 1, 'COMMA')} : '—'">1,100,
+          000</td>
+      58          <td class="num" th:classappend="${n.unrealizedPnl != nu
+          ll and n.unrealizedPnl > 0 ? 'gain' : (n.unrealizedPnl != null 
+          and n.unrealizedPnl < 0 ? 'loss' : '')}"
+      59              th:text="${n.unrealizedPnl} != null ? ${#numbers.fo
+          rmatInteger(n.unrealizedPnl, 1, 'COMMA')} : '—'">93,708</td>
+      60 +        <td id="holding-return-rate" class="num" th:with="rate=
+         +${h.returnRate()}"                                             
+      61 +            th:classappend="${rate != null and rate > 0 ? 'gain
+         +' : (rate != null and rate < 0 ? 'loss' : '')}"                
+      62 +            th:text="${rate} != null ? |${#numbers.formatDecima
+         +l(rate, 1, 'COMMA', 2, 'POINT')}%| : '—'">9.36%</td>           
+      63          <td class="num" th:classappend="${n.realizedPnl > 0 ? '
+          gain' : (n.realizedPnl < 0 ? 'loss' : '')}"
+      64              th:text="${#numbers.formatInteger(n.realizedPnl, 1,
+           'COMMA')}">93,708</td>
+      65          <td class="num" th:text="${#numbers.formatInteger(n.cas
+          hDividends, 1, 'COMMA')}">10,000</td>
+
+● Update(src\test\java\io\hsiaopingkuo\stockholdings\controller\HoldingWebContro
+        llerTest.java)
+  ⎿  Added 1 line, removed 1 line
+      200      // 持有中依代號 2330、2454，最後才是「已賣光」的 2317（灰
+           字）
+      201      String table = body.substring(body.indexOf("id=\"holdings\
+           ""));
+      202      // 比對小標題那一格（頁面的 HTML 註解裡也有「已賣光」三個
+           字）
+      203 -    String soldOutHeading = "<th colspan=\"12\">已賣光</th>"; 
+      203 +    String soldOutHeading = "<th colspan=\"13\">已賣光</th>"; 
+      204      assertThat(table.indexOf(">2330<")).isLessThan(table.index
+           Of(">2454<"));
+      205      assertThat(table.indexOf(">2454<")).isLessThan(table.index
+           Of(soldOutHeading));
+      206      assertThat(table.indexOf(soldOutHeading)).isLessThan(table
+           .indexOf(">2317<"));
+
+● Update(src\test\java\io\hsiaopingkuo\stockholdings\controller\HoldingWebContro
+        llerTest.java)
+  ⎿  Added 51 lines
+      212      assertThat(body).contains("id=\"summary-total-return\" cla
+           ss=\"num gain\">206,788<");
+      213    }
+      214 
+      215 +  /**                                                         
+      216 +   * Part A 第 4 題的三個例子：每一檔的收益率、紅賺綠虧，以及 
+          +總計收益率和 /api/v1/summary 的 return_pct 一致。             
+      217 +   * 總計：未實現 93,708 − 10,132 + 429 = 84,005，總成本 1,001
+          +,425 + 300,427 + 10,020 = 1,311,872 → 6.40%                   
+      218 +   */                                                         
+      219    @Test
+      220 +  void 清單_收益率_PartA三個例子_總計和v1一致() throws Excepti
+          +on {                                                          
+      221 +    quote("2330", "台積電", "1100.00");                       
+      222 +    quote("0050", "元大台灣50", "145.50");                    
+      223 +    quote("2363", "矽統", "10.50");                           
+      224 +    Holding tsmc = holding("2330", "台積電");                 
+      225 +    trade(tsmc, TradeSide.BUY, NOV_02, 1000, "1000.00");      
+      226 +    Holding etf = holding("0050", "元大台灣50");              
+      227 +    trade(etf, TradeSide.BUY, NOV_02, 2000, "150.00");        
+      228 +    Holding sis = holding("2363", "矽統");                    
+      229 +    trade(sis, TradeSide.BUY, NOV_02, 1000, "10.00");         
+      230 +    given(dividendEventProvider.eventsByCode(any())).willRetur
+          +n(Map.of());                                                  
+      231 +                                                              
+      232 +    String body = html(get("/holdings"));                     
+      233 +                                                              
+      234 +    // 紅色（gain）是賺、綠色（loss）是虧                     
+      235 +    assertThat(body).contains("<th>收益率</th>");             
+      236 +    assertThat(body).contains("class=\"num gain\">9.36%<", "cl
+          +ass=\"num loss\">-3.37%<",                                    
+      237 +        "class=\"num gain\">4.28%<");                         
+      238 +    assertThat(body).contains("id=\"summary-return-rate\" clas
+          +s=\"num gain\">6.40%<");                                      
+      239 +    String v1Summary = mockMvc.perform(get("/api/v1/summary"))
+          +.andReturn().getResponse()                                    
+      240 +        .getContentAsString(StandardCharsets.UTF_8);          
+      241 +    assertThat(v1Summary).contains("\"return_pct\":6.40");    
+      242 +                                                              
+      243 +    // 明細頁上方的數字也有收益率                             
+      244 +    String detail = html(get("/holdings/{id}", tsmc.getId()));
+      245 +    assertThat(detail).contains("id=\"holding-return-rate\" cl
+          +ass=\"num gain\">9.36%<");                                    
+      246 +  }                                                           
+      247 +                                                              
+      248 +  @Test                                                       
+      249 +  void 清單_收益率_沒有收盤價和已賣光顯示橫線() throws Excepti
+          +on {                                                          
+      250 +    Holding mtk = holding("2454", "聯發科");                  
+      251 +    trade(mtk, TradeSide.BUY, NOV_02, 1000, "500.00");        
+      252 +    given(dividendEventProvider.eventsByCode(any())).willRetur
+          +n(Map.of());                                                  
+      253 +                                                              
+      254 +    String detail = html(get("/holdings/{id}", mtk.getId())); 
+      255 +    assertThat(detail).contains("id=\"holding-return-rate\" cl
+          +ass=\"num\">—<");                                             
+      256 +                                                              
+      257 +    Holding foxconn = holding("2317", "鴻海");                
+      258 +    trade(foxconn, TradeSide.BUY, NOV_02, 1000, "100.00");    
+      259 +    trade(foxconn, TradeSide.SELL, NOV_20, 1000, "110.00");   
+      260 +    String soldOut = html(get("/holdings/{id}", foxconn.getId(
+          +)));                                                          
+      261 +    assertThat(soldOut).contains("id=\"holding-return-rate\" c
+          +lass=\"num\">—<");                                            
+      262 +    // 總成本只有 2454 一檔、沒有收盤價：未實現 0 → 0.00%     
+      263 +    assertThat(html(get("/holdings"))).contains("id=\"summary-
+          +return-rate\" class=\"num\">0.00%<");                         
+      264 +  }                                                           
+      265 +                                                              
+      266 +  @Test                                                       
+      267    void 新增和修改的日期欄位_只能選2021年1月1日到今天() throws
+           Exception {
+      268      Holding tsmc = holding("2330", "台積電");
+      269      Trade buy = trade(tsmc, TradeSide.BUY, NOV_02, 1000, "1000
+           .00");
+
+  Searched for 1 pattern, ran 2 shell commands (ctrl+o to expand)
+
+● HoldingApiV1TradeTest 也會讀清單頁的 HTML，現在補跑這支測試確認沒被影響。
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● 網頁清單、總計和明細頁都加好了收益率，相關的兩支測試類別全部通過。分支
+  fix/web-return-rate 是從最新的 master（390eedb）開的，還沒 commit。
+
+  改了哪些檔案
+
+  - dto/HoldingPageRow.java：新增兩個方法。
+    - returnRate()：算每一檔的收益率，用捨入到元之後的未實現損益 ÷
+      總成本，直接呼叫
+      ProfitCalculator.returnRate。資料異常、已賣光、沒有收盤價時回傳
+      null，畫面顯示「—」。
+    - summaryReturnRate(summary)：算總計的收益率，用總計的未實現損益 ÷
+      總成本，算法和 /api/v1/summary 一樣。
+  - controller/HoldingWebController.java：把總計收益率放進頁面資料，名稱是
+    summaryReturnRate。/api/v2 的 JSON 沒有變動。
+  - templates/holdings.html：總計表和清單都在「未實現損益」旁邊加了「收益率」欄
+    。賺錢用紅色、虧錢用綠色，沿用原本的 gain／loss
+    樣式。因為多了一欄，「已賣光」小標題的 colspan（跨欄數）從 12 改成
+    13，資料異常那一列也多補一格「—」。
+  - templates/holding-detail.html：明細頁上方的數字表也加了收益率。
+  - HoldingWebControllerTest.java：新增 2 個測試，並把原本測試裡的 colspan 改成
+    13。
+
+  怎麼驗證
+
+  1. 啟動後新增三筆持股：2330 買 1,000 股 @1000、0050 買 2,000 股 @150、2363 買
+     1,000 股 @10。
+  2. 等收盤價分別是 1100、145.50、10.50 時，打開
+     http://localhost:8080/holdings。預期看到：
+     - 每一檔：9.36%（紅）、-3.37%（綠）、4.28%（紅）
+     - 總計收益率 6.40%（紅），和 /api/v1/summary 的 "return_pct":6.40 一樣
+  3. 點進任一檔的「查看交易」，上方表格也有收益率。沒有收盤價或已賣光的那一檔顯
+     示「—」。
+
+  測試結果
+
+  依照「只跑相關測試」的做法，跑了下面兩支，沒有跑整套 ./mvnw test：
+  - HoldingWebControllerTest：13 個全部通過（含新增的 2 個）
+  - HoldingApiV1TradeTest：16 個全部通過（這支也會檢查清單頁的
+    HTML，所以一起跑）
+
+  新增的測試檢查了：
+  - 三個例子在清單上的數字和紅綠顏色正確
+  - 總計 6.40%，並和 /api/v1/summary 比對一致
+  - 明細頁顯示 9.36%
+  - 沒有收盤價、已賣光時顯示「—」
+  - 沒有任何收盤價時，總計顯示 0.00%
+
+  建議的 commit 訊息
+
+  fix: 第4題 網頁清單、總計與明細頁補上收益率
+
+  還沒做的部分
+
+  - 整套 ./mvnw test 請你自己跑一次，確認全部通過。
+  - 合併回 master 並 push 之後，記得另外 clone 一份照 README 啟動一次。
+  - README 不需要改，這次沒有改變安裝、啟動或設定方式。
+  - 這次修的是 Part A 漏掉的部分，是我之前沒做到。是否記進 REVIEW.md 的「AI
+    犯過的錯」，或 TESTLOG.md，由你決定，需要的話我再寫草稿給你看。
+  - ai-log 記得放進去，commit 前檢查裡面有沒有密碼或 token。
+✻ Brewed for 3m 21s · done 上午8:31
+
+> 一處要改：沒有任何收盤價時，網頁總計的收益率顯示「—」，不是 0.00%（Part A 第  
+  4 題當時的決定：網頁顯示「—」，只有 /api/v1 的總計照規格回 0）。測試跟著改。  
+  改好就可以 commit，訊息照你的：fix: 第4題 網頁清單、總計與明細頁補上收益率    
+  REVIEW.md 第 6 題「AI 犯過的錯」補一列：6B 用 2.0 網頁取代 1.0                
+  網頁時，清單漏了 Part A 第 4                                                  
+  題要求的「收益率」欄和總計；交卷前用桌面版掃描整個專案、對照題目時發現；補在  
+  fix/web-return-rate。另外一個 docs commit。                                   
+  TESTLOG 不記。                                                                
+
+  Searched for 1 pattern, read 1 file, ran 2 shell commands (ctrl+o to expand)
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\dto\HoldingPageRow.java)
+  ⎿  Added 10 lines, removed 2 lines
+      44          BigDecimal.valueOf(numbers.totalCost()));
+      45    }
+      46 
+      47 -  /** 總計的收益率：總計的未實現損益 ÷ 總成本，規則同 /api/v1/s
+         -ummary（總成本 0 時是 0.00）。 */                              
+      48 -  public static BigDecimal summaryReturnRate(ApiV2SummaryRespon
+         -se summary) {                                                  
+      47 +  /**                                                          
+      48 +   * 總計的收益率：總計的未實現損益 ÷ 總成本，規則同 /api/v1/su
+         +mmary（總成本 0 時是 0.00）。                                  
+      49 +   * 還有股數的持股全部沒有收盤價時，收益率還算不出來，回 null 
+         +讓網頁顯示「—」                                                
+      50 +   * （沿用 Part A 第 4 題的決定；只有 /api/v1 的總計照規格回 0
+         +）。                                                           
+      51 +   */                                                          
+      52 +  public static BigDecimal summaryReturnRate(ApiV2SummaryRespon
+         +se summary, List<HoldingPageRow> rows) {                       
+      53 +    List<HoldingPageRow> held = rows.stream().filter(r -> !r.da
+         +taError() && !r.soldOut()).toList();                           
+      54 +    if (!held.isEmpty() && held.stream().noneMatch(r -> r.numbe
+         +rs().marketValue() != null)) {                                 
+      55 +      return null;                                             
+      56 +    }                                                          
+      57      return ProfitCalculator.returnRate(BigDecimal.valueOf(summa
+          ry.unrealizedPnl()),
+      58          BigDecimal.valueOf(summary.totalCost()));
+      59    }
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\dto\HoldingPageRow.java)
+  ⎿  Added 1 line
+      2 
+      3  import java.math.BigDecimal;
+      4  import java.time.LocalDate;
+      5 +import java.util.List;                                          
+      6 
+      7  import io.hsiaopingkuo.stockholdings.calc.DividendDataStatus;
+      8  import io.hsiaopingkuo.stockholdings.calc.ProfitCalculator;
+
+● Update(src\main\java\io\hsiaopingkuo\stockholdings\controller\HoldingWebContro
+        ller.java)
+  ⎿  Added 1 line, removed 1 line
+      168      ApiV2SummaryResponse summary = ApiV2SummaryResponse.from(v
+           iews);
+      169      model.addAttribute("summary", summary);
+      170      // 第 4 題的總計收益率：在網頁這一層算，/api/v2/summary 的
+            JSON 欄位不變
+      171 -    model.addAttribute("summaryReturnRate", HoldingPageRow.sum
+          -maryReturnRate(summary));                                     
+      171 +    model.addAttribute("summaryReturnRate", HoldingPageRow.sum
+          +maryReturnRate(summary, rows));                               
+      172      Object oversellCode = model.getAttribute("oversellCode");
+      173      if (oversellCode != null) {
+      174        rows.stream().filter(r -> r.numbers().code().equals(over
+           sellCode)).findFirst()
+
+● Update(src\main\resources\templates\holdings.html)
+  ⎿  Added 5 lines, removed 4 lines
+      44          <td id="summary-unrealized" class="num"
+      45              th:classappend="${s.unrealizedPnl > 0 ? 'gain' : (s
+          .unrealizedPnl < 0 ? 'loss' : '')}"
+      46              th:text="${#numbers.formatInteger(s.unrealizedPnl,
+          1, 'COMMA')}">93,708</td>
+      47 -        <!-- 總計收益率：總計的未實現損益 ÷ 總成本，和 /api/v1/
+         -summary 的 return_pct 同一個算法 -->                           
+      48 -        <td id="summary-return-rate" class="num"               
+      49 -            th:classappend="${summaryReturnRate > 0 ? 'gain' : 
+         -(summaryReturnRate < 0 ? 'loss' : '')}"                        
+      50 -            th:text="|${#numbers.formatDecimal(summaryReturnRat
+         -e, 1, 'COMMA', 2, 'POINT')}%|">6.40%</td>                      
+      47 +        <!-- 總計收益率：總計的未實現損益 ÷ 總成本，和 /api/v1/
+         +summary 的 return_pct 同一個算法；                             
+      48 +             持股全部沒有收盤價時是 null，顯示「—」不上色（同 P
+         +art A 第 4 題） -->                                            
+      49 +        <td id="summary-return-rate" class="num" th:with="rate=
+         +${summaryReturnRate}"                                          
+      50 +            th:classappend="${rate != null and rate > 0 ? 'gain
+         +' : (rate != null and rate < 0 ? 'loss' : '')}"                
+      51 +            th:text="${rate} != null ? |${#numbers.formatDecima
+         +l(rate, 1, 'COMMA', 2, 'POINT')}%| : '—'">6.40%</td>           
+      52          <td id="summary-realized" class="num"
+      53              th:classappend="${s.realizedPnl > 0 ? 'gain' : (s.r
+          ealizedPnl < 0 ? 'loss' : '')}"
+      54              th:text="${#numbers.formatInteger(s.realizedPnl, 1,
+           'COMMA')}">93,708</td>
+
+● Update(src\test\java\io\hsiaopingkuo\stockholdings\controller\HoldingWebContro
+        llerTest.java)
+  ⎿  Added 5 lines, removed 2 lines
+      259      trade(foxconn, TradeSide.SELL, NOV_20, 1000, "110.00");
+      260      String soldOut = html(get("/holdings/{id}", foxconn.getId(
+           )));
+      261      assertThat(soldOut).contains("id=\"holding-return-rate\" c
+           lass=\"num\">—<");
+      262 -    // 總成本只有 2454 一檔、沒有收盤價：未實現 0 → 0.00%     
+      263 -    assertThat(html(get("/holdings"))).contains("id=\"summary-
+          -return-rate\" class=\"num\">0.00%<");                         
+      262 +    // 還有股數的只有 2454、沒有收盤價：網頁總計顯示「—」（Par
+          +t A 第 4 題的決定），/api/v1 照規格回 0                       
+      263 +    assertThat(html(get("/holdings"))).contains("id=\"summary-
+          +return-rate\" class=\"num\">—<");                             
+      264 +    String v1Summary = mockMvc.perform(get("/api/v1/summary"))
+          +.andReturn().getResponse()                                    
+      265 +        .getContentAsString(StandardCharsets.UTF_8);          
+      266 +    assertThat(v1Summary).contains("\"return_pct\":0.00");    
+      267    }
+      268 
+      269    @Test
+
+● 總計在沒有收盤價時改成顯示「—」，測試也跟著改了，現在跑相關測試。
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● 測試通過，先 commit 程式修正，再補 REVIEW.md。
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Update(REVIEW.md)
+  ⎿  Added 1 line
+      260  | 3 | 第 1 階段的 `DividendKind.STOCK` 註解寫「權：只配股」 |
+           實測官方資料時發現 3311 閎暉的「權」只有現金增資、沒有配股 |
+           改註解，資料來源規則改成依「減除股利參考價」判斷 |
+      261  | 4 | 第 2 階段提案說「現有測試全部通過」，沒注意到 `HoldingRe
+           positoryTest` 有兩個測試在驗證 V4 要刪掉的約束 | 跑測試時失敗
+           | 刪掉這兩個測試，改由 V4 的 migration 測試驗證約束已拿掉 |
+      262  | 5 | 4a 建議 `git add src/`，但沒提醒 main 和 test 要一起 com
+           mit；main 先 commit（`917e3d0`）時單獨編譯測試不過 | 補 test
+           的 commit（`fb2647a`）後才通過 | 之後的指令都加上「main 和 tes
+           t 一起 commit」 |
+      263 +| 6 | 6B 用 2.0 網頁取代 1.0 網頁時，清單漏了 Part A 第 4 題要
+          +求的「收益率」欄和總計 | 交卷前用桌面版掃描整個專案、對照題目 
+          +時發現 | 補在 `fix/web-return-rate`（`4bed5c8`） |            
+      264 
+      265  ### 流程上的失誤
+      266  - G-01～G-03 的修正不小心直接 push 到 master，沒有開 PR。檢查
+           過檔案和測試都正確，不改寫已 push 的歷史，之後恢復用分支和 PR
+           。
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● 兩個 commit 都在 fix/web-return-rate 分支上，還沒 push。
+
+  8e457f9 docs: 第6題 REVIEW.md 補上 AI 犯過的錯：2.0 網頁漏了收益率
+  4bed5c8 fix: 第4題 網頁清單、總計與明細頁補上收益率
+
+  這次改了什麼
+
+  - 總計收益率：還有股數的持股如果全部沒有收盤價，網頁總計的收益率顯示「—」，不
+    上色。這和 v1.0.0 網頁的 allMissingClose
+    判斷一樣。已賣光的持股不用收盤價，所以不列入這個判斷。/api/v1/summary
+    維持照規格回 0.00。
+  - 測試：把原本預期 0.00%
+    的地方改成預期「—」，另外加了一項檢查：同樣的資料下，/api/v1/summary 的
+    return_pct 是 0.00。
+  - REVIEW.md：照你的文字，在第 6 題「AI 犯過的錯」補上第 6 列，處理欄附上修正的
+    commit 4bed5c8。
+
+  測試結果
+
+  - 只跑了相關的兩支：HoldingWebControllerTest 13 個、HoldingApiV1TradeTest 16
+    個，全部通過。
+  - 整套 ./mvnw test 沒跑，請你自己跑。
+
+  接下來要你做的
+
+  1. 跑 ./mvnw test，確認全部通過。
+  2. push 分支，用一般 merge（不要 squash）合併回 master，再 push master。
+  3. 在另一個資料夾重新 clone，照 README 啟動一次，打開 /holdings
+     確認有「收益率」欄。
+  4. 把這次的對話匯出放進 ai-log/，commit 前檢查裡面有沒有密碼或 token。
+
+  README 不用改，TESTLOG 照你說的不記。另外，工作目錄裡還有
+  deps.txt、osv-query.json、osv-result.json 這三個檔案沒加進 git，我沒有動它們。
+
+✻ Brewed for 1m 43s · done 上午8:33
